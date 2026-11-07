@@ -470,6 +470,178 @@ def test_template_abstracts_the_member_leaves():
     assert template['t'] == jax.ShapeDtypeStruct((N_SAMPS,), jnp.float64)
 
 
+# Four segments of 3, 1, 1 and 3 members: the first two on the first half of the members, the
+# last two on the second, so the ensemble also splits over two devices.
+OWNER = np.array([0, 0, 0, 1, 2, 3, 3, 3])
+N_SEGMENTS = 4
+
+
+def _offsets() -> jax.Array:
+    return 100 * jnp.arange(1.0, N_SEGMENTS + 1)[:, None] * jnp.ones(N_SAMPS)
+
+
+def _segmented(**keywords) -> StackedEnsemble:
+    return StackedEnsemble(
+        N,
+        {'x': _xs(), 'o': _offsets()},
+        {'x': 1, 'o': 'segment'},
+        owner=jnp.asarray(OWNER),
+        **keywords,
+    )
+
+
+def _host_segmented(**keywords) -> HostEnsemble:
+    xs, offsets = np.asarray(_xs()), np.asarray(_offsets())
+    struct = jax.ShapeDtypeStruct((N_SAMPS,), jnp.float64)
+    return HostEnsemble(
+        N,
+        lambda i: (offsets[OWNER[i]], xs[i]),  # in the order of the template's leaves
+        {'o': struct, 'x': struct},
+        strides={'o': 'segment', 'x': 1},
+        owner=OWNER,
+        segments=N_SEGMENTS,
+        **keywords,
+    )
+
+
+def _segment_apply(member):
+    return {'member': member['x'] + member['o'], 'segment': 2 * member['o'], 'total': member['x']}
+
+
+SEGMENT_SPEC = {'member': 'auto', 'segment': 'auto', 'total': 'segment_sum'}
+
+
+def _segment_expected(valid=None):
+    xs, offsets = np.asarray(_xs()), np.asarray(_offsets())
+    use = np.ones(N, bool) if valid is None else np.asarray(valid)
+    total = np.zeros((N_SEGMENTS, N_SAMPS))
+    np.add.at(total, OWNER[use], xs[use])
+    segment = np.zeros_like(offsets)
+    seen = np.unique(OWNER[use])
+    segment[seen] = 2 * offsets[seen]
+    return {'member': xs + offsets[OWNER], 'segment': segment, 'total': total}
+
+
+@pytest.mark.parametrize('batch', [1, 2, 8])
+@pytest.mark.parametrize('representation', ['stacked', 'host'])
+def test_segments_combine_over_their_members(representation, batch):
+    make = {'stacked': _segmented, 'host': _host_segmented}[representation]
+    out, kinds = map_reduce(_segment_apply, make(policy=Policy(batch=batch)), SEGMENT_SPEC)
+    assert kinds == {'member': 1, 'segment': 'segment', 'total': 'segment_sum'}
+    expected = _segment_expected()
+    for key in expected:
+        assert_allclose(out[key], expected[key])
+
+
+@pytest.mark.parametrize('batch', [1, 2])
+def test_padded_members_drop_from_their_segment(batch):
+    # member 4 is the only one of segment 2, which keeps zeros
+    valid = np.array([True, True, True, True, False, True, True, False])
+    out, _ = map_reduce(
+        _segment_apply,
+        _segmented(valid=jnp.asarray(valid), policy=Policy(batch=batch)),
+        SEGMENT_SPEC,
+    )
+    expected = _segment_expected(valid)
+    assert_allclose(out['total'], expected['total'])
+    assert_allclose(out['segment'], expected['segment'])
+
+
+def test_segment_ensembles_evaluate_under_jit():
+    run = jax.jit(lambda e: map_reduce(_segment_apply, e, SEGMENT_SPEC)[0])
+    out = run(_segmented(policy=Policy(batch=2)))
+    assert_allclose(out['total'], _segment_expected()['total'])
+
+
+def test_segment_kinds_need_an_owner():
+    with pytest.raises(ValueError, match='owner index'):
+        map_reduce(lambda m: m['x'], _stacked(), 'segment_sum')
+
+
+@pytest.mark.parametrize(
+    'build, match',
+    [
+        (lambda: StackedEnsemble(N, {'o': _offsets()}, 'segment'), 'come together'),
+        (lambda: StackedEnsemble(N, {'x': _xs()}, owner=jnp.asarray(OWNER)), 'come together'),
+        (
+            lambda: StackedEnsemble(
+                N, {'o': _offsets()}, 'segment', owner=jnp.asarray(OWNER), segments=3
+            ),
+            'segments has shape',
+        ),
+        (
+            lambda: StackedEnsemble(N, {'o': _offsets()}, 'segment', owner=jnp.asarray(OWNER) + 1),
+            'must lie in',
+        ),
+        (
+            lambda: StackedEnsemble(N, {'o': _offsets()}, 'segment', owner=jnp.zeros(3, int)),
+            'owner has shape',
+        ),
+        (
+            lambda: HostEnsemble(
+                N, lambda i: (), {'o': jax.ShapeDtypeStruct((), float)}, strides='segment'
+            ),
+            'owner index',
+        ),
+    ],
+)
+def test_segment_ensembles_are_validated(build, match):
+    with pytest.raises(ValueError, match=match):
+        build()
+
+
+def test_lift_keeps_the_segment_leaves_of_a_structural_function():
+    ensemble = _segmented()
+    rearranged = lift(lambda m: (m['o'], m['x']), ensemble)
+    assert isinstance(rearranged, StackedEnsemble)
+    assert rearranged.strides == ('segment', 1)
+    assert rearranged.owner is ensemble.owner
+    assert_allclose(rearranged.fetch(4)[0], _offsets()[OWNER[4]])
+
+
+def test_lift_gathers_the_segment_leaves_of_a_computed_function():
+    lifted = lift(lambda m: m['x'] + m['o'], _segmented())
+    assert isinstance(lifted, StackedEnsemble)
+    assert lifted.strides == (1,)
+    assert_allclose(lifted.stacked, _segment_expected()['member'])
+
+
+def test_lift_of_ensembles_sharing_their_owner_runs_under_jit():
+    # under jit, each ensemble's owner is a tracer of its own, equal values or not
+    other = StackedEnsemble(N, {'y': _xs()}, owner=jnp.asarray(OWNER), segments=N_SEGMENTS)
+    lifted = jax.jit(lambda a, b: lift(lambda a, b: a['x'] + a['o'] + b['y'], a, b).stacked)(
+        _segmented(), other
+    )
+    assert_allclose(lifted, _segment_expected()['member'] + np.asarray(_xs()))
+
+
+@pytest.mark.parametrize('batch', [1, 2])
+def test_segment_leaves_take_a_member_axis(batch):
+    ensemble = StackedEnsemble(
+        N,
+        {'x': _xs(), 'o': _offsets().T},
+        {'x': 1, 'o': 'segment'},
+        axes={'x': 0, 'o': 1},
+        owner=jnp.asarray(OWNER),
+        policy=Policy(batch=batch),
+    )
+    out, kinds = map_reduce(_segment_apply, ensemble, SEGMENT_SPEC)
+    assert kinds == {'member': 1, 'segment': 'segment', 'total': 'segment_sum'}
+    expected = _segment_expected()
+    for key in expected:
+        assert_allclose(out[key], expected[key])
+    lifted = lift(lambda m: m['x'] + m['o'], ensemble)
+    assert isinstance(lifted, StackedEnsemble)
+    assert_allclose(lifted.stacked, expected['member'])
+
+
+def test_lift_rejects_ensembles_in_different_segments():
+    owner = jnp.asarray([0, 0, 1, 1, 2, 2, 3, 3])
+    other = StackedEnsemble(N, {'o': _offsets()}, 'segment', owner=owner)
+    with pytest.raises(ValueError, match='different segments'):
+        lift(lambda a, b: a['x'] + b['o'], _segmented(), other)
+
+
 @pytest.mark.distributed
 class TestSharded:
     def _mesh(self):
@@ -627,3 +799,27 @@ class TestSharded:
         ensemble = dataclasses.replace(base, stacked=stacked, policy=Policy(axis='obs'))
         with pytest.raises(ValueError, match='different meshes'):
             map_reduce(_apply, ensemble, {'sum': 'sum', 'stack': 1, 'shared': None}, 1.0)
+
+    def _pair_mesh(self):
+        return jax.make_mesh((2,), ('obs',), devices=jax.devices()[:2])
+
+    @pytest.mark.parametrize('representation', ['stacked', 'host'])
+    def test_segments_split_over_the_devices(self, representation):
+        valid = np.array([True] * 7 + [False])
+        expected = _segment_expected(valid)
+        with jax.set_mesh(self._pair_mesh()):
+            if representation == 'stacked':
+                ensemble = _segmented(valid=jnp.asarray(valid)).shard('obs')
+            else:
+                ensemble = _host_segmented(valid=valid, policy=Policy(axis='obs'))
+            out, _ = map_reduce(_segment_apply, ensemble, SEGMENT_SPEC)
+            assert out['total'].sharding.spec[0] == 'obs'  # each device keeps its segments
+            for key in expected:
+                assert_allclose(out[key], expected[key])
+
+    def test_members_must_own_segments_of_their_device(self):
+        # member 3, on the first device, owning segment 2 of the second
+        owner = jnp.asarray([0, 0, 0, 2, 2, 3, 3, 3])
+        ensemble = StackedEnsemble(N, {'o': _offsets()}, 'segment', owner=owner)
+        with jax.set_mesh(self._pair_mesh()), pytest.raises(ValueError, match='own segments'):
+            ensemble.shard('obs')

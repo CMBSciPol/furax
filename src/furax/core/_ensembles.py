@@ -17,6 +17,11 @@ The ensemble's data can be held in three ways, which decide what the engine may 
   member axis, the only representation that can be batched and sharded;
 - [`HostEnsemble`][furax.core.HostEnsemble]: members read from the host, one round at a time,
   while the devices evaluate the current round.
+
+The members may be grouped into **segments** of consecutive members, such as the detector tiles
+of one observation, through an `owner` index: `owner[i]` is the segment of member i. A stacked
+leaf of stride `'segment'` has one entry per segment, read by every member of that segment, and
+the outputs `'segment'` and `'segment_sum'` keep one entry per segment.
 """
 
 import dataclasses
@@ -29,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.core import Tracer
 from jax.extend.core import Literal as JaxprLiteral
 from jax.extend.core import jaxpr_as_fun
 from jax.sharding import AbstractMesh, Mesh
@@ -48,13 +54,15 @@ __all__ = [
     'map_reduce',
 ]
 
-type Stride = int | None
-"""Members per entry on a leaf's leading axis: 1, s, or None for a leaf shared by the ensemble."""
+type Stride = int | None | Literal['segment']
+"""Members per entry on a leaf's member axis: 1, s, None for a leaf shared by the ensemble, or
+`'segment'` for one entry per segment, member i reading entry `owner[i]`."""
 
-type OutSpec = PyTree[Literal['sum', 'auto'] | Stride]
+type OutSpec = PyTree[Literal['sum', 'segment_sum', 'auto'] | Stride]
 """How the members combine, per output leaf, as a prefix of the output tree: `'sum'` reduces the
-leaf over the ensemble; a stride keeps it, with one entry per member (1), per run of s members (s)
-or for the whole ensemble (None); `'auto'` resolves to 1 or None from the traced computation."""
+leaf over the ensemble, `'segment_sum'` over the members of each segment; a stride keeps it, with
+one entry per member (1), per run of s members (s), per segment (`'segment'`) or for the whole
+ensemble (None); `'auto'` resolves to 1, `'segment'` or None from the traced computation."""
 
 
 @dataclass(frozen=True)
@@ -165,6 +173,16 @@ class Ensemble(ABC):
             """How [`map_reduce`][furax.core.map_reduce] walks this ensemble."""
             ...
 
+        @property
+        def owner(self) -> Any:
+            """The segment of each member, None when the members are not grouped in segments."""
+            ...
+
+        @property
+        def segments(self) -> int | None:
+            """The number of segments, None without `owner`."""
+            ...
+
     @abstractmethod
     def fetch(self, i: Int[Array, ''] | int) -> PyTree[Any]:
         """Member `i`."""
@@ -190,6 +208,14 @@ class Ensemble(ABC):
     def _member_axes(self) -> list[int]:
         """The member axis of each member-carrying array, aligned with `_arrays()[0]`."""
         return [0] * len(self._arrays()[0])
+
+    @abstractmethod
+    def _seeds(self) -> tuple[list[Any], list[Literal['member', 'segment'] | None], Any]:
+        """The template's leaves, what each varies with, and the template's treedef.
+
+        A leaf varies with the member, with the segment, or with neither (None). They seed the
+        dataflow analysis that resolves `'auto'` outputs.
+        """
 
     def _mesh(self, axis: str) -> Mesh | AbstractMesh | None:
         """The mesh carrying `axis`, read from the shardings of the ensemble's arrays.
@@ -250,6 +276,14 @@ class ListEnsemble(Ensemble):
         return len(self.members)
 
     @property
+    def owner(self) -> None:
+        return None
+
+    @property
+    def segments(self) -> None:
+        return None
+
+    @property
     def template(self) -> PyTree[Any]:
         leaves, _, is_array, treedef = self._parts()
         return jax.tree.unflatten(
@@ -288,6 +322,10 @@ class ListEnsemble(Ensemble):
     def _arrays(self) -> tuple[list[Array], list[Array]]:
         _, arrays, _, _ = self._parts()
         return [leaf for member in arrays for leaf in member], []
+
+    def _seeds(self) -> tuple[list[Any], list[Literal['member', 'segment'] | None], Any]:
+        leaves, treedef = jax.tree.flatten(self.template)
+        return leaves, ['member' if _is_abstract(leaf) else None for leaf in leaves], treedef
 
     def _body(
         self, apply: Callable[..., PyTree[Array]], args_def: Any, batch: int, out_axes: Any = 0
@@ -328,13 +366,31 @@ class StackedEnsemble(Ensemble):
     transposition. This is the only representation the engine can batch (`Policy.batch`) and
     shard (`Policy.axis`); the stacked outputs of `map_reduce` come back as one, with leading
     member axes.
+
+    Members can also be grouped into segments of varying length through `owner`. A leaf with
+    stride `'segment'` has `segments` entries on its member axis, member i reading entry
+    `owner[i]`. A stride-s leaf shares an entry between s consecutive members; a segment leaf
+    lets that number vary from one entry to the next.
+
+    Examples:
+        Five members in two segments, of three and two members: each reads its segment's offset.
+
+        >>> ensemble = StackedEnsemble(
+        ...     5,
+        ...     {'x': jnp.arange(5.0), 'offset': jnp.array([10.0, 20.0])},
+        ...     {'x': 1, 'offset': 'segment'},
+        ...     owner=jnp.array([0, 0, 0, 1, 1]),
+        ... )
+        >>> out, _ = map_reduce(lambda m: m['x'] + m['offset'], ensemble, 1)
+        >>> out.tolist()
+        [10.0, 11.0, 12.0, 23.0, 24.0]
     """
 
     size: int
     """The number of members."""
     stacked: PyTree[Any]
     """The members' pytree; an array leaf of stride s has `size // s` entries on its member
-    axis."""
+    axis, one of stride `'segment'` has `segments`."""
     strides: PyTree[Stride] = 1
     """The stride of each leaf of `stacked`, or one stride for all; canonicalized at construction
     to one stride per leaf, non-array leaves getting None."""
@@ -343,6 +399,12 @@ class StackedEnsemble(Ensemble):
     construction to one non-negative axis per leaf, None on the shared leaves."""
     valid: Bool[Array, ' _n'] | None = None
     policy: Policy = Policy()
+    owner: Int[Array, ' _n'] | None = None
+    """The segment of each member, if the members are grouped in segments. Laid out over a mesh
+    axis, the segments are split over the devices like the members: the members of device d own
+    segments of the d-th block of `segments / devices`."""
+    segments: int | None = None
+    """The number of segments; by default, the entries of the segment leaves."""
 
     def __post_init__(self) -> None:
         # Canonicalize `strides` and `axes` to one value per leaf, so that flattening the ensemble
@@ -352,8 +414,18 @@ class StackedEnsemble(Ensemble):
         leaves = jax.tree.leaves(self.stacked)
         object.__setattr__(self, 'strides', _normalized_strides(leaves, self.strides))
         object.__setattr__(self, 'axes', _normalized_axes(leaves, self.strides, self.axes))
+        segments = self.segments
         for leaf, stride, axis in zip(leaves, self.strides, self.axes, strict=True):
             if stride is None:
+                continue
+            if stride == 'segment':
+                if segments is None:
+                    segments = leaf.shape[axis]
+                if leaf.shape[axis] != segments:
+                    raise ValueError(
+                        f'a segment leaf of {segments} segments has shape {leaf.shape} '
+                        f'on member axis {axis}'
+                    )
                 continue
             if self.size % stride:
                 raise ValueError(f'stride {stride} does not divide {self.size} members')
@@ -362,6 +434,8 @@ class StackedEnsemble(Ensemble):
                     f'a stride-{stride} leaf of {self.size} members has '
                     f'{self.size // stride} entries on axis {axis}, got shape {leaf.shape}'
                 )
+        object.__setattr__(self, 'segments', segments)
+        _check_segments(self.owner, segments, self.size, 1)
 
     @property
     def size_per_device(self) -> int:
@@ -385,7 +459,9 @@ class StackedEnsemble(Ensemble):
         picked = [
             leaf
             if s is None
-            else jax.lax.dynamic_index_in_dim(leaf, i // s, axis=a, keepdims=False)
+            else jax.lax.dynamic_index_in_dim(
+                leaf, _entry(i, s, self.owner), axis=a, keepdims=False
+            )
             for leaf, s, a in zip(leaves, strides, self.axes)
         ]
         return jax.tree.unflatten(jax.tree.structure(self.stacked), picked)
@@ -401,41 +477,59 @@ class StackedEnsemble(Ensemble):
             axes=self.axes + x_axes,
             valid=self.valid,
             policy=self.policy,
+            owner=self.owner,
+            segments=self.segments,
         )
 
     def shard(self, axis: str) -> 'StackedEnsemble':
         """The ensemble laid out over a mesh axis: consecutive members on each device.
 
-        The strided leaves are split over their member axis and `valid` over its leading axis,
-        the shared leaves are replicated, and the returned ensemble's policy records the axis.
-        The engine reads the mesh back from the laid-out leaves, so the ensemble evaluates from
-        any thread, not only the one that set the mesh.
+        The strided and segment leaves are split over their member axis, `valid` and `owner` over
+        their leading axis, the shared leaves are replicated, and the returned ensemble's policy
+        records the axis. The engine reads the mesh back from the laid-out leaves, so the
+        ensemble evaluates from any thread, not only the one that set the mesh.
+
+        Raises:
+            ValueError: If the members or the segments do not split over the devices, or if a
+                member owns a segment of another device.
         """
         devices = _axis_size(axis)
         leaves, strides = self._leaves_and_strides()
         for leaf, s, a in zip(leaves, strides, self.axes):
             if s is not None and leaf.shape[a] % devices:
                 raise ValueError(f'{leaf.shape[a]} entries do not split over {devices} devices')
+        _check_segments(self.owner, self.segments, self.size, devices)
         placed = [
             leaf if s is None else jax.device_put(leaf, P(*(None,) * a, axis))
             for leaf, s, a in zip(leaves, strides, self.axes)
         ]
         valid = None if self.valid is None else jax.device_put(self.valid, P(axis))
+        owner = None if self.owner is None else jax.device_put(self.owner, P(axis))
         return dataclasses.replace(
             self,
             stacked=jax.tree.unflatten(jax.tree.structure(self.stacked), placed),
             valid=valid,
+            owner=owner,
             policy=dataclasses.replace(self.policy, axis=axis),
         )
 
     def _arrays(self) -> tuple[list[Array], list[Array]]:
+        # the segment leaves and the owner index come last, see `_body`
         leaves, strides = self._leaves_and_strides()
-        member = [leaf for leaf, s in zip(leaves, strides) if s is not None]
+        member = [leaf for leaf, s in zip(leaves, strides) if isinstance(s, int)]
+        member += [leaf for leaf, s in zip(leaves, strides) if s == 'segment']
+        if self.owner is not None and 'segment' in strides:
+            member.append(self.owner)
         fixed = [leaf for leaf, s in zip(leaves, strides) if s is None and _is_array(leaf)]
         return member, fixed
 
     def _member_axes(self) -> list[int]:
-        return [a for s, a in zip(self.strides, self.axes) if s is not None]
+        strided = [a for s, a in zip(self.strides, self.axes) if isinstance(s, int)]
+        segment = [a for s, a in zip(self.strides, self.axes) if s == 'segment']
+        return strided + segment + [0] * bool(segment and self.owner is not None)
+
+    def _seeds(self) -> tuple[list[Any], list[Literal['member', 'segment'] | None], Any]:
+        return _seeded(self.template, self.strides)
 
     def _body(
         self, apply: Callable[..., PyTree[Array]], args_def: Any, batch: int, out_axes: Any = 0
@@ -443,25 +537,37 @@ class StackedEnsemble(Ensemble):
         leaves, strides = self._leaves_and_strides()
         axes = self.axes
         treedef = jax.tree.structure(self.stacked)
-        member_at = [i for i, s in enumerate(strides) if s is not None]
+        member_at = [i for i, s in enumerate(strides) if isinstance(s, int)]
+        member_at += [i for i, s in enumerate(strides) if s == 'segment']
         fixed_at = [i for i, s in enumerate(strides) if s is None and _is_array(leaves[i])]
-        n_member, n_fixed = len(member_at), len(fixed_at)
+        has_owner = 'segment' in strides
+        n_member = len(member_at) + has_owner
+        n_fixed = len(fixed_at)
 
         def merged(flat: tuple[Array, ...]) -> list[Any]:
             full = list(leaves)
-            for i, leaf in zip(member_at + fixed_at, flat[: n_member + n_fixed]):
+            for i, leaf in zip(member_at, flat):
+                full[i] = leaf
+            for i, leaf in zip(fixed_at, flat[n_member : n_member + n_fixed]):
                 full[i] = leaf
             return full
 
         def body(g: Int[Array, ''], *flat: Array) -> PyTree[Array]:
             args = jax.tree.unflatten(args_def, flat[n_member + n_fixed :])
             full = merged(flat)
+            owner = None
+            if has_owner:
+                # the device's own block of segments: the remainder is the local entry
+                first = member_at[-1]
+                owner = flat[n_member - 1] % full[first].shape[axes[first]]
             start = g * batch
             if batch == 1:
                 picked = [
                     leaf
                     if s is None
-                    else jax.lax.dynamic_index_in_dim(leaf, start // s, axis=a, keepdims=False)
+                    else jax.lax.dynamic_index_in_dim(
+                        leaf, _entry(start, s, owner), axis=a, keepdims=False
+                    )
                     for leaf, s, a in zip(full, strides, axes)
                 ]
                 return apply(jax.tree.unflatten(treedef, picked), *args)
@@ -471,6 +577,11 @@ class StackedEnsemble(Ensemble):
                 if s is None:
                     batched.append(None)
                     shared.append(leaf)
+                elif s == 'segment':
+                    assert owner is not None  # a segment leaf comes with an owner index
+                    entries = jax.lax.dynamic_slice_in_dim(owner, start, batch)
+                    batched.append(jnp.take(leaf, entries, axis=a))
+                    shared.append(None)
                 elif s >= batch:
                     batched.append(None)
                     shared.append(
@@ -514,6 +625,11 @@ class HostEnsemble(Ensemble):
     the mesh axis, in position order: device d holds the outputs of members
     `d * size_per_device + [0, size_per_device)`, ready to be used as the leaves of a resident
     [`StackedEnsemble`][furax.core.StackedEnsemble] with the same layout.
+
+    With `owner`, the members are grouped in segments as in a `StackedEnsemble`, and the outputs
+    `'segment'` and `'segment_sum'` land sharded over the mesh axis, device d holding the d-th
+    block of `segments / devices` segments. `read` returns every per-member leaf, those of stride
+    `'segment'` included: the stride only tells `'auto'` that they vary with the segment.
     """
 
     size: int
@@ -530,6 +646,25 @@ class HostEnsemble(Ensemble):
     """Whether to read the next round while the devices evaluate the current one; set it to False
     on devices that share the host's memory, where the next round's buffers would compete with the
     current round's working set."""
+    strides: PyTree[Literal[1, 'segment'] | None] = 1
+    """Per leaf of `template`, or one for all: 1 for a leaf that varies with the member,
+    `'segment'` for one that varies with its segment only; canonicalized at construction, the
+    shared leaves getting None."""
+    owner: np.ndarray | None = None
+    """The segment of each member, if the members are grouped in segments: the members of device
+    d own segments of the d-th block of `segments / devices`."""
+    segments: int | None = None
+    """The number of segments, given with `owner`."""
+
+    def __post_init__(self) -> None:
+        leaves = jax.tree.leaves(self.template)
+        strides = _normalized_strides(leaves, self.strides, is_member=_is_abstract)
+        object.__setattr__(self, 'strides', strides)
+        if any(s not in (1, 'segment', None) for s in strides):
+            raise ValueError(f"the strides of a host ensemble are 1 or 'segment', got {strides}")
+        if 'segment' in strides and self.owner is None:
+            raise ValueError("a 'segment' leaf needs an owner index")
+        _check_segments(self.owner, self.segments, self.size, 1)
 
     @property
     def size_per_device(self) -> int:
@@ -545,6 +680,9 @@ class HostEnsemble(Ensemble):
     def _arrays(self) -> tuple[list[Array], list[Array]]:
         leaves, is_member, _ = self._parts()
         return [], [leaf for leaf, flag in zip(leaves, is_member) if not flag and _is_array(leaf)]
+
+    def _seeds(self) -> tuple[list[Any], list[Literal['member', 'segment'] | None], Any]:
+        return _seeded(self.template, self.strides)
 
     def _body(
         self, apply: Callable[..., PyTree[Array]], args_def: Any, batch: int, out_axes: Any = 0
@@ -571,7 +709,7 @@ class HostEnsemble(Ensemble):
 
     def _parts(self) -> tuple[list[Any], list[bool], Any]:
         leaves, treedef = jax.tree.flatten(self.template)
-        is_member = [isinstance(leaf, jax.ShapeDtypeStruct) for leaf in leaves]
+        is_member = [_is_abstract(leaf) for leaf in leaves]
         return leaves, is_member, treedef
 
 
@@ -581,7 +719,7 @@ def map_reduce(
     out_spec: OutSpec,
     *args: Any,
     out_axes: PyTree[int] = 0,
-) -> tuple[PyTree[Array], PyTree[Literal['sum'] | Stride]]:
+) -> tuple[PyTree[Array], PyTree[Literal['sum', 'segment_sum'] | Stride]]:
     """`apply` on every member of an ensemble, its outputs combined over the members.
 
     The members are evaluated in rounds of `ensemble.policy.batch`, one round after the other by a
@@ -597,7 +735,7 @@ def map_reduce(
     the current mesh, so the evaluation does not depend on the thread-local mesh of the calling
     thread. The summed outputs are summed across the devices and held
     by all of them; the stacked outputs stay with the devices that computed them, in position
-    order.
+    order, as do those kept per segment, device d holding its block of segments.
 
     Args:
         apply: The computation, from one member and `args` to a pytree of arrays.
@@ -605,16 +743,19 @@ def map_reduce(
         out_spec: How each output leaf combines over the members, as a prefix of the output tree:
             `'sum'` reduces it (padded members masked); stride 1 stacks one entry per member along
             a new leading axis; stride s keeps one entry per run of s members sharing it; stride
-            None keeps one entry, the same for every member. `'auto'` resolves to 1 or None by
-            whether the leaf depends on the member in the traced computation. A declared stride is
-            a promise the engine does not check.
+            None keeps one entry, the same for every member. With an owner index, `'segment_sum'`
+            sums the members of each segment into one entry per segment (padded members masked),
+            and `'segment'` keeps one entry per segment, the same for its members. A segment
+            without valid members holds zeros. `'auto'` resolves to 1, `'segment'` or None by
+            whether the leaf depends on the member, on its segment only, or on neither, in the
+            traced computation. A declared stride is a promise the engine does not check.
         *args: The shared inputs, which every member receives whole.
         out_axes: Where the member axis of each stacked output leaf goes, leading by default, as
             a non-negative value or a prefix of the output tree: the engine writes each member's
             entry along that axis in place, without transposition, so an output can keep the
             layout of a [`StackedEnsemble`][furax.core.StackedEnsemble] input with the same
-            `axes`. Ignored on the summed and shared leaves. A host ensemble stacks its outputs
-            member-leading only.
+            `axes`. Ignored on the summed and shared leaves, and on those kept per segment, which
+            are segment-leading. A host ensemble stacks its outputs member-leading only.
 
     Returns:
         The outputs of `apply` combined over the members, and the output specification with
@@ -641,8 +782,9 @@ def lift(f: Callable[..., PyTree[Any]], *ensembles: Ensemble) -> Ensemble:
     **structural** `f` -- one that only rearranges its members' leaves, such as composing or
     transposing operators -- is detected by tracking leaf identity, and the output ensemble reuses
     the input arrays with their strides, at no cost. Otherwise `f` is vectorized by `jax.vmap`
-    over the member axis, stride-s leaves expanded to one entry per member, and the output leaves
-    come back with stride 1.
+    over the member axis, stride-s and segment leaves expanded to one entry per member, and the
+    output leaves come back with stride 1. Stacked ensembles grouped in segments must share their
+    owner index, which the output keeps.
 
     Args:
         f: From one member per ensemble to a pytree: an operator constructor, a composition,
@@ -685,7 +827,7 @@ def _lift_stacked(f: Callable[..., PyTree[Any]], ensembles: Sequence[StackedEnse
         leaves, strides = e._leaves_and_strides()
         flats.append(
             [
-                leaf if s is None else _expanded(leaf, s, size, a)
+                leaf if s is None else _expanded(leaf, s, size, e.owner, a)
                 for leaf, s, a in zip(leaves, strides, e.axes)
             ]
         )
@@ -697,8 +839,15 @@ def _lift_stacked(f: Callable[..., PyTree[Any]], ensembles: Sequence[StackedEnse
     is_array = [_is_array(leaf) for leaf in out_leaves]
     stacked = _rebuild(out_treedef, out_leaves, is_array, list(out_arrays))
     strides = jax.tree.unflatten(out_treedef, [1 if flag else None for flag in is_array])
+    owner, segments = _common_owner(ensembles)
     return StackedEnsemble(
-        size, stacked, strides, valid=ensembles[0].valid, policy=ensembles[0].policy
+        size,
+        stacked,
+        strides,
+        valid=ensembles[0].valid,
+        policy=ensembles[0].policy,
+        owner=owner,
+        segments=segments,
     )
 
 
@@ -745,6 +894,7 @@ def _lift_structural(
             stacked.append(leaf)
             strides.append(None)
             axes.append(None)
+    owner, segments = _common_owner(ensembles)
     return StackedEnsemble(
         ensembles[0].size,
         jax.tree.unflatten(out_treedef, stacked),
@@ -752,6 +902,8 @@ def _lift_structural(
         axes=jax.tree.unflatten(out_treedef, axes),
         valid=ensembles[0].valid,
         policy=ensembles[0].policy,
+        owner=owner,
+        segments=segments,
     )
 
 
@@ -761,7 +913,7 @@ def _resident_map_reduce(
     out_spec: OutSpec,
     args: tuple[Any, ...],
     out_axes: PyTree[int] = 0,
-) -> tuple[PyTree[Array], PyTree[Literal['sum'] | Stride]]:
+) -> tuple[PyTree[Array], PyTree[Literal['sum', 'segment_sum'] | Stride]]:
     if any(
         not isinstance(a, int) or isinstance(a, bool) or a < 0 for a in jax.tree.leaves(out_axes)
     ):
@@ -781,6 +933,7 @@ def _resident_map_reduce(
     rounds, remainder = divmod(per_device, batch)
     if remainder:
         raise ValueError(f'rounds of {batch} members do not divide {per_device} members')
+    segments = _local_segments(ensemble, devices)
 
     member_arrays, fixed_arrays = ensemble._arrays()
     member_axes = ensemble._member_axes()
@@ -788,8 +941,8 @@ def _resident_map_reduce(
     body = ensemble._body(apply, args_def, batch)
 
     # The round body is traced once, on per-device shapes, with the member-carrying arrays as
-    # inputs; the loop then evaluates the trace, and `'auto'` is resolved on it before any
-    # collective is laid out.
+    # inputs; the loop then evaluates the trace, and `'auto'` is resolved before any collective
+    # is laid out.
     local = [
         jax.ShapeDtypeStruct((*x.shape[:a], x.shape[a] // devices, *x.shape[a + 1 :]), x.dtype)
         for x, a in zip(member_arrays, member_axes)
@@ -797,11 +950,19 @@ def _resident_map_reduce(
     closed, out_shape = jax.make_jaxpr(body, return_shape=True)(
         jnp.zeros((), jnp.int32), *local, *fixed_arrays, *args_leaves
     )
-    kinds = _resolved_kinds(out_spec, out_shape, closed, 1 + len(member_arrays), per_device, batch)
+    seeds = closed.jaxpr.invars[: 1 + len(member_arrays)]  # the round index, the member arrays
+    kinds = _resolved_kinds(
+        out_spec,
+        out_shape,
+        lambda: _dependence(apply, ensemble, args, closed, seeds),
+        per_device,
+        batch,
+        ensemble.owner is not None,
+    )
 
     # The member axis of a stacked output leaf goes where `out_axes` says: the round outputs and
     # the accumulation buffers carry it there from the start, so nothing is transposed. The other
-    # leaves keep their round batch axis leading. A vectorized body places the batch axis itself,
+    # leaves, those kept per segment included, keep their round batch axis leading. A vectorized body places the batch axis itself,
     # which needs a second trace -- only when a non-leading axis is actually requested.
     axes_flat = [
         a if isinstance(kind, int) else 0
@@ -818,50 +979,71 @@ def _resident_map_reduce(
         )
 
     valid = ensemble.valid
-    if valid is not None and not any(kind == 'sum' for kind in kinds):
+    if valid is not None and not any(kind in ('sum', 'segment_sum') for kind in kinds):
         valid = None
+    owner = ensemble.owner if any(_is_segment(kind) for kind in kinds) else None
 
     def run(
-        member: list[Array], use: Array | None, fixed_and_args: list[Array]
+        member: list[Array], use: Array | None, entries: Array | None, fixed_and_args: list[Array]
     ) -> tuple[list[Array], ...]:
         local = closed
         if policy.axis is not None:
             # Avals are typed by the mesh context, so the trace made outside, under the explicit
             # mesh, cannot be evaluated inside the shard: trace the same body again in its context.
             local = jax.make_jaxpr(body)(jnp.zeros((), jnp.int32), *member, *fixed_and_args)
+        if entries is not None:
+            assert segments is not None
+            entries = entries % segments  # the device's own block of segments
         return _loop(
-            local, kinds, axes_flat, batch, rounds, per_device, [*member, *fixed_and_args], use
+            local,
+            kinds,
+            axes_flat,
+            batch,
+            rounds,
+            per_device,
+            segments,
+            [*member, *fixed_and_args],
+            use,
+            entries,
         )
 
     if policy.axis is None:
-        sums, shareds, stacks = run(member_arrays, valid, [*fixed_arrays, *args_leaves])
+        sums, shareds, stacks = run(member_arrays, valid, owner, [*fixed_arrays, *args_leaves])
     else:
         axis = policy.axis
         n_member = len(member_arrays)
         has_valid = valid is not None
+        has_owner = owner is not None
 
         def block(*flat: Array) -> tuple[Array, ...]:
             member = list(flat[:n_member])
             use = flat[n_member] if has_valid else None
-            rest = list(flat[n_member + has_valid :])
-            sums, shareds, stacks = run(member, use, rest)
+            entries = flat[n_member + has_valid] if has_owner else None
+            rest = list(flat[n_member + has_valid + has_owner :])
+            sums, shareds, stacks = run(member, use, entries, rest)
             sums = [jax.lax.psum(x, axis) for x in sums]
             return (*sums, *shareds, *stacks)
 
         n_sums = sum(kind == 'sum' for kind in kinds)
-        n_stacks = sum(isinstance(kind, int) for kind in kinds)
+        n_stacks = sum(_is_stacked(kind) for kind in kinds)
         n_shareds = len(kinds) - n_sums - n_stacks
         in_specs = (
             tuple(P(*(None,) * a, axis) for a in member_axes)
-            + ((P(axis),) if has_valid else ())
+            + (P(axis),) * (has_valid + has_owner)
             + (P(),) * (len(fixed_arrays) + len(args_leaves))
         )
         out_specs = (P(),) * (n_sums + n_shareds) + tuple(
-            P(*(None,) * a, axis) for kind, a in zip(kinds, axes_flat) if isinstance(kind, int)
+            P(*(None,) * a, axis) for kind, a in zip(kinds, axes_flat) if _is_stacked(kind)
         )
         flat = jax.shard_map(
             block, mesh=mesh, in_specs=in_specs, out_specs=out_specs, check_vma=False
-        )(*member_arrays, *([valid] if has_valid else []), *fixed_arrays, *args_leaves)
+        )(
+            *member_arrays,
+            *([valid] if has_valid else []),
+            *([owner] if has_owner else []),
+            *fixed_arrays,
+            *args_leaves,
+        )
         sums = list(flat[:n_sums])
         shareds = list(flat[n_sums : n_sums + n_shareds])
         stacks = list(flat[n_sums + n_shareds :])
@@ -874,7 +1056,7 @@ def _host_map_reduce(
     ensemble: HostEnsemble,
     out_spec: OutSpec,
     args: tuple[Any, ...],
-) -> tuple[PyTree[Array], PyTree[Literal['sum'] | Stride]]:
+) -> tuple[PyTree[Array], PyTree[Literal['sum', 'segment_sum'] | Stride]]:
     policy = ensemble.policy
     batch = policy.batch
     axis = policy.axis
@@ -890,6 +1072,8 @@ def _host_map_reduce(
     rounds, remainder = divmod(per_device, batch)
     if remainder:
         raise ValueError(f'rounds of {batch} members do not divide {per_device} members')
+    segments = _local_segments(ensemble, devices)
+    _check_segments(ensemble.owner, ensemble.segments, ensemble.size, devices)
 
     leaves, is_member, _ = ensemble._parts()
     member_structs = [leaf for leaf, flag in zip(leaves, is_member) if flag]
@@ -901,21 +1085,31 @@ def _host_map_reduce(
     closed, out_shape = jax.make_jaxpr(body, return_shape=True)(
         *round_structs, *fixed_arrays, *args_leaves
     )
-    kinds = _resolved_kinds(out_spec, out_shape, closed, len(member_structs), per_device, batch)
+    seeds = closed.jaxpr.invars[: len(member_structs)]
+    kinds = _resolved_kinds(
+        out_spec,
+        out_shape,
+        lambda: _dependence(apply, ensemble, args, closed, seeds),
+        per_device,
+        batch,
+        ensemble.owner is not None,
+    )
     traced = jaxpr_as_fun(closed)
     member_shapes = [
         (aval.shape[1:] if batch > 1 else aval.shape, aval.dtype) for aval in closed.out_avals
     ]
 
     valid = ensemble.valid
-    if valid is not None and not any(kind == 'sum' for kind in kinds):
+    if valid is not None and not any(kind in ('sum', 'segment_sum') for kind in kinds):
         valid = None
+    owner = ensemble.owner if any(_is_segment(kind) for kind in kinds) else None
 
     def step(
         carry: tuple[list[Array], list[Array]],
         g: Int[Array, ''],
         round_arrays: list[Array],
         use: Array | None,
+        entries: Array | None,
         fixed_and_args: list[Array],
     ) -> tuple[tuple[list[Array], list[Array]], list[Array]]:
         # The summed carries have a leading device axis, so each device accumulates its partial.
@@ -925,8 +1119,21 @@ def _host_map_reduce(
             run = jaxpr_as_fun(jax.make_jaxpr(body)(*round_arrays, *fixed_and_args))
         sums, stacks = carry
         out = list(run(*round_arrays, *fixed_and_args))
+        if use is not None and batch == 1:
+            use = use[0]
+        if entries is not None and batch == 1:
+            entries = entries[0]
         new_sums, new_stacks, shareds = _combined(
-            out, kinds, [0] * len(kinds), [x[0] for x in sums], stacks, g, batch, use
+            out,
+            kinds,
+            [0] * len(kinds),
+            [x[0] for x in sums],
+            stacks,
+            g,
+            batch,
+            segments,
+            use,
+            entries,
         )
         return ([x[None] for x in new_sums], new_stacks), shareds
 
@@ -935,7 +1142,7 @@ def _host_map_reduce(
         launch = jax.shard_map(
             step,
             mesh=mesh,
-            in_specs=((P(axis), P(axis)), P(), P(axis), P(axis), P()),
+            in_specs=((P(axis), P(axis)), P(), P(axis), P(axis), P(axis), P()),
             out_specs=((P(axis), P(axis)), P()),
             check_vma=False,
         )
@@ -968,9 +1175,9 @@ def _host_map_reduce(
         if kind == 'sum'
     ]
     init_stacks = [
-        zeros((ensemble.size // kind, *shape), dtype)
+        zeros((devices * _stack_length(kind, per_device, segments), *shape), dtype)
         for (shape, dtype), kind in zip(member_shapes, kinds)
-        if isinstance(kind, int)
+        if _is_stacked(kind)
     ]
 
     def assemble(stacks: list[list[np.ndarray]]) -> list[Array]:
@@ -987,7 +1194,12 @@ def _host_map_reduce(
             placed.append(jax.make_array_from_single_device_arrays(shape, sharding, shards))
         return placed
 
-    def read_round(g: int) -> tuple[list[Array], Array | None]:
+    def per_row(values: np.ndarray, positions: list[int]) -> Array:
+        """One value per member of the round, as an array sharded over the mesh axis."""
+        rows = np.asarray([values[p] for p in positions]).reshape(len(local_rows), batch)
+        return assemble([[rows[r] for r in range(len(local_rows))]])[0]
+
+    def read_round(g: int) -> tuple[list[Array], Array | None, Array | None]:
         # the device of row r evaluates positions r * per_device + g * batch + [0, batch)
         positions = [r * per_device + g * batch + i for r in local_rows for i in range(batch)]
         with ThreadPoolExecutor(len(positions)) as pool:
@@ -1000,22 +1212,23 @@ def _host_map_reduce(
             for j in range(len(member_structs))
         ]
         arrays = assemble(by_member)
-        use = None
-        if valid is not None:
-            flags = np.asarray([valid[p] for p in positions]).reshape(len(local_rows), batch)
-            use = assemble([[flags[r] for r in range(len(local_rows))]])[0]
-        return arrays, use
+        use = None if valid is None else per_row(np.asarray(valid), positions)
+        entries = None
+        if owner is not None:
+            assert segments is not None
+            entries = per_row(np.asarray(owner) % segments, positions)
+        return arrays, use, entries
 
     carry = (init_sums, init_stacks)
     shareds: list[Array] = []
     members = read_round(0)
     for g in range(rounds):
-        round_arrays, use = members
-        members = ([], None)  # a CPU read must not find the round's buffers still alive
+        round_arrays, use, entries = members
+        members = ([], None, None)  # a CPU read must not find the round's buffers still alive
         carry, shareds = launch(
-            carry, jnp.int32(g), round_arrays, use, [*fixed_arrays, *args_leaves]
+            carry, jnp.int32(g), round_arrays, use, entries, [*fixed_arrays, *args_leaves]
         )
-        del round_arrays, use
+        del round_arrays, use, entries
         last = g + 1 == rounds
         if ensemble.prefetch and not last:
             members = read_round(g + 1)  # while the devices compute
@@ -1034,13 +1247,17 @@ def _loop(
     batch: int,
     rounds: int,
     per_device: int,
+    segments: int | None,
     inputs: list[Array],
     valid: Array | None,
+    entries: Array | None,
 ) -> tuple[list[Array], list[Array], list[Array]]:
     """The loop over the rounds of one device: evaluate the trace, combine by kind.
 
     `axes` places the member axis of each stacked output, and locates the batch axis of each
-    round output when the rounds are vectorized (0 on the summed and shared leaves).
+    round output when the rounds are vectorized (0 on the summed, shared and per-segment
+    leaves). `entries` holds the local segment of each member of the device, if any output is
+    kept per segment.
     """
     traced = jaxpr_as_fun(closed)
     member_shapes = [
@@ -1058,23 +1275,35 @@ def _loop(
         if kind is None
     ]
     init_stacks = [
-        jnp.zeros((*shape[:a], per_device // kind, *shape[a:]), dtype)
+        jnp.zeros((*shape[:a], _stack_length(kind, per_device, segments), *shape[a:]), dtype)
         for ((shape, dtype), kind), a in zip(zip(member_shapes, kinds), axes)
-        if isinstance(kind, int)
+        if _is_stacked(kind)
     ]
+
+    def per_round(values: Array | None, g: Int[Array, '']) -> Array | None:
+        if values is None:
+            return None
+        if batch == 1:
+            return jax.lax.dynamic_index_in_dim(values, g, keepdims=False)
+        return jax.lax.dynamic_slice_in_dim(values, g * batch, batch)
 
     def step(
         g: Int[Array, ''], carry: tuple[list[Array], list[Array], list[Array]]
     ) -> tuple[list[Array], list[Array], list[Array]]:
         sums, _, stacks = carry  # the shared slots are replaced, the last round's survive
         out = list(traced(jnp.asarray(g, jnp.int32), *inputs))  # traced with an int32 index
-        use: Array | None = None
-        if valid is not None:
-            if batch == 1:
-                use = jax.lax.dynamic_index_in_dim(valid, g, keepdims=False)
-            else:
-                use = jax.lax.dynamic_slice_in_dim(valid, g * batch, batch)
-        new_sums, new_stacks, new_shareds = _combined(out, kinds, axes, sums, stacks, g, batch, use)
+        new_sums, new_stacks, new_shareds = _combined(
+            out,
+            kinds,
+            axes,
+            sums,
+            stacks,
+            g,
+            batch,
+            segments,
+            per_round(valid, g),
+            per_round(entries, g),
+        )
         return new_sums, new_shareds, new_stacks
 
     sums, shareds, stacks = jax.lax.fori_loop(
@@ -1091,9 +1320,18 @@ def _combined(
     stacks: list[Array],
     g: Int[Array, ''],
     batch: int,
+    segments: int | None,
     use: Array | None,
+    entries: Array | None,
 ) -> tuple[list[Array], list[Array], list[Array]]:
-    """One round's outputs folded into the carries: sums masked and added, stacks written."""
+    """One round's outputs folded into the carries: sums masked and added, stacks written.
+
+    `entries` holds the local segment of each member of the round, for the outputs kept per
+    segment; a padded member's entry is out of bounds, so its write is dropped.
+    """
+    if entries is not None and use is not None:
+        assert segments is not None  # entries come with the local segment count
+        entries = jnp.where(use, entries, segments)
     new_sums, new_stacks, shareds = [], [], []
     it_sums, it_stacks = iter(sums), iter(stacks)
     for leaf, kind, a in zip(out, kinds, axes):
@@ -1105,6 +1343,12 @@ def _combined(
             new_sums.append(next(it_sums) + contribution)
         elif kind is None:
             shareds.append(leaf if batch == 1 else leaf[0])
+        elif kind == 'segment_sum':
+            assert entries is not None
+            new_stacks.append(next(it_stacks).at[entries].add(leaf, mode='drop'))
+        elif kind == 'segment':
+            assert entries is not None
+            new_stacks.append(next(it_stacks).at[entries].set(leaf, mode='drop'))
         else:
             if batch == 1:
                 chunk = jnp.expand_dims(leaf, a)
@@ -1121,15 +1365,19 @@ def _combined(
 def _resolved_kinds(
     out_spec: OutSpec,
     out_shape: PyTree[Any],
-    closed: Any,
-    n_seeds: int,
+    dependence: Callable[[], list[Literal['member', 'segment'] | None]],
     per_device: int,
     batch: int,
+    has_owner: bool,
 ) -> list[Any]:
-    """The declared kinds broadcast over the output leaves, `'auto'` resolved from the trace."""
+    """The declared kinds broadcast over the output leaves, `'auto'` resolved by `dependence`."""
     declared = _spec_leaves(out_spec, out_shape)
     for kind in declared:
         if kind in ('sum', 'auto') or kind is None:
+            continue
+        if _is_segment(kind):
+            if not has_owner:
+                raise ValueError(f'the output kind {kind!r} needs an ensemble with an owner index')
             continue
         if isinstance(kind, int) and not isinstance(kind, bool) and kind >= 1:
             if per_device % kind:
@@ -1140,21 +1388,65 @@ def _resolved_kinds(
         raise ValueError(f'unknown output kind {kind!r}')
     if 'auto' not in declared:
         return list(declared)
-    dependent = _dependent_outputs(closed.jaxpr, n_seeds)
+    resolved = {'member': 1, 'segment': 'segment', None: None}
     return [
-        (1 if depends else None) if kind == 'auto' else kind
-        for kind, depends in zip(declared, dependent, strict=True)
+        resolved[depends] if kind == 'auto' else kind
+        for kind, depends in zip(declared, dependence(), strict=True)
     ]
 
 
-def _dependent_outputs(jaxpr: Any, n_seeds: int) -> list[bool]:
-    """Which outputs depend on the first `n_seeds` inputs, rather than only on the others.
+def _dependence(
+    apply: Callable[..., PyTree[Array]],
+    ensemble: Ensemble,
+    args: tuple[Any, ...],
+    body: Any,
+    body_seeds: Sequence[Any],
+) -> list[Literal['member', 'segment'] | None]:
+    """What each output of `apply` varies with: the member, its segment only, or neither.
+
+    Without segment leaves, the traced round `body` answers, seeded by its member-carrying inputs
+    `body_seeds`. Otherwise `apply` is traced again, on the template, whose per-member and
+    per-segment leaves seed the analysis: in the body, a segment leaf is read at `owner[i]`,
+    which depends on the member and would hide the difference.
+    """
+    leaves, classes, treedef = ensemble._seeds()
+    if 'segment' not in classes:
+        return [
+            'member' if depends else None for depends in _dependent_outputs(body.jaxpr, body_seeds)
+        ]
+    seeded = [i for i, c in enumerate(classes) if c is not None]
+    args_leaves, args_def = jax.tree.flatten(args)
+
+    def member(*flat: Any) -> PyTree[Array]:
+        full = list(leaves)
+        for i, leaf in zip(seeded, flat[: len(seeded)]):
+            full[i] = leaf
+        return apply(
+            jax.tree.unflatten(treedef, full), *jax.tree.unflatten(args_def, flat[len(seeded) :])
+        )
+
+    closed = jax.make_jaxpr(member)(*[leaves[i] for i in seeded], *args_leaves)
+    invars = closed.jaxpr.invars
+    by_member = _dependent_outputs(
+        closed.jaxpr, [v for i, v in zip(seeded, invars) if classes[i] == 'member']
+    )
+    by_segment = _dependent_outputs(
+        closed.jaxpr, [v for i, v in zip(seeded, invars) if classes[i] == 'segment']
+    )
+    return [
+        'member' if m else 'segment' if s else None
+        for m, s in zip(by_member, by_segment, strict=True)
+    ]
+
+
+def _dependent_outputs(jaxpr: Any, seeds: Iterable[Any]) -> list[bool]:
+    """Which outputs depend on the input variables `seeds`, rather than only on the others.
 
     One forward pass in program order: an operation with any dependent input makes all its
     outputs dependent. It is conservative, and sound: an output that does not depend on the
     member-carrying inputs cannot vary from one member to the next.
     """
-    dependent = set(jaxpr.invars[:n_seeds])
+    dependent = set(seeds)
     for eqn in jaxpr.eqns:
         if any(not isinstance(v, JaxprLiteral) and v in dependent for v in eqn.invars):
             dependent.update(eqn.outvars)
@@ -1206,11 +1498,66 @@ def _rebuild(
     )
 
 
-def _expanded(leaf: Array, stride: int, size: int, axis: int = 0) -> Array:
-    """A stride-s leaf with one entry per member, for leaves small enough to gather."""
+def _expanded(
+    leaf: Array, stride: int | str, size: int, owner: Array | None, axis: int = 0
+) -> Array:
+    """A strided or segment leaf with one entry per member, for leaves small enough to gather."""
+    if stride == 'segment':
+        assert owner is not None  # a segment leaf comes with an owner index
+        return jnp.take(leaf, owner, axis=axis)
+    assert isinstance(stride, int)
     if stride == 1:
         return leaf
     return jnp.repeat(leaf, stride, axis=axis, total_repeat_length=size)
+
+
+def _common_owner(ensembles: Sequence[StackedEnsemble]) -> tuple[Array | None, int | None]:
+    """The owner index and segment count the ensembles share, if any of them has one.
+
+    The owner indices are compared when their values are known; under a trace, sharing them is a
+    promise the engine does not check.
+
+    Raises:
+        ValueError: If two ensembles group their members differently.
+    """
+    grouped = [e for e in ensembles if e.owner is not None]
+    if not grouped:
+        return None, None
+    first = grouped[0]
+    for e in grouped[1:]:
+        if e.segments != first.segments:
+            raise ValueError('the lifted ensembles group their members in different segments')
+        if e.owner is first.owner or isinstance(e.owner, Tracer) or isinstance(first.owner, Tracer):
+            continue
+        if not np.array_equal(np.asarray(e.owner), np.asarray(first.owner)):
+            raise ValueError('the lifted ensembles group their members in different segments')
+    return first.owner, first.segments
+
+
+def _is_segment(kind: Any) -> bool:
+    return kind in ('segment', 'segment_sum')
+
+
+def _is_stacked(kind: Any) -> bool:
+    """Whether outputs of `kind` keep entries along a member axis, split over the devices."""
+    return _is_segment(kind) or (isinstance(kind, int) and not isinstance(kind, bool))
+
+
+def _stack_length(kind: Any, per_device: int, segments: int | None) -> int:
+    """The entries of one device for a stacked output of `kind`."""
+    if _is_segment(kind):
+        assert segments is not None
+        return segments
+    return per_device // kind
+
+
+def _local_segments(ensemble: Ensemble, devices: int) -> int | None:
+    """The segments of one device, None without an owner index."""
+    if ensemble.segments is None:
+        return None
+    if ensemble.segments % devices:
+        raise ValueError(f'{ensemble.segments} segments do not split over {devices} devices')
+    return ensemble.segments // devices
 
 
 def _axis_size(axis: str, mesh: Mesh | AbstractMesh | None = None) -> int:
@@ -1246,9 +1593,16 @@ def _abstract(leaf: Any) -> Any:
     return leaf
 
 
-def _normalized_strides(leaves: list[Any], strides: PyTree[Stride]) -> tuple[Stride, ...]:
-    """One stride per leaf, non-array leaves forced to None (they are shared)."""
-    if strides is None or isinstance(strides, int):
+def _normalized_strides(
+    leaves: list[Any], strides: PyTree[Stride], is_member: Callable[[Any], bool] | None = None
+) -> tuple[Stride, ...]:
+    """One stride per leaf, the leaves that are not `is_member` forced to None (they are shared).
+
+    By default, the member leaves are the arrays.
+    """
+    if is_member is None:
+        is_member = _is_array
+    if strides is None or isinstance(strides, int | str):
         flat: list[Stride] = [strides] * len(leaves)
     else:
         flat = jax.tree.flatten(strides, is_leaf=lambda x: x is None)[0]
@@ -1257,7 +1611,7 @@ def _normalized_strides(leaves: list[Any], strides: PyTree[Stride]) -> tuple[Str
                 f'{len(flat)} strides for {len(leaves)} leaves: strides must be a single '
                 f'value or a pytree aligned with the stacked leaves'
             )
-    return tuple(s if _is_array(leaf) else None for leaf, s in zip(leaves, flat))
+    return tuple(s if is_member(leaf) else None for leaf, s in zip(leaves, flat))
 
 
 def _normalized_axes(
@@ -1291,14 +1645,74 @@ def _is_array(leaf: Any) -> bool:
     return isinstance(leaf, jax.Array | np.ndarray)
 
 
+def _is_abstract(leaf: Any) -> bool:
+    return isinstance(leaf, jax.ShapeDtypeStruct)
+
+
+def _seeded(
+    template: PyTree[Any], strides: tuple[Stride, ...]
+) -> tuple[list[Any], list[Literal['member', 'segment'] | None], Any]:
+    """The `_seeds` of an ensemble with one stride per leaf of its template."""
+    leaves, treedef = jax.tree.flatten(template)
+    classes: list[Literal['member', 'segment'] | None] = [
+        None if s is None else 'segment' if s == 'segment' else 'member' for s in strides
+    ]
+    return leaves, classes, treedef
+
+
+def _entry(i: Int[Array, ''] | int, stride: int | str, owner: Int[Array, ' _n'] | None) -> Any:
+    """The entry of a leaf of `stride` that member `i` reads: `owner[i]` for a segment leaf."""
+    if stride == 'segment':
+        assert owner is not None  # a segment leaf comes with an owner index
+        return owner[i]
+    assert isinstance(stride, int)
+    return i // stride
+
+
+def _check_segments(owner: Any, segments: int | None, size: int, devices: int) -> None:
+    """Check an owner index against its segment count, and its members' placement on devices.
+
+    The members and the segments are split over `devices` in contiguous blocks; the members of
+    block d must own segments of block d. Under a trace, or held in part by other processes,
+    the values of `owner` are not known here and go unchecked.
+
+    Raises:
+        ValueError: If `owner` and `segments` do not come together, if `owner` is not one index
+            per member, or if a member owns a segment out of range or of another device.
+    """
+    if (owner is None) != (segments is None):
+        raise ValueError('segments and their owner index come together')
+    if owner is None:
+        return
+    assert segments is not None
+    if owner.shape != (size,):
+        raise ValueError(f'owner has shape {owner.shape}, expected ({size},)')
+    if size % devices or segments % devices:
+        raise ValueError(
+            f'{size} members in {segments} segments do not split over {devices} devices'
+        )
+    if isinstance(owner, Tracer) or owner.size == 0:
+        return
+    if isinstance(owner, jax.Array) and not owner.is_fully_addressable:
+        return
+    owner = np.asarray(owner)
+    if owner.min() < 0 or owner.max() >= segments:
+        raise ValueError(f'owner indices must lie in [0, {segments})')
+    member_device = np.arange(owner.size) // (owner.size // devices)
+    if np.any(owner // (segments // devices) != member_device):
+        raise ValueError(
+            f'over {devices} devices, the members of a device must own segments of that device'
+        )
+
+
 # The resident ensembles are pytree nodes, so an operator can hold one where it holds a pytree of
 # operators: its arrays are leaves of the operator, and the sizes, strides and policy are static.
 # Unflattening bypasses validation, as tree transformations put placeholders in the leaves.
 
 
 def _stacked_unflatten(aux: tuple[Any, ...], children: Iterable[Any]) -> StackedEnsemble:
-    size, strides, axes, policy = aux
-    stacked, valid = children
+    size, strides, axes, policy, segments = aux
+    stacked, valid, owner = children
     ensemble = object.__new__(StackedEnsemble)
     object.__setattr__(ensemble, 'size', size)
     object.__setattr__(ensemble, 'stacked', stacked)
@@ -1306,6 +1720,8 @@ def _stacked_unflatten(aux: tuple[Any, ...], children: Iterable[Any]) -> Stacked
     object.__setattr__(ensemble, 'axes', axes)
     object.__setattr__(ensemble, 'valid', valid)
     object.__setattr__(ensemble, 'policy', policy)
+    object.__setattr__(ensemble, 'owner', owner)
+    object.__setattr__(ensemble, 'segments', segments)
     return ensemble
 
 
@@ -1321,11 +1737,15 @@ def _list_unflatten(aux: tuple[Any, ...], children: Iterable[Any]) -> ListEnsemb
 register_pytree_with_keys(
     StackedEnsemble,
     lambda e: (
-        [(GetAttrKey('stacked'), e.stacked), (GetAttrKey('valid'), e.valid)],
-        (e.size, e.strides, e.axes, e.policy),
+        [
+            (GetAttrKey('stacked'), e.stacked),
+            (GetAttrKey('valid'), e.valid),
+            (GetAttrKey('owner'), e.owner),
+        ],
+        (e.size, e.strides, e.axes, e.policy, e.segments),
     ),
     _stacked_unflatten,
-    lambda e: ([e.stacked, e.valid], (e.size, e.strides, e.axes, e.policy)),
+    lambda e: ([e.stacked, e.valid, e.owner], (e.size, e.strides, e.axes, e.policy, e.segments)),
 )
 
 register_pytree_with_keys(

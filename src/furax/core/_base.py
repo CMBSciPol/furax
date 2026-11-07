@@ -158,6 +158,8 @@ class AbstractLinearOperator(ABC):
             return IdentityOperator(in_structure=self.in_structure)
         if isinstance(other, ZeroOperator):
             return ZeroOperator(in_structure=other.in_structure, out_structure=self.out_structure)
+        if isinstance(other, IdentityOperator):
+            return self
 
         return CompositionOperator([self, other])
 
@@ -663,6 +665,8 @@ class CompositionOperator(AbstractLinearOperator):
             raise ValueError(msg)
         if isinstance(other, ZeroOperator):
             return ZeroOperator(in_structure=other.in_structure, out_structure=self.out_structure)
+        if isinstance(other, IdentityOperator):
+            return self
         if isinstance(other, CompositionOperator):
             operands = other.operands
         else:
@@ -916,7 +920,8 @@ class IdentityOperator(AbstractLinearOperator):
     """Operator that returns its input unchanged: I(x) = x.
 
     The identity operator is diagonal, orthogonal and positive semi-definite.
-    Its transpose and inverse are itself.
+    Its transpose and inverse are itself, and a composition with it on either
+    side returns the other operator.
 
     Examples:
         >>> I = IdentityOperator(in_structure=jax.ShapeDtypeStruct((3,), jnp.float32))

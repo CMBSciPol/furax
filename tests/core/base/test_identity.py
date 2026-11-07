@@ -41,3 +41,27 @@ def test_identity2() -> None:
     expected = jnp.eye(4)
     assert_array_equal(op.as_matrix(), expected)
     assert_array_equal(AbstractLinearOperator.as_matrix(op), expected)
+
+
+class Op(AbstractLinearOperator):
+    def mv(self, x):
+        return 2 * x
+
+
+_structure = jax.ShapeDtypeStruct((3,), np.float32)
+
+
+def test_identity_is_absorbed_on_the_left() -> None:
+    op = Op(in_structure=_structure)
+    assert IdentityOperator(in_structure=_structure) @ op is op
+
+
+def test_identity_is_absorbed_on_the_right() -> None:
+    op = Op(in_structure=_structure)
+    assert op @ IdentityOperator(in_structure=_structure) is op
+
+
+def test_identity_is_absorbed_by_a_composition() -> None:
+    op = Op(in_structure=_structure)
+    composition = op @ op
+    assert composition @ IdentityOperator(in_structure=_structure) is composition

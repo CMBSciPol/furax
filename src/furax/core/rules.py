@@ -9,6 +9,7 @@ from ._base import (
     HomothetyOperator,
     IdentityOperator,
     TransposeOperator,
+    ZeroOperator,
 )
 
 
@@ -306,6 +307,17 @@ class IdempotentRule(AbstractCompositionRule):
         return [left]
 
 
+class ZeroCompositionRule(AbstractCompositionRule):
+    """Binary rule for `Z @ A = Z` and `A @ Z = Z`."""
+
+    operator_class = ZeroOperator
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        return [ZeroOperator(in_structure=right.in_structure, out_structure=left.out_structure)]
+
+
 class AbstractAdditionRule(AbstractBinaryRule):
     """A binary rule to reduce a sum ``op1 + op2``."""
 
@@ -327,3 +339,14 @@ class HomothetyAdditionRule(AbstractAdditionRule):
         assert isinstance(left, HomothetyOperator)  # ty assert
         assert isinstance(right, HomothetyOperator)  # ty assert
         return [HomothetyOperator(left.value + right.value, in_structure=left.in_structure)]
+
+
+class ZeroAdditionRule(AbstractAdditionRule):
+    """Additive rule `A + Z = A`."""
+
+    operator_class = ZeroOperator
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        return [left if isinstance(right, ZeroOperator) else right]

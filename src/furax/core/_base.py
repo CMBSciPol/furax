@@ -13,6 +13,7 @@ import lineax as lx
 import numpy as np
 from jax import Array
 from jax._src.typing import DType
+from jax.core import Tracer
 from jax.tree_util import Partial
 from jaxtyping import Inexact, PyTree, Scalar, ScalarLike
 
@@ -155,6 +156,8 @@ class AbstractLinearOperator(ABC):
             return NotImplemented
         if isinstance(other, AbstractLazyInverseOperator) and other.operator is self:
             return IdentityOperator(in_structure=self.in_structure)
+        if isinstance(other, ZeroOperator):
+            return ZeroOperator(in_structure=other.in_structure, out_structure=self.out_structure)
 
         return CompositionOperator([self, other])
 
@@ -187,6 +190,9 @@ class AbstractLinearOperator(ABC):
         other = jnp.asarray(other)
         if other.shape != ():
             raise ValueError('Can only multiply AbstractLinearOperators by scalars.')
+        # a concrete zero annihilates the operator; a traced scalar is only known at run time
+        if not isinstance(other, Tracer) and other == 0:
+            return ZeroOperator(in_structure=self.in_structure, out_structure=self.out_structure)
         return HomothetyOperator(other, in_structure=self.out_structure) @ self
 
     def __truediv__(self, other: ScalarLike) -> 'AbstractLinearOperator':
@@ -645,7 +651,7 @@ class CompositionOperator(AbstractLinearOperator):
     def transpose(self) -> AbstractLinearOperator:
         return CompositionOperator([_.T for _ in reversed(self.operands)])
 
-    def __matmul__(self, other: AbstractLinearOperator) -> 'CompositionOperator':
+    def __matmul__(self, other: AbstractLinearOperator) -> 'AbstractLinearOperator':
         if not isinstance(other, AbstractLinearOperator):
             return NotImplemented
         if not structure_equal(self.in_structure, other.out_structure):
@@ -655,6 +661,8 @@ class CompositionOperator(AbstractLinearOperator):
                 f'other.out_structure={other.out_structure}'
             )
             raise ValueError(msg)
+        if isinstance(other, ZeroOperator):
+            return ZeroOperator(in_structure=other.in_structure, out_structure=self.out_structure)
         if isinstance(other, CompositionOperator):
             operands = other.operands
         else:
@@ -840,6 +848,64 @@ class InverseOperator(AbstractLazyInverseOperator):
 @orthogonal
 class AbstractLazyInverseOrthogonalOperator(TransposeOperator, AbstractLazyInverseOperator):
     pass
+
+
+class ZeroOperator(AbstractLinearOperator):
+    r"""Operator that maps every input to zero: $Z(x) = 0$.
+
+    The operator may be rectangular: `out_structure` defaults to `in_structure`. Multiplying an
+    operator by a concrete scalar zero returns one, a composition with one collapses onto it and
+    a reduced sum drops it: $0 A = Z$, $B Z = Z A = Z$ and $(A + Z).\mathrm{reduce}() = A$.
+    The zero operator is not invertible.
+
+    Examples:
+        >>> Z = ZeroOperator(in_structure=jax.ShapeDtypeStruct((3,), jnp.float32))
+        >>> Z(jnp.array([1.0, 2.0, 3.0], jnp.float32))
+        Array([0., 0., 0.], dtype=float32)
+    """
+
+    out_structure: PyTree[jax.ShapeDtypeStruct] = field(
+        kw_only=True, metadata={'static': True}, default=None
+    )
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.out_structure is None:
+            object.__setattr__(self, 'out_structure', self.in_structure)
+
+    def __matmul__(self, other: Any) -> AbstractLinearOperator:
+        if isinstance(other, AbstractLinearOperator) and structure_equal(
+            self.in_structure, other.out_structure
+        ):
+            return ZeroOperator(in_structure=other.in_structure, out_structure=self.out_structure)
+        return super().__matmul__(other)
+
+    @property
+    def tags(self) -> OperatorTag:
+        # a square zero matrix satisfies every symmetry a zero matrix can have
+        if not structure_equal(self.in_structure, self.out_structure):
+            return self.class_tags
+        return (
+            self.class_tags
+            | OperatorTag.SQUARE
+            | OperatorTag.SYMMETRIC
+            | OperatorTag.DIAGONAL
+            | OperatorTag.POSITIVE_SEMIDEFINITE
+            | OperatorTag.NEGATIVE_SEMIDEFINITE
+            | OperatorTag.IDEMPOTENT
+        )
+
+    def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
+        return zeros_like(self.out_structure)
+
+    def transpose(self) -> AbstractLinearOperator:
+        return ZeroOperator(in_structure=self.out_structure, out_structure=self.in_structure)
+
+    def inverse(self) -> AbstractLinearOperator:
+        raise ValueError('The zero operator is not invertible.')
+
+    def as_matrix(self) -> Inexact[Array, 'a b']:
+        return jnp.zeros((self.out_size, self.in_size), dtype=self.out_promoted_dtype)
 
 
 @orthogonal

@@ -13,8 +13,8 @@ from furax.obs import TODFormat
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
-OutKind = Literal['sum', 'stack', 'shared']
-"""How the detector batches of an observation combine one output leaf."""
+OutKind = Literal['sum', 'stack']
+"""How the detector tiles of an observation combine one output leaf."""
 from ._observation import ReaderField, _sample_rate
 from .acquisition import build_acquisition_operator
 from .config import GapTreatment, MapMakingConfig, NoiseSource, TemplatesConfig, WeightingMode
@@ -372,25 +372,25 @@ class TemplateBundle:
 
 FACTORED_KINDS: dict[str, OutKind] = {'explicit': 'stack', 'common': 'sum'}
 """The kinds of templates whose Grams are factored where their amplitudes live, and how the
-detector batches of an observation combine their Grams and right-hand sides: stacked for the
-`'explicit'` templates, whose amplitudes are each detector's own, each Gram factored in its batch,
+detector tiles of an observation combine their Grams and right-hand sides: stacked for the
+`'explicit'` templates, whose amplitudes are each detector's own, each Gram factored in its tile,
 and summed for the `'common'` ones, whose amplitudes are the observation's, the Gram factored once
 summed. A kind names the [`ObservationTemplates`][] field holding its templates."""
 
 
-class BatchTemplates(NamedTuple):
-    """The templates of one detector batch, as built, before their Grams are factored."""
+class TileTemplates(NamedTuple):
+    """The templates of one detector tile, as built, before their Grams are factored."""
 
     implicit: 'TemplateBundle | None'
     """The implicit templates whose amplitudes are each detector's own, factored: the weight of the
-    batch needs them."""
+    tile needs them."""
     operators: dict[str, TemplateOperator | None]
     """The operator of each of `FACTORED_KINDS`, `None` for those absent."""
     grams: dict[str, BlockGram | None]
-    """The Gram of each, assembled but not factored: the batch's share of it for the kinds whose
+    """The Gram of each, assembled but not factored: the tile's share of it for the kinds whose
     amplitudes the observation's detectors share."""
     weighted_tod: PyTree[Array]
-    """The TOD under the batch's weight, its own implicit templates marginalized."""
+    """The TOD under the tile's weight, its own implicit templates marginalized."""
 
 
 @register_dataclass
@@ -427,7 +427,7 @@ class ObservationTemplates:
         operators: dict[str, TemplateOperator | None],
         inverses: dict[str, tuple[AbstractLinearOperator, AbstractLinearOperator | None] | None],
     ) -> Self:
-        """An observation's templates, from those of [`BatchTemplates`][] and their Gram inverses.
+        """An observation's templates, from those of [`TileTemplates`][] and their Gram inverses.
 
         Args:
             implicit: The implicit templates whose amplitudes are each detector's own.
@@ -451,12 +451,12 @@ class ObservationTemplates:
         model: ObservationModel,
         tod: PyTree[Array],
         temperature: Float[Array, 'det samp'] | None = None,
-    ) -> BatchTemplates:
-        """Build one batch's templates, and weight its TOD.
+    ) -> TileTemplates:
+        """Build one tile's templates, and weight its TOD.
 
         The implicit templates are factored here and marginalized from the weight, which needs
         their Gram inverse. The Grams of the explicit ones are only assembled: for the templates
-        the observation's detectors share, the batch's share of a Gram summed over its batches.
+        the observation's detectors share, the tile's share of a Gram summed over its tiles.
         [`from_inverses`][] makes the observation's templates once they are factored. The
         templates the detectors share are taken under the marginalized weight, those of each
         detector under `W`.
@@ -489,7 +489,7 @@ class ObservationTemplates:
             if not all(template.per_detector for template in implicit_templates.values()):
                 raise NotImplementedError(
                     'implicit templates need amplitudes of each detector alone: those shared '
-                    'by detectors would couple the batches of an observation'
+                    'by detectors would couple the tiles of an observation'
                 )
             op = TemplateOperator(implicit_templates)
             implicit = TemplateBundle.create(op, model.W, tcfg, **gram_options)
@@ -517,7 +517,7 @@ class ObservationTemplates:
             for kind, op in operators.items()
         }
         wd = model.deprojected_weight(implicit)(tod)
-        return BatchTemplates(implicit, operators, grams, wd)
+        return TileTemplates(implicit, operators, grams, wd)
 
 
 def restrict_streams(

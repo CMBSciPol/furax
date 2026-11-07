@@ -1,7 +1,7 @@
 """Multi-process runs of the multi-observation mapmaker.
 
 Every test spawns real OS processes with ``jax.distributed.initialize`` on the CPU backend: the
-cross-process paths (global mesh, all-gathered probe, per-process slot blocks) are otherwise
+cross-process paths (global mesh, all-gathered probe, per-process tile blocks) are otherwise
 unreachable, since a single process is their degenerate case. The children run the mapmaker on
 synthetic observations of unequal length, with explicit templates so the amplitude scatter is
 exercised too, and compare against a single-process run of the same configuration.

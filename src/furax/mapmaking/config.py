@@ -785,7 +785,8 @@ class TemplatesConfig:
     """Number of detectors whose Grams are assembled together.
 
     Each detector's Gram takes temporary memory comparable to a few of its own timestreams, so this
-    stays small; it is applied within each of [`MapMakingConfig.detector_batch_size`][]'s batches.
+    stays small; it is applied within each tile of
+    [`MapMakingConfig.detector_batch_size`][] detectors.
     """
 
     @classmethod
@@ -1069,18 +1070,19 @@ class MapMakingConfig:
     """Enable the Pomme QU estimator, deprojecting baselines of this many samples (`None`: off)."""
 
     max_buckets: int = 4
-    """Largest number of buckets observations are grouped into.
+    """Largest number of buckets observations are grouped into, by length.
 
-    More buckets pad the buffers less but round up to the device count more often; see
+    More buckets pad the samples less but cost a compilation each; see
     [`furax.mapmaking.layout`][] for how to choose it.
     """
 
     detector_batch_size: int = 16
-    """Size of detector batches.
+    """Detectors per tile, the unit of work of the mapmaker.
 
-    Using detector batches reduces peak memory: beyond the TOD itself, everything computed from it
-    only takes memory in proportion to the batch rather than to the whole observation. Detector
-    counts are padded to whole batches. A size of 0 processes all detectors at once (required for
+    Each observation is split into tiles of this many detectors, spread over the devices: beyond
+    the TOD itself, everything computed from it only takes memory in proportion to the tile rather
+    than to the whole observation. An observation's last tile is padded with empty detectors. A
+    size of 0 makes each observation one tile, as wide as the widest of its bucket (required for
     gap-filling and nested gap treatment with a non-diagonal noise model).
     """
 

@@ -148,8 +148,11 @@ __all__ = [
     'Bucket',
     'SlotLayout',
     'SlotPlacement',
+    'TileBucket',
+    'TileLayout',
     'padded_volume',
     'partition_padded',
+    'partition_tiles',
     'unpadded_volume',
 ]
 
@@ -653,3 +656,421 @@ class SlotPlacement:
             donate_argnums=0 if donate else (),
         )
         return apply(tree)
+
+
+@dataclass(frozen=True, eq=False)
+class TileBucket:
+    """One group of observations of similar length, split into detector tiles.
+
+    A **tile** holds `tile_size` detectors of one observation over the bucket's sample envelope:
+    an observation of `d` detectors has `ceil(d / tile_size)` tiles, its last one padded with
+    empty detectors. Each observation occupies one **segment**, which holds what its tiles share,
+    such as the boresight pointing, and every tile is owned by the segment of its observation.
+
+    The tiles are spread over the devices with whole observations: the tiles of an observation
+    and its segment live on one device. Every device holds `tiles_per_device` tiles and
+    `segments_per_device` segments, in contiguous blocks: device `d` holds tiles
+    `d * tiles_per_device + [0, tiles_per_device)` and segments
+    `d * segments_per_device + [0, segments_per_device)`. A device with fewer tiles is filled
+    with **padding** tiles (`valid` is `False`), and one with fewer observations with **empty**
+    segments (observation `-1`). The padding tiles of a device own one of its empty segments,
+    never an observation's: what they hold, filler, stays out of the observations' segments.
+
+    Buckets are normally built for a whole run by [`TileLayout.create`][], not one by one.
+
+    Attributes:
+        segment_observations: The observation index of each segment, `-1` for an empty one.
+        owner: The segment of each tile.
+        tile_starts: The first detector of each tile in its observation (0 for padding).
+        valid: Per tile, whether it holds detectors of an observation.
+        envelope: The shape of one tile: `tile_size` detectors over the longest observation of
+            the bucket.
+        n_devices: The number of devices the bucket is spread over.
+    """
+
+    segment_observations: Int[np.ndarray, ' segment']
+    owner: Int[np.ndarray, ' tile']
+    tile_starts: Int[np.ndarray, ' tile']
+    valid: Bool[np.ndarray, ' tile']
+    envelope: ObservationBufferShape
+    n_devices: int
+
+    @classmethod
+    def create(
+        cls,
+        shapes: Sequence[ObservationBufferShape],
+        group: Collection[int],
+        n_devices: int = 1,
+        detector_batch_size: int = 0,
+    ) -> Self:
+        """Split a group of observations into tiles, spread over the devices.
+
+        The observations are assigned to the devices from the widest down, each to the device
+        holding the fewest tiles so far, which balances the tiles per device.
+
+        Args:
+            shapes: Per-observation buffer shapes.
+            group: Indices of the observations in the bucket.
+            n_devices: Number of devices the bucket is spread over.
+            detector_batch_size: Detectors per tile; 0 for one tile per observation. A bucket
+                whose widest observation is narrower takes its width instead.
+
+        Raises:
+            ValueError: If `group` is empty.
+
+        Examples:
+            Three observations of 2, 5 and 3 detectors in tiles of 2, on two devices: the widest
+            observation, of three tiles, has a device of its own.
+
+            >>> from furax.mapmaking import ObservationBufferShape as Shape
+            >>> shapes = [Shape(2, 100), Shape(5, 100), Shape(3, 90)]
+            >>> bucket = TileBucket.create(shapes, [0, 1, 2], n_devices=2, detector_batch_size=2)
+            >>> bucket.segment_observations.tolist()
+            [1, -1, 0, 2]
+            >>> bucket.owner.tolist(), bucket.valid.tolist()
+            ([0, 0, 0, 2, 3, 3], [True, True, True, True, True, True])
+        """
+        if len(group) == 0:
+            raise ValueError('a bucket needs at least one observation')
+        observations = sorted(group)
+        widest = max(shapes[i].detector_count for i in observations)
+        tile_size = min(detector_batch_size, widest) if detector_batch_size else widest
+        counts = {i: -(-shapes[i].detector_count // tile_size) for i in observations}
+
+        # Longest processing time first: each observation, from the widest, goes to the device
+        # with the fewest tiles so far (then the fewest observations, then the lowest index).
+        held: list[list[int]] = [[] for _ in range(n_devices)]
+        loads = [0] * n_devices
+        for i in sorted(observations, key=lambda i: (-counts[i], i)):
+            d = min(range(n_devices), key=lambda d: (loads[d], len(held[d]), d))
+            held[d].append(i)
+            loads[d] += counts[i]
+        tiles_per_device = max(loads)
+        # a device with padding tiles keeps an empty segment for them
+        spare = [int(load < tiles_per_device) for load in loads]
+        segments_per_device = max(len(h) + s for h, s in zip(held, spare, strict=True))
+
+        segment_observations = np.full(n_devices * segments_per_device, -1, dtype=np.int64)
+        owner, starts, valid = [], [], []
+        for d, on_device in enumerate(held):
+            first = d * segments_per_device
+            for j, i in enumerate(sorted(on_device)):
+                segment_observations[first + j] = i
+                owner += [first + j] * counts[i]
+                starts += [k * tile_size for k in range(counts[i])]
+                valid += [True] * counts[i]
+            n_padding = tiles_per_device - loads[d]
+            owner += [first + len(on_device)] * n_padding  # the first empty segment
+            starts += [0] * n_padding
+            valid += [False] * n_padding
+        envelope = ObservationBufferShape(
+            tile_size,
+            max(shapes[i].sample_count for i in observations),
+            max(shapes[i].interval_count for i in observations),
+        )
+        return cls(
+            segment_observations,
+            np.asarray(owner, dtype=np.int64),
+            np.asarray(starts, dtype=np.int64),
+            np.asarray(valid, dtype=bool),
+            envelope,
+            n_devices,
+        )
+
+    @property
+    def tile_size(self) -> int:
+        """Detectors per tile."""
+        return self.envelope.detector_count
+
+    @property
+    def n_tiles(self) -> int:
+        """Number of tiles, padding included; a multiple of the device count."""
+        return len(self.owner)
+
+    @property
+    def n_segments(self) -> int:
+        """Number of segments, empty ones included; a multiple of the device count."""
+        return len(self.segment_observations)
+
+    @property
+    def tiles_per_device(self) -> int:
+        """Tiles held by each device."""
+        return self.n_tiles // self.n_devices
+
+    @property
+    def segments_per_device(self) -> int:
+        """Segments held by each device."""
+        return self.n_segments // self.n_devices
+
+    @cached_property
+    def observations(self) -> Int[np.ndarray, ' bucket_observation']:
+        """The observation indices of the bucket, sorted."""
+        return np.sort(self.segment_observations[self.segment_observations >= 0])
+
+    @property
+    def n_observations(self) -> int:
+        """Number of observations in the bucket."""
+        return len(self.observations)
+
+    @property
+    def padded_volume(self) -> int:
+        """Time-ordered elements the bucket occupies once padded."""
+        return self.n_tiles * self.envelope.volume
+
+    def tiles_of(self, segment: int) -> Int[np.ndarray, ' observation_tile']:
+        """The tiles of a segment that hold detectors, by increasing first detector."""
+        return np.flatnonzero((self.owner == segment) & self.valid)
+
+    def summary(self) -> str:
+        """The bucket's bookkeeping, as `obs=... tiles=... padding=... envelope=...`."""
+        return (
+            f'obs={self.n_observations} tiles={self.n_tiles} '
+            f'padding={self.n_tiles - int(self.valid.sum())} '
+            f'tiles_per_dev={self.tiles_per_device} segments_per_dev={self.segments_per_device} '
+            f'envelope=({self.envelope.detector_count}, {self.envelope.sample_count})'
+        )
+
+
+def partition_tiles(
+    shapes: Sequence[ObservationBufferShape],
+    max_groups: int,
+    *,
+    n_devices: int = 1,
+    detector_batch_size: int = 0,
+) -> list[list[int]]:
+    r"""Split observations into at most `max_groups` groups of tiles, minimising padding.
+
+    A group $b$ is split into tiles of $t_b$ detectors over its longest observation, $s_b$
+    samples. Spread over the devices, each device holds $T_b$ tiles, at least the widest
+    observation's and an even share of the total, so the group occupies $n_\text{dev} T_b t_b
+    s_b$ elements. The sum over the groups is the quantity minimised here, with
+    $T_b = \max(\lceil \sum_i T_i / n_\text{dev} \rceil, \max_i T_i)$, the lower bound the
+    assignment of [`TileBucket.create`][] approaches.
+
+    Since the tiles absorb the differences in detector count, candidate groups are runs of the
+    observations sorted by length.
+
+    Args:
+        shapes: Per-observation buffer shapes.
+        max_groups: Largest number of groups allowed (at most one per observation).
+        n_devices: Number of devices each group is spread over.
+        detector_batch_size: Detectors per tile; 0 for one tile per observation.
+
+    Returns:
+        A list of groups, from one up to `max_groups` of them. Each group is a sorted list of
+        original observation indices. The groups are ordered by increasing length, and together
+        they cover `range(len(shapes))`.
+
+    Raises:
+        ValueError: If `max_groups < 1`, `n_devices < 1` or there are no observations.
+
+    Examples:
+        Observations of very different widths but similar lengths share a group: their tiles
+        absorb the difference.
+
+        >>> from furax.mapmaking import ObservationBufferShape as Shape
+        >>> shapes = [Shape(100, 10), Shape(800, 11), Shape(300, 90)]
+        >>> partition_tiles(shapes, max_groups=2, detector_batch_size=100)
+        [[0, 1], [2]]
+    """
+    if max_groups < 1:
+        raise ValueError(f'max_groups must be >= 1, got {max_groups}')
+    if n_devices < 1:
+        raise ValueError(f'n_devices must be >= 1, got {n_devices}')
+    n = len(shapes)
+    if n == 0:
+        raise ValueError('need at least one observation')
+    max_groups = min(max_groups, n)
+
+    order = sorted(range(n), key=lambda i: (shapes[i].sample_count, shapes[i].detector_count))
+    det = np.array([shapes[i].detector_count for i in order], dtype=np.int64)
+    samp = np.array([shapes[i].sample_count for i in order], dtype=np.int64)
+    batch = detector_batch_size
+    tiles = -(-det // batch) if batch else np.ones(n, dtype=np.int64)
+
+    # dp[b, j] is the lowest total cost of splitting the first j observations into b groups;
+    # cut[b, j] records where the last of those groups starts (see `partition_padded`).
+    inf = np.int64(1) << 62
+    dp = np.full((max_groups + 1, n + 1), inf, dtype=np.int64)
+    cut = np.zeros((max_groups + 1, n + 1), dtype=np.int64)
+    dp[0, 0] = 0
+
+    for j in range(1, n + 1):
+        # The cost of a last group [i, j) for every start i < j at once, as `TileBucket.create`
+        # sizes it: tiles as wide as the batch, or as the widest observation if it is narrower,
+        # in which case every observation is one tile.
+        reverse = slice(j - 1, None, -1)
+        run_det = np.maximum.accumulate(det[reverse])[::-1]
+        run_samp = np.maximum.accumulate(samp[reverse])[::-1]
+        run_tiles = np.cumsum(tiles[reverse])[::-1]
+        run_widest = np.maximum.accumulate(tiles[reverse])[::-1]
+        count = j - np.arange(j)
+        single = run_det <= batch if batch else np.ones(j, dtype=bool)
+        tile_size = np.where(single, run_det, batch)
+        per_device = np.where(
+            single,
+            -(-count // n_devices),
+            np.maximum(-(-run_tiles // n_devices), run_widest),
+        )
+        cost = n_devices * per_device * tile_size * run_samp
+        for b in range(1, min(max_groups, j) + 1):
+            total = dp[b - 1, :j] + cost
+            i = int(np.argmin(total[b - 1 :])) + b - 1  # earlier groups need b - 1 observations
+            dp[b, j] = total[i]
+            cut[b, j] = i
+
+    # Fewest groups among the cheapest: argmin returns the first minimum.
+    n_groups = int(np.argmin(dp[1:, n])) + 1
+
+    groups: list[list[int]] = []
+    j = n
+    for b in range(n_groups, 0, -1):
+        i = int(cut[b, j])
+        groups.append(sorted(order[i:j]))
+        j = i
+    groups.reverse()
+    return groups
+
+
+@dataclass(frozen=True, eq=False)
+class TileLayout:
+    """Complete layout of detector tiles for a given dataset and job resources."""
+
+    buckets: tuple[TileBucket, ...]
+    """The buckets, ordered by increasing length."""
+    n_observations: int
+    """Total number of observations."""
+    n_devices: int
+    """Total number of devices in the whole job."""
+
+    @classmethod
+    def create(
+        cls,
+        shapes: Sequence[ObservationBufferShape],
+        *,
+        n_devices: int,
+        max_buckets: int,
+        detector_batch_size: int = 0,
+    ) -> Self:
+        """Choose the layout to minimise padding; see [`partition_tiles`][].
+
+        Args:
+            shapes: Per-observation buffer shapes.
+            n_devices: Number of devices (`jax.device_count()`).
+            max_buckets: Largest number of buckets allowed.
+            detector_batch_size: Detectors per tile; 0 for one tile per observation.
+
+        Examples:
+            Five observations of two lengths, on two devices, in tiles of two detectors. The
+            two narrow short observations share a device, the wide one has the other.
+
+            >>> from furax.mapmaking import ObservationBufferShape as Shape
+            >>> shapes = [Shape(2, 10), Shape(2, 10), Shape(4, 10), Shape(4, 90), Shape(4, 90)]
+            >>> layout = TileLayout.create(
+            ...     shapes, n_devices=2, max_buckets=2, detector_batch_size=2
+            ... )
+            >>> print(layout)
+            TileLayout: obs=5 buckets=2 tiles=8 devices=2 tile_overhead=+0.0%
+              bucket 0: obs=3 tiles=4 padding=0 tiles_per_dev=2 segments_per_dev=2 envelope=(2, 10)
+              bucket 1: obs=2 tiles=4 padding=0 tiles_per_dev=2 segments_per_dev=1 envelope=(2, 90)
+        """
+        groups = partition_tiles(
+            shapes, max_buckets, n_devices=n_devices, detector_batch_size=detector_batch_size
+        )
+        buckets = tuple(
+            TileBucket.create(shapes, group, n_devices, detector_batch_size) for group in groups
+        )
+        return cls(buckets, len(shapes), n_devices)
+
+    @property
+    def n_tiles(self) -> int:
+        """Total number of tiles, over every bucket."""
+        return sum(bucket.n_tiles for bucket in self.buckets)
+
+    @property
+    def padded_volume(self) -> int:
+        """Time-ordered elements the run occupies once padded, summed over the buckets."""
+        return sum(bucket.padded_volume for bucket in self.buckets)
+
+    @property
+    def tile_overhead(self) -> float:
+        """Padding tiles as a fraction of the tiles that hold detectors."""
+        used = sum(int(bucket.valid.sum()) for bucket in self.buckets)
+        return (self.n_tiles - used) / used
+
+    def summary(self) -> str:
+        """The run's totals, as `obs=... buckets=... tiles=... devices=... tile_overhead=...`."""
+        return (
+            f'obs={self.n_observations} buckets={len(self.buckets)} tiles={self.n_tiles} '
+            f'devices={self.n_devices} tile_overhead=+{self.tile_overhead:.1%}'
+        )
+
+    def __str__(self) -> str:
+        lines = [f'{type(self).__name__}: {self.summary()}']
+        lines += [f'  bucket {b}: {bucket.summary()}' for b, bucket in enumerate(self.buckets)]
+        return '\n'.join(lines)
+
+    def local_tiles(self, bucket: int, *, process_index: int, n_local: int) -> slice:
+        """The tiles of a bucket held by one process's devices.
+
+        The mesh orders devices by process, so a process's shards of the tile axis are one
+        contiguous block: `n_local` shards of `tiles_per_device` tiles each.
+
+        Args:
+            bucket: Index of the bucket.
+            process_index: The process.
+            n_local: Number of devices on every process.
+        """
+        n_per_device = self.buckets[bucket].tiles_per_device
+        start = process_index * n_local * n_per_device
+        return slice(start, start + n_local * n_per_device)
+
+    def local_segments(self, bucket: int, *, process_index: int, n_local: int) -> slice:
+        """The segments of a bucket held by one process's devices, as [`local_tiles`][]."""
+        n_per_device = self.buckets[bucket].segments_per_device
+        start = process_index * n_local * n_per_device
+        return slice(start, start + n_local * n_per_device)
+
+    def to_observation_order(
+        self,
+        per_bucket: Sequence[Shaped[np.ndarray, 'entry ...']],
+        detector_axis: int | None = None,
+    ) -> Shaped[np.ndarray, 'obs ...']:
+        """Bring per-tile or per-segment arrays, one per bucket, back into a per-observation array.
+
+        This undoes the tiling for results the caller wants per observation, in their original
+        order, such as the noise parameters or the template amplitudes. Given `detector_axis`,
+        the arrays hold one entry per tile, and the tiles of each observation are concatenated
+        along that axis. Without it, they hold one entry per segment.
+
+        Args:
+            per_bucket: One array per bucket, of shape `(n_tiles, ...)` with a detector axis,
+                `(n_segments, ...)` without.
+            detector_axis: The detector axis of the arrays, which holds the detectors of one
+                tile; `None` for values per segment. It is the detector axis of the result too.
+
+        Returns:
+            An array of shape `(n_observations, ...)` in observation order. Trailing axes may
+            differ between observations, each padded to its own tiles or bucket, so they are
+            zero-padded to the largest.
+        """
+        if len(per_bucket) != len(self.buckets):
+            raise ValueError(f'expected {len(self.buckets)} arrays, got {len(per_bucket)}')
+        rows: dict[int, np.ndarray] = {}
+        for bucket, values in zip(self.buckets, per_bucket, strict=True):
+            for segment, observation in enumerate(bucket.segment_observations):
+                if observation < 0:
+                    continue
+                if detector_axis is None:
+                    rows[int(observation)] = values[segment]
+                    continue
+                axis = detector_axis % values.ndim - 1  # in the entries, after the tile axis
+                tiles = [values[t] for t in bucket.tiles_of(segment)]
+                rows[int(observation)] = np.concatenate(tiles, axis=axis)
+        held = list(rows.values())
+        trailing = tuple(max(dims) for dims in zip(*(a.shape for a in held), strict=True))
+        dtype = np.result_type(*(a.dtype for a in held))
+        out = np.zeros((self.n_observations, *trailing), dtype=dtype)
+        for observation, values in rows.items():
+            out[(observation, *(slice(0, n) for n in values.shape))] = values
+        return out

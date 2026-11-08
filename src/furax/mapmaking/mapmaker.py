@@ -402,13 +402,11 @@ class MultiObservationMapMaker[T]:
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         bucket = self.layout.buckets[bucket_index]
 
-        def read(slot: int) -> tuple[np.ndarray, ...]:
+        def read(slot: int) -> tuple[PyTree[np.ndarray], PyTree[np.ndarray], np.ndarray]:
             if not bucket.is_empty[slot]:
-                member = reader.read_host(slot)  # readers are indexed by slot
-            else:
-                # An empty slot is never read or preprocessed just to be masked away
-                member = reader.read_filler_host()
-            return tuple(np.asarray(leaf) for leaf in jax.tree.leaves(member))
+                return reader.read_host(slot)  # readers are indexed by slot
+            # An empty slot is never read or preprocessed just to be masked away
+            return reader.read_filler_host()
 
         template = (
             reader.out_structure,

@@ -65,6 +65,13 @@ venv.bak/
 # mkdocs documentation
 /site
 
+# Markdown pages and figures generated from the user-guide notebooks by docs/build.sh
+/docs/user-guide/getting-started.md
+/docs/user-guide/data-structures.md
+/docs/user-guide/operators.md
+/docs/user-guide/ensembles.md
+/docs/user-guide/*_files/
+
 # mypy
 .mypy_cache/
 .dmypy.json

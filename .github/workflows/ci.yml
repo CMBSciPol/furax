@@ -49,13 +49,16 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          # hatch-vcs derives the version from the git history
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v10.3.3
         with:
           version: "0.13.6"
       # Same invocation as Read the Docs (.readthedocs.yaml), so a page that breaks the
       # build fails here instead of on the published site.
       - name: "Build the documentation"
-        run: uv run --locked --only-group docs sh docs/build.sh
+        run: uv run --locked --group docs --no-dev sh docs/build.sh
 
   test:
     name: "Run tests on Python ${{ matrix.python-version }}"

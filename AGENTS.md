@@ -93,7 +93,9 @@ Register every user-visible change in `docs/development/changelog.md` under `## 
 - Use nested bullets only when enumerating parts of one change a user may need to act on, such as a table of renames. Rationale, derivations, measurements and internals belong in the pull request body or API docs, not here.
 - A pure refactor with no user-visible effect needs no entry.
 
-The API reference is generated from `src/furax` by the `api-autonav` plugin: a new public module or symbol appears automatically, and private (`_`-prefixed) names are skipped. Write its docstring, and build the docs with `uv run --only-group docs sh docs/build.sh` to check; CI builds them the same way.
+The API reference is generated from `src/furax` by the `api-autonav` plugin: a new public module or symbol appears automatically, and private (`_`-prefixed) names are skipped. Write its docstring, and build the docs with `uv run --group docs --no-dev sh docs/build.sh` to check; CI builds them the same way.
+
+A user-guide page whose content is executable code is a Jupyter notebook (`docs/user-guide/*.ipynb`), not a Markdown file: `docs/build.sh` executes it and converts it to the Markdown page the nav references (the generated page and its figures are git-ignored). pytest collects every notebook (`nb_test_files`) and fails when a cell raises, so the published snippets cannot silently rot; outputs are stripped on commit by the nbstripout hook. Markdown remains for pages without runnable code.
 
 ## When to ask first
 

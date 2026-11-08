@@ -50,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LazyPreprocSOTODLibObservation` now caches each preprocessing group in a file of its own, shared by runs that select or join the wafers differently (#450)
 - `furax-so-map` and `furax-so-cache` select every wafer by default, instead of `ws0`; `--wafer` selects a subset, and the value `all` is removed (#449)
 - Documentation: the navigation is pinned in the left sidebar, and the user-guide URLs use dashes, e.g. `user-guide/getting-started/` (#460)
+- The user-guide pages with code are notebooks, executed by the test suite and the documentation build (#461)
 
 ### Fixed
 
@@ -58,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax-so-*` commands no longer initialise MPI by default when mpi4py is installed (#433)
 - `StackedEnsemble` keeps its strides through tree transformations that replace the arrays with placeholders, such as `eqx.partition` and `jax.eval_shape` (#443)
 - `.I()` accepts an explicit `preconditioner=None` with a lineax solver (#443)
+- User-guide examples broken by the single-array `Stokes` containers and other API changes (#461)
 
 ## [0.17.2] - 2026-10-30
 

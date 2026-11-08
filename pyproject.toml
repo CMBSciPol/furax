@@ -96,10 +96,13 @@ dev = [
     'ducc0>=0.41.0',
     's2fft',  # resolved from git via [tool.uv.sources] until the SHT bugfix is released
     'pytest-xdist>=3.8.0',
+    'pytest-notebook>=0.10',
 ]
 docs = [
     'zensical>=0.0.66',
     'mkdocstrings-python>=2.0.5',
+    'ipykernel>=6.30',
+    'nbconvert>=7.16',
 ]
 lint = ['prek>=0.4.12']
 cuda = ['jax[cuda13]>=0.11.0']
@@ -149,7 +152,17 @@ addopts = [
     '-m', 'not slow',
 ]
 minversion = "9"
-testpaths = ['tests']
+testpaths = ['tests', 'docs']
+# Collect the user-guide notebooks: pytest-notebook executes each one in a fresh kernel and
+# diffs the result against the committed file. Outputs are stripped on commit (nbstripout
+# hook), so with the ignores below the check is "executes without error".
+nb_test_files = true
+nb_exec_timeout = '600'
+nb_diff_ignore = [
+    '/cells/*/execution_count',
+    '/cells/*/outputs',
+    '/metadata/language_info',
+]
 doctest_optionflags = ['NORMALIZE_WHITESPACE']
 markers = [
     "slow: mark test as slow.",

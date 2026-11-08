@@ -8,11 +8,15 @@ build:
   tools:
     python: "3.13"
   jobs:
+    # hatch-vcs derives the version from a tag that may sit beyond the shallow clone
+    post_checkout:
+      - git fetch --unshallow || true
     install:
       - pip install uv
     build:
       html:
-        - uv run --only-group docs sh docs/build.sh
+        # The project itself is installed: executing the notebooks imports furax
+        - uv run --group docs --no-dev sh docs/build.sh
     post_build:
       - mkdir -p $READTHEDOCS_OUTPUT/html/
       - cp --recursive site/* $READTHEDOCS_OUTPUT/html/

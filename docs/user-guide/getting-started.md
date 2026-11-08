@@ -327,7 +327,7 @@ result = large_weights(large_map)
 
 Now that you've learned the basics:
 
-1. **Data Structures**: Explore [data_structures.md](data_structures.md) for advanced Stokes parameter usage
+1. **Data Structures**: Explore [data-structures.md](data-structures.md) for advanced Stokes parameter usage
 2. **Linear Operators**: Learn about operator composition in [operators.md](operators.md)
 3. **Examples**: Try the [component_separation.md](../examples/component_separation.md) and [mapmaking.md](../examples/mapmaking.md) tutorials
 4. **API Reference**: Browse the complete API reference for all available functions

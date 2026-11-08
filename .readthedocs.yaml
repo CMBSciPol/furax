@@ -12,7 +12,7 @@ build:
       - pip install uv
     build:
       html:
-        - uv run --only-group docs zensical build
+        - uv run --only-group docs sh docs/build.sh
     post_build:
       - mkdir -p $READTHEDOCS_OUTPUT/html/
       - cp --recursive site/* $READTHEDOCS_OUTPUT/html/

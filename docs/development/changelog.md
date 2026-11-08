@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The multi-observation mapmaker's left-hand side (`BucketNormalOperator`, `MemberOperator`) runs on the ensemble engine (#414)
 - `LazyPreprocSOTODLibObservation` now caches each preprocessing group in a file of its own, shared by runs that select or join the wafers differently (#450)
 - `furax-so-map` and `furax-so-cache` select every wafer by default, instead of `ws0`; `--wafer` selects a subset, and the value `all` is removed (#449)
+- Documentation: the navigation is pinned in the left sidebar, and the user-guide URLs use dashes, e.g. `user-guide/getting-started/` (#460)
 
 ### Fixed
 

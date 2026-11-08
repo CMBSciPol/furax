@@ -83,8 +83,8 @@ weighted_data = weight_op(stokes_data)
 
 ## Documentation Contents
 
-- **User Guide**: [Getting started](user_guide/getting_started.md),
-  [Data structures](user_guide/data_structures.md), [Operators](user_guide/operators.md)
+- **User Guide**: [Getting started](user-guide/getting-started.md),
+  [Data structures](user-guide/data-structures.md), [Operators](user-guide/operators.md)
 - **Examples**: [Component separation](examples/component_separation.md),
   [Mapmaking](examples/mapmaking.md)
 - **API Reference**: generated from the [`furax`](api/furax/index.md) source tree, one page per public module

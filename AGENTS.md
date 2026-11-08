@@ -93,7 +93,7 @@ Register every user-visible change in `docs/development/changelog.md` under `## 
 - Use nested bullets only when enumerating parts of one change a user may need to act on, such as a table of renames. Rationale, derivations, measurements and internals belong in the pull request body or API docs, not here.
 - A pure refactor with no user-visible effect needs no entry.
 
-The API reference is generated from `src/furax` by the `api-autonav` plugin: a new public module or symbol appears automatically, and private (`_`-prefixed) names are skipped. Write its docstring, and build the docs with `zensical build` to check; CI does not.
+The API reference is generated from `src/furax` by the `api-autonav` plugin: a new public module or symbol appears automatically, and private (`_`-prefixed) names are skipped. Write its docstring, and build the docs with `uv run --only-group docs sh docs/build.sh` to check; CI builds them the same way.
 
 ## When to ask first
 

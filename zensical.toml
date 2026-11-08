@@ -12,11 +12,11 @@ edit_uri = "edit/main/docs/"
 nav = [
   { "Home" = "index.md" },
   { "User Guide" = [
-      "user_guide/getting_started.md",
-      "user_guide/data_structures.md",
-      "user_guide/operators.md",
-      "user_guide/ensembles.md",
-      "user_guide/so_mapmaking.md",
+      "user-guide/getting-started.md",
+      "user-guide/data-structures.md",
+      "user-guide/operators.md",
+      "user-guide/ensembles.md",
+      "user-guide/so-mapmaking.md",
   ] },
   { "Examples" = [
       "examples/component_separation.md",
@@ -33,6 +33,10 @@ nav = [
 extra_javascript = [
     "javascripts/mathjax.js",
     "https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"
+]
+
+extra_css = [
+    "stylesheets/extra.css",
 ]
 
 # Generate the API reference from the source tree
@@ -116,8 +120,6 @@ features = [
     "navigation.instant.progress",
     "navigation.path",
     "navigation.sections",
-    "navigation.tabs",
-    "navigation.tabs.sticky",
     "navigation.top",
     "navigation.tracking",
     "search.highlight",

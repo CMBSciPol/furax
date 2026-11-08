@@ -505,9 +505,10 @@ class StackedEnsemble(Ensemble):
 class HostEnsemble(Ensemble):
     """N members read from the host, one round at a time.
 
-    `read(i)` returns the per-member leaves of member i as numpy arrays, in the order the
-    `jax.ShapeDtypeStruct` leaves appear in `template`; the template's other leaves are shared by
-    every member. The engine runs a Python loop: each round is one compiled launch on
+    `read(i)` returns member i as host arrays, with the structure of `template`. Its per-member
+    leaves, those where the template holds a `jax.ShapeDtypeStruct`, must match it in shape and
+    dtype; the other leaves are shared by every member and taken from the template, whatever
+    `read` returns for them. The engine runs a Python loop: each round is one compiled launch on
     `Policy.batch` members per device while the host reads the next round in a thread, so the pass
     runs at the speed of the slower of the disk and the devices, not their sum. The summed
     accumulators ride the launches as donated buffers and the stacked outputs land sharded over
@@ -518,9 +519,9 @@ class HostEnsemble(Ensemble):
 
     size: int
     """The number of members."""
-    read: Callable[[int], tuple[np.ndarray, ...]]
-    """The per-member leaves of member i, called from host threads. Under several processes, each
-    process reads only the members of its own devices."""
+    read: Callable[[int], PyTree[Any]]
+    """Member i, as host arrays with the structure of `template`, called from host threads. Under
+    several processes, each process reads only the members of its own devices."""
     template: PyTree[Any]
     """The member structure: `jax.ShapeDtypeStruct` on the per-member leaves, values on the
     shared ones."""
@@ -539,7 +540,7 @@ class HostEnsemble(Ensemble):
 
     def fetch(self, i: Int[Array, ''] | int) -> PyTree[Any]:
         leaves, is_member, treedef = self._parts()
-        arrays = [jnp.asarray(x) for x in self.read(int(i))]
+        arrays = [jnp.asarray(x) for x in self._read(int(i))]
         return _rebuild(treedef, leaves, is_member, arrays)
 
     def _arrays(self) -> tuple[list[Array], list[Array]]:
@@ -568,6 +569,30 @@ class HostEnsemble(Ensemble):
             return jax.vmap(member)(*flat[:n_member])
 
         return body
+
+    def _read(self, i: int) -> list[np.ndarray]:
+        """The per-member leaves of member i, checked against the template."""
+        leaves, is_member, treedef = self._parts()
+        read_leaves, read_treedef = jax.tree.flatten(self.read(i))
+        if read_treedef != treedef:
+            raise ValueError(
+                f'read({i}) returned a member of structure {read_treedef}, '
+                f'but the template has structure {treedef}'
+            )
+        arrays = []
+        for k, (leaf, struct, flag) in enumerate(zip(read_leaves, leaves, is_member)):
+            if not flag:
+                continue
+            array = np.asarray(leaf)
+            if array.shape != struct.shape or array.dtype != struct.dtype:
+                path, _ = jax.tree_util.tree_flatten_with_path(self.template)[0][k]
+                raise ValueError(
+                    f'read({i}) returned {jax.tree_util.keystr(path) or "the member"} of shape '
+                    f'{array.shape} and dtype {array.dtype}, but the template expects shape '
+                    f'{struct.shape} and dtype {struct.dtype}'
+                )
+            arrays.append(array)
+        return arrays
 
     def _parts(self) -> tuple[list[Any], list[bool], Any]:
         leaves, treedef = jax.tree.flatten(self.template)
@@ -991,7 +1016,7 @@ def _host_map_reduce(
         # the device of row r evaluates positions r * per_device + g * batch + [0, batch)
         positions = [r * per_device + g * batch + i for r in local_rows for i in range(batch)]
         with ThreadPoolExecutor(len(positions)) as pool:
-            members = list(pool.map(ensemble.read, positions))
+            members = list(pool.map(ensemble._read, positions))
         by_member = [
             [
                 np.stack([members[r * batch + i][j] for i in range(batch)])

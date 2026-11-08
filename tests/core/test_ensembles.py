@@ -57,11 +57,11 @@ def _list() -> ListEnsemble:
 
 
 def _host(**keywords) -> HostEnsemble:
-    xs = np.asarray(_xs())
+    xs, t = np.asarray(_xs()), _shared()
     return HostEnsemble(
         N,
-        lambda i: (xs[i],),
-        {'x': jax.ShapeDtypeStruct((N_SAMPS,), jnp.float64), 't': _shared()},
+        lambda i: {'x': xs[i], 't': t},
+        {'x': jax.ShapeDtypeStruct((N_SAMPS,), jnp.float64), 't': t},
         **keywords,
     )
 
@@ -377,6 +377,46 @@ def test_host_stacked_outputs_feed_a_resident_ensemble():
     assert_allclose(total, (_xs() + _shared()).sum(axis=0))
 
 
+def test_host_members_are_matched_by_key():
+    # the template's keys are written out of their flattening order
+    tods, weights = np.asarray(_xs()), np.asarray(10 + _xs())
+    template = {
+        'weights': jax.ShapeDtypeStruct((N_SAMPS,), jnp.float64),
+        'tod': jax.ShapeDtypeStruct((N_SAMPS,), jnp.float64),
+    }
+    ensemble = HostEnsemble(N, lambda i: {'weights': weights[i], 'tod': tods[i]}, template)
+    out, _ = map_reduce(lambda m: m, ensemble, 1)
+    assert_allclose(out['tod'], tods)
+    assert_allclose(out['weights'], weights)
+    assert_allclose(ensemble.fetch(2)['weights'], weights[2])
+
+
+def test_host_shared_leaves_come_from_the_template():
+    xs = np.asarray(_xs())
+    template = {'x': jax.ShapeDtypeStruct((N_SAMPS,), jnp.float64), 't': _shared()}
+    ensemble = HostEnsemble(N, lambda i: {'x': xs[i], 't': 0.0}, template)
+    out, _ = map_reduce(_apply, ensemble, {'sum': 'sum', 'stack': 1, 'shared': None}, 1.0)
+    assert_allclose(out['stack'], _expected(1.0)['stack'])
+
+
+@pytest.mark.parametrize(
+    'read, match',
+    [
+        (lambda i: (np.zeros(N_SAMPS),), 'structure'),
+        (lambda i: {'x': np.zeros(N_SAMPS + 1), 't': 0.0}, r"\['x'\] of shape \(6,\)"),
+        (lambda i: {'x': np.zeros(N_SAMPS, np.float32), 't': 0.0}, 'dtype float32'),
+    ],
+    ids=['structure', 'shape', 'dtype'],
+)
+def test_host_members_are_checked_against_the_template(read, match):
+    template = {'x': jax.ShapeDtypeStruct((N_SAMPS,), jnp.float64), 't': _shared()}
+    ensemble = HostEnsemble(N, read, template)
+    with pytest.raises(ValueError, match=match):
+        map_reduce(_apply, ensemble, {'sum': 'sum', 'stack': 1, 'shared': None}, 1.0)
+    with pytest.raises(ValueError, match=match):
+        ensemble.fetch(0)
+
+
 def test_from_budget_fits_the_batch_to_the_temporaries():
     ensemble = _stacked()
 
@@ -566,13 +606,11 @@ class TestSharded:
         )
         mesh = self._mesh()
         xs = np.asarray(_xs())
+        t = jax.device_put(_shared(), NamedSharding(mesh, P()))
         ensemble = HostEnsemble(
             N,
-            lambda i: (xs[i],),
-            {
-                'x': jax.ShapeDtypeStruct((N_SAMPS,), jnp.float64),
-                't': jax.device_put(_shared(), NamedSharding(mesh, P())),
-            },
+            lambda i: {'x': xs[i], 't': t},
+            {'x': jax.ShapeDtypeStruct((N_SAMPS,), jnp.float64), 't': t},
             policy=Policy(axis='obs'),
         )
         assert jax.sharding.get_abstract_mesh().empty

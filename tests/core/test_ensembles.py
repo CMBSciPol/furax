@@ -299,9 +299,20 @@ def test_list_ensemble_is_not_batched():
         map_reduce(lambda m: m['x'], ListEnsemble(members, policy=Policy(batch=2)), 'sum')
 
 
-def test_members_share_their_treedef():
-    with pytest.raises(ValueError, match='treedef'):
-        ListEnsemble([{'x': jnp.zeros(2)}, {'y': jnp.zeros(2)}])
+@pytest.mark.parametrize(
+    'second, match',
+    [
+        ({'y': jnp.zeros(2), 't': 1.0}, 'treedef'),
+        ({'x': jnp.zeros(3), 't': 1.0}, r"\['x'\] member 1 holds an array of shape \(3,\)"),
+        ({'x': jnp.zeros(2, jnp.int32), 't': 1.0}, r"\['x'\] member 1 .* dtype int32"),
+        ({'x': jnp.zeros(2), 't': 2.0}, r"\['t'\] member 1 holds 2.0 and member 0 holds 1.0"),
+        ({'x': jnp.zeros(2), 't': jnp.asarray(1.0)}, r"\['t'\] member 1 holds an array"),
+    ],
+    ids=['treedef', 'shape', 'dtype', 'non-array value', 'array for a non-array'],
+)
+def test_members_differ_only_by_their_array_values(second, match):
+    with pytest.raises(ValueError, match=match):
+        ListEnsemble([{'x': jnp.zeros(2), 't': 1.0}, second])
 
 
 def test_stacked_leaves_match_their_strides():

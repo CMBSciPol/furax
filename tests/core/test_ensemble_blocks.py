@@ -169,6 +169,14 @@ def test_addition_with_another_operand_nests():
     assert_allclose(total(_x()), operator(_x()) + 2 * _x())
 
 
+def test_a_scalar_varying_over_the_members_is_an_array():
+    structure = jax.ShapeDtypeStruct((M,), jnp.float64)
+    with pytest.raises(ValueError, match=r'\.value member 1 holds 3.0 and member 0 holds 2.0'):
+        ListEnsemble([HomothetyOperator(v, in_structure=structure) for v in (2.0, 3.0)])
+    members = [HomothetyOperator(jnp.asarray(v), in_structure=structure) for v in (2.0, 3.0)]
+    assert_allclose(AdditionOperator(ListEnsemble(members))(_x()), 5 * _x())
+
+
 def test_the_policy_travels_with_the_ensemble():
     ensemble = _ensemble('stacked')
     batched = dataclasses.replace(ensemble, policy=Policy(batch=N))

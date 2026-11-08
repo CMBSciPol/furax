@@ -232,6 +232,9 @@ class ListEnsemble(Ensemble):
     to the next. Nothing is copied or stacked, but the selection grows the program by a branch per
     member: fine for tens of members, not thousands. A list ensemble is evaluated one member per
     round, on a single device.
+
+    The members must share their treedef, the shapes and dtypes of their array leaves, and their
+    non-array leaves: a Python scalar that differs from one member to the next must be an array.
     """
 
     members: Sequence[PyTree[Any]]
@@ -241,9 +244,18 @@ class ListEnsemble(Ensemble):
     def __post_init__(self) -> None:
         if not self.members:
             raise ValueError('an ensemble needs at least one member')
-        treedef = jax.tree.structure(self.members[0])
-        if any(jax.tree.structure(member) != treedef for member in self.members[1:]):
-            raise ValueError('the members of an ensemble share their treedef')
+        first, treedef = jax.tree_util.tree_flatten_with_path(self.members[0])
+        for i, member in enumerate(self.members[1:], 1):
+            leaves, member_treedef = jax.tree.flatten(member)
+            if member_treedef != treedef:
+                raise ValueError('the members of an ensemble share their treedef')
+            for (path, reference), leaf in zip(first, leaves):
+                if not _interchangeable(reference, leaf):
+                    raise ValueError(
+                        'the members of an ensemble differ only by the values of their array '
+                        f'leaves, but at {jax.tree_util.keystr(path) or "the root"} member {i} '
+                        f'holds {_described(leaf)} and member 0 holds {_described(reference)}'
+                    )
 
     @property
     def size(self) -> int:
@@ -814,9 +826,13 @@ def _resident_map_reduce(
 
     # The round body is traced once, on per-device shapes, with the member-carrying arrays as
     # inputs; the loop then evaluates the trace, and `'auto'` is resolved on it before any
-    # collective is laid out.
+    # collective is laid out. On one device the shapes are kept whole: the arrays of a list
+    # ensemble, one set per member, carry no member axis to split.
     local = [
-        jax.ShapeDtypeStruct((*x.shape[:a], x.shape[a] // devices, *x.shape[a + 1 :]), x.dtype)
+        jax.ShapeDtypeStruct(
+            x.shape if devices == 1 else (*x.shape[:a], x.shape[a] // devices, *x.shape[a + 1 :]),
+            x.dtype,
+        )
         for x, a in zip(member_arrays, member_axes)
     ]
     closed, out_shape = jax.make_jaxpr(body, return_shape=True)(
@@ -1314,6 +1330,29 @@ def _normalized_axes(
 
 def _is_array(leaf: Any) -> bool:
     return isinstance(leaf, jax.Array | np.ndarray)
+
+
+def _interchangeable(reference: Any, leaf: Any) -> bool:
+    """Whether two members may hold these leaves at the same place in their pytrees.
+
+    That is, arrays of one shape and dtype, or equal non-array leaves, which the members share.
+    """
+    if _is_array(reference) and _is_array(leaf):
+        return reference.shape == leaf.shape and reference.dtype == leaf.dtype
+    if _is_array(reference) or _is_array(leaf):
+        return False
+    if reference is leaf:
+        return True
+    try:
+        return bool(reference == leaf)
+    except (TypeError, ValueError):  # an equality without a truth value
+        return False
+
+
+def _described(leaf: Any) -> str:
+    if _is_array(leaf):
+        return f'an array of shape {leaf.shape} and dtype {leaf.dtype}'
+    return repr(leaf)
 
 
 # The resident ensembles are pytree nodes, so an operator can hold one where it holds a pytree of

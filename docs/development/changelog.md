@@ -60,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StackedEnsemble` keeps its strides through tree transformations that replace the arrays with placeholders, such as `eqx.partition` and `jax.eval_shape` (#443)
 - `.I()` accepts an explicit `preconditioner=None` with a lineax solver (#443)
 - User-guide examples broken by the single-array `Stokes` containers and other API changes (#461)
+- `ListEnsemble` rejects members that differ by a non-array leaf, which it used to take from the first member for all of them, or by the shape or dtype of an array leaf (#463)
+- `map_reduce` over a `ListEnsemble` accepts members holding 0-d arrays (#463)
 
 ## [0.17.2] - 2026-10-30
 

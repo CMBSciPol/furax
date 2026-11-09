@@ -285,15 +285,26 @@ def padding_aware_welch(
     nperseg = min(nperseg, input_samples)
 
     noverlap = nperseg // 2
-    step = nperseg - noverlap
-    n_segments = 1 + (input_samples - nperseg) // step
+    frequencies, _, spectrum = jax.scipy.signal.stft(
+        tod,
+        fs=fs,
+        nperseg=nperseg,
+        noverlap=noverlap,
+        detrend='constant',  # ty: ignore[invalid-argument-type]
+        boundary=None,
+        padded=False,
+    )
+    periodograms = jnp.real(jnp.conjugate(spectrum) * spectrum)
     window = (jnp.ones(1) if nperseg == 1 else jnp.hanning(nperseg + 1)[:-1]).astype(tod.dtype)
-    density_scale = 1 / (fs * jnp.sum(window**2))
-    frequencies = jnp.arange(nperseg // 2 + 1) * fs / nperseg
+    density_scale = window.sum() ** 2 / (fs * jnp.sum(window**2))
+    periodograms *= density_scale
+    end = None if nperseg % 2 else -1
+    periodograms = periodograms.at[..., 1:end, :].mul(2)
 
+    step = nperseg - noverlap
     real_samples = input_samples - sample_padding
     n_valid = jnp.maximum(1, 1 + (real_samples - nperseg) // step)
-    segments = jnp.arange(n_segments)
+    segments = jnp.arange(periodograms.shape[-1])
     real = segments < n_valid  # (segments,)
     if valid is not None:
         # a segment is clean when no sample in [start, start + nperseg) is flagged
@@ -305,23 +316,10 @@ def padding_aware_welch(
         # a detector without a clean segment keeps all the real ones
         keep = jnp.where(keep.any(axis=-1, keepdims=True), keep, real)
     else:
-        keep = jnp.broadcast_to(real, tod.shape[:-1] + real.shape)
-
-    # One segment at a time: a periodogram of every segment at once would hold several copies of
-    # the timestream.
-    end = None if nperseg % 2 else -1
-
-    def accumulate(i: Array, total: Array) -> Array:
-        segment = jax.lax.dynamic_slice_in_dim(tod, i * step, nperseg, axis=-1)
-        segment = (segment - segment.mean(axis=-1, keepdims=True)) * window
-        periodogram = jnp.abs(jnp.fft.rfft(segment)) ** 2 * density_scale
-        periodogram = periodogram.at[..., 1:end].mul(2)
-        return total + jnp.where(keep[..., i, None], periodogram, 0)
-
-    total = jnp.zeros((*tod.shape[:-1], frequencies.size), tod.dtype)
-    total = jax.lax.fori_loop(0, n_segments, accumulate, total)
+        keep = jnp.broadcast_to(real, periodograms.shape[:-2] + real.shape)
     count = keep.sum(axis=-1, keepdims=True)
-    return frequencies, total / count
+    psd = jnp.sum(jnp.where(keep[..., None, :], periodograms, 0), axis=-1) / count
+    return frequencies, psd
 
 
 def fit_white_noise_model(

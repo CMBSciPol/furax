@@ -57,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation: the navigation is pinned in the left sidebar, and the user-guide URLs use dashes, e.g. `user-guide/getting-started/` (#460)
 - The user-guide pages with code are notebooks, executed by the test suite and the documentation build (#461)
 - `HostEnsemble.read` returns member i as a pytree with the structure of the template, checked against it, instead of a tuple of its per-member leaves (#462)
-- Whole-observation runs have a lower peak memory: `padding_aware_welch`, `WindowedBasis` and the detector-angle rotation of demodulated data no longer hold several copies of the timestream (#466)
+- `WindowedBasis` expands its amplitudes one window slot at a time, for a lower peak memory (#466)
 
 ### Fixed
 

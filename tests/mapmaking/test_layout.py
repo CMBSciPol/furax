@@ -71,6 +71,13 @@ def test_whole_detector_batches(n_dets, batch_size, padded):
 
 
 @pytest.mark.parametrize(
+    ('n_samples', 'padded'), [(1, 1), (100, 100), (101, 108), (131071, 131072)]
+)
+def test_fft_friendly_pads_only_the_sample_count(n_samples, padded):
+    assert Shape(7, n_samples, 3).fft_friendly() == Shape(7, padded, 3)
+
+
+@pytest.mark.parametrize(
     ('n_dets', 'batch_size', 'n_batches', 'per_batch'),
     [(100, 64, 2, 64), (50, 64, 1, 50), (100, 0, 1, 100)],
 )

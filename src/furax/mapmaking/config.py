@@ -1094,6 +1094,14 @@ class MapMakingConfig:
     gap-filling and nested gap treatment with a non-diagonal noise model).
     """
 
+    fft_friendly_sample_count: bool = False
+    """Whether to pad observation lengths to an FFT-friendly length.
+
+    Such a length is a product of the factors 2, 3 and 5, which typically adds below 1% of samples.
+    FFTs over the whole length of an observation are several times faster at those lengths than at
+    one with a large prime factor. Anything that does not take such FFTs only pays for the padding.
+    """
+
     sotodlib: SotodlibConfig | None = None
     """Options specific to the sotodlib interface. `None` when not using sotodlib data."""
 

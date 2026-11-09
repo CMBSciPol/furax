@@ -16,6 +16,7 @@ from fastquat import Quaternion
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Bool, Float, Key, UInt32
 from numpy.typing import NDArray
+from scipy.fft import next_fast_len
 
 from furax.math.coords import LonLatAngles
 from furax.obs.landscapes import ProjectionType, StokesLandscape
@@ -503,6 +504,17 @@ class ObservationBufferShape(NamedTuple):
         if batch_size == 0 or self.detector_count <= batch_size:
             return self
         return self._replace(detector_count=-(-self.detector_count // batch_size) * batch_size)
+
+    def fft_friendly(self) -> Self:
+        """This shape with its sample count padded up to a product of the factors 2, 3 and 5.
+
+        Examples:
+            >>> ObservationBufferShape(10, 101).fft_friendly().sample_count
+            108
+            >>> ObservationBufferShape(10, 100).fft_friendly().sample_count
+            100
+        """
+        return self._replace(sample_count=next_fast_len(self.sample_count, real=True))
 
 
 class AbstractLazyObservation[T](ABC):

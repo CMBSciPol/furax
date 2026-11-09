@@ -258,6 +258,26 @@ class TestBuckets:
         assert row['probed_samples'] == 0
         assert row['error'] == 'probe failed: RuntimeError: simulated shape-probe failure'
 
+    def test_fft_friendly_sample_count_pads_the_buffers(self):
+        config = _config('healpix', 'IQU', max_buckets=2)
+        config.fft_friendly_sample_count = True
+        observations = [FakeLazyObservation(seed=i, n_samples=n) for i, n in enumerate((97, 121))]
+        maker = MultiObservationMapMaker(observations, config=config)
+        assert [shape.sample_count for shape in maker._probe_shapes] == [97, 121]
+        for bucket, reader in zip(maker.layout.buckets, maker.readers, strict=True):
+            n_samples = bucket.envelope.sample_count
+            assert n_samples in (100, 125)
+            assert reader.out_structure['sample_data'].shape[-1] == n_samples
+        accumulate(maker)
+
+    def test_welch_segment_is_clipped_to_the_true_length_of_padded_buffers(self):
+        config = _config('healpix', 'I', nperseg=1024)
+        config.fft_friendly_sample_count = True
+        observations = [FakeLazyObservation(seed=0, n_samples=97)]
+        maker = MultiObservationMapMaker(observations, config=config)
+        assert maker.layout.buckets[0].envelope.sample_count == 100
+        assert maker.fit_config.weighting.fitting.nperseg == 97
+
     def test_bucket_envelope_covers_toeplitz_support(self):
         config = self._correlated_config(correlation_length=64)
         observations = [GappyLazyGroundObservation(seed=0, n_samples=32)]

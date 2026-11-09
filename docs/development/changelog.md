@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax-so-map --resume` can resume an unfinished solve from a checkpoint (#405)
 - `furax-so-map` refuses an output directory in use by a run that is still going (#405)
 - `HealpixConfig` accepts `ordering='nest'`; it cannot be combined with bilinear pointing (#431)
+- `MapMakingConfig.fft_friendly_sample_count` pads the sample count of the observations up to a length with fast FFTs (#470)
 - `furax-so-map` and `furax-so-cache` take the default of `--loglevel` from the `LOGLEVEL` variable (#430)
 - `furax.tree.size`: the number of elements of a pytree (#432)
 - `ZeroOperator`, the all-zero map: `0 * op` and compositions with one return it, reduced sums drop it (#457)

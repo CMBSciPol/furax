@@ -56,17 +56,19 @@ def build_acquisition_operator(
 
     # If there is a HWP, we are in the boresight frame so we need another rotation
     #
-    # Use `atomic=True` to prevent merging with the HWP's internal rotation:
-    # QURotationHWPRule commutes rot past the HWP, then QURotationRule would
-    # absorb rot.T(gamma, ndet×1) into rot(hwp_angles, ndet×nsamp), broadcasting
-    # the per-detector gamma across all samples unnecessarily.
+    # With the HWP in the chain, use `atomic=True` to prevent merging with its internal rotation:
+    # QURotationHWPRule commutes rot past the HWP, then QURotationRule would absorb
+    # rot.T(gamma, ndet×1) into rot(hwp_angles, ndet×nsamp), broadcasting the per-detector gamma
+    # across all samples unnecessarily. Demodulated data have no HWP operator: the rotation is then
+    # left free to be absorbed into the pointing, which applies it batch by batch instead of on a
+    # whole Stokes timestream.
     gamma = gamma_angle(detector_quaternions)[:, None]
     rot = QURotationOperator.create(
         data_shape,
         dtype,
         landscape.stokes,
         angles=gamma,
-        atomic=True,
+        atomic=not demodulated,
     )
 
     # In the demodulated case, there is no polarizer

@@ -134,6 +134,13 @@ class MultiObservationMapMaker[T]:
             for row in rows
         ]
 
+    @cached_property
+    def _buffer_shapes(self) -> list[ObservationBufferShape]:
+        """The shapes the buckets and the readers size their buffers from."""
+        if not self.config.fft_friendly_sample_count:
+            return self._probe_shapes
+        return [shape.fft_friendly() for shape in self._probe_shapes]
+
     @property
     def _minimum_buffer_samples(self) -> int:
         """Smallest sample envelope accepted by the configured TOD operators."""
@@ -150,7 +157,7 @@ class MultiObservationMapMaker[T]:
     def layout(self) -> SlotLayout:
         """How the observations are bucketed and laid out over the devices."""
         return SlotLayout.create(
-            self._probe_shapes,
+            self._buffer_shapes,
             n_devices=jax.device_count(),
             max_buckets=self.config.max_buckets,
             detector_batch_size=self.config.detector_batch_size,
@@ -180,6 +187,7 @@ class MultiObservationMapMaker[T]:
         weighting = self.config.weighting
         if weighting.mode == WeightingMode.IDENTITY or weighting.source != NoiseSource.FIT:
             return self.config  # no PSD is estimated, so the segment length is unused
+        # not `_buffer_shapes`: a length padded further would admit a segment reaching the padding
         shortest = min(shape.sample_count for shape in self._probe_shapes)
         nperseg = min(weighting.fitting.nperseg, shortest)
         if nperseg == weighting.fitting.nperseg:
@@ -197,7 +205,7 @@ class MultiObservationMapMaker[T]:
         A reader reads its bucket's observations in slot order, so its buffers are sized by
         exactly the observations it can be asked to read.
         """
-        shapes = self._probe_shapes
+        shapes = self._buffer_shapes
         failed = self._catalog.probe_failed
         return tuple(
             ObservationReader.from_observations(

@@ -1,5 +1,6 @@
 import logging
 import mmap
+import threading
 import time
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
@@ -524,23 +525,135 @@ def _aligned_zeros(shape: tuple[int, ...], dtype: DTypeLike) -> np.ndarray:
     return np.frombuffer(pages, dtype).reshape(shape)
 
 
-def slice_detector_axis(field: PyTree[Array], start: Array, size: int) -> PyTree[Array]:
-    """`size` detectors from `start` of a per-detector field, such as the TOD."""
-    return jax.tree.map(
-        lambda x: jax.lax.dynamic_slice_in_dim(x, start, size, axis=x.ndim - 2), field
-    )
+class TileReader:
+    """Reads the detector tiles of the observations of an [`ObservationReader`][].
 
+    An observation is read when the first of its tiles is requested, and kept on the host until
+    the last one has been: its tiles are views of its fields. The tiles of an observation are
+    requested one after the other, but requests for different observations may come from several
+    threads, and the per-observation locks keep a read from starting twice.
 
-def slice_detectors(data: dict[str, Any], start: Array, size: int) -> dict[str, Any]:
-    """The fields read for one observation, restricted to `size` detectors from `start`.
+    Args:
+        reader: The reader of the observations.
+        tile_size: Detectors per tile.
+        tile_counts: The number of tiles that will be read from each observation of the reader,
+            in its order; an observation is released after that many.
 
-    Shared fields (timestamps, boresight, scan masks, ...) are kept whole.
+    Attributes:
+        structure: The structure of what [`read`][furax.mapmaking._reader.TileReader.read]
+            returns: the fields of a tile, their padding widths, and whether the read succeeded.
+        strides: The stride of each leaf of `structure` in an ensemble of tiles.
+        filler: What a tile that holds no detectors reads: finite filler.
     """
-    sliced = {
-        field: slice_detector_axis(value, start, size) if ReaderField(field).per_detector else value
-        for field, value in data.items()
-    }
+
+    def __init__(
+        self, reader: ObservationReader[Any], tile_size: int, tile_counts: Sequence[int]
+    ) -> None:
+        self.reader = reader
+        self.tile_size = tile_size
+        self._remaining = list(tile_counts)
+        self._held: dict[int, tuple[Any, Any, np.ndarray]] = {}
+        self._locks = [threading.Lock() for _ in tile_counts]
+        self._lock = threading.Lock()
+
+        fields, field_strides = detector_tile_structure(reader.out_structure, tile_size)
+        padding = reader._padding_structure()
+        self.structure = (fields, padding, jax.ShapeDtypeStruct((), bool))
+        # the padding widths count the tile's detectors, and the read succeeds or fails per
+        # observation
+        self.strides = (field_strides, jax.tree.map(lambda _: 1, padding), 'segment')
+        self.filler = self._tile(reader.read_filler_host(), 0)
+
+    def read(self, observation: int, start: int) -> tuple[Any, Any, np.ndarray]:
+        """The tile of `tile_size` detectors from `start` of an observation of the reader.
+
+        Args:
+            observation: The position of the observation in the reader.
+            start: The first detector of the tile.
+
+        Returns:
+            The tile, as described by `structure`.
+        """
+        with self._locks[observation]:
+            read = self._held.get(observation)
+            if read is None:
+                read = self.reader.read_host(observation)
+                self._held[observation] = read
+        with self._lock:
+            self._remaining[observation] -= 1
+            if self._remaining[observation] == 0:
+                del self._held[observation]
+        return self._tile(read, start)
+
+    def _tile(self, read: tuple[Any, Any, np.ndarray], start: int) -> tuple[Any, Any, np.ndarray]:
+        data, padding, use = read
+        data, padding = detector_tile(data, padding, start, self.tile_size)
+        return data, padding, use
+
+
+def detector_tile(
+    data: dict[str, Any], padding: dict[str, Any], start: int, size: int
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The fields read for one observation restricted to `size` detectors from `start`, on the host.
+
+    Shared fields (timestamps, boresight, scan masks, ...) are kept whole. The per-detector fields
+    are sliced along their detector axis, as views, and their padding widths along it count the
+    detectors of the tile past those read.
+
+    Args:
+        data: The fields read for one observation, padded to the reader's buffers.
+        padding: Their padding widths, one per axis of each field, as read.
+        start: The first detector of the tile.
+        size: The detectors of the tile.
+
+    Returns:
+        The tile's fields and their padding widths.
+    """
+
+    def past_read(read: int) -> int:
+        """The detectors of the tile past the `read` ones of the observation."""
+        return size - min(max(read - start, 0), size)
+
+    def tile_padding(widths: np.ndarray, leaf: np.ndarray) -> np.ndarray:
+        widths = np.array(widths)
+        widths[-2] = past_read(leaf.shape[-2] - widths[-2])
+        return widths
+
+    fields, widths = {}, {}
+    for field, value in data.items():
+        if ReaderField(field).per_detector:
+            fields[field] = jax.tree.map(lambda x: x[..., start : start + size, :], value)
+            widths[field] = jax.tree.map(tile_padding, padding[field], value)
+        else:
+            fields[field] = value
+            widths[field] = padding[field]
     if (metadata := data.get(ReaderField.METADATA)) is not None:
-        detector_uids = jax.lax.dynamic_slice_in_dim(metadata.detector_uids, start, size)
-        sliced[ReaderField.METADATA] = replace(metadata, detector_uids=detector_uids)
-    return sliced
+        uids = metadata.detector_uids
+        fields[ReaderField.METADATA] = replace(metadata, detector_uids=uids[start : start + size])
+        uid_widths = np.array(padding[ReaderField.METADATA].detector_uids)
+        uid_widths[-1] = past_read(len(uids) - uid_widths[-1])
+        widths[ReaderField.METADATA] = replace(
+            padding[ReaderField.METADATA], detector_uids=uid_widths
+        )
+    return fields, widths
+
+
+def detector_tile_structure(
+    structure: dict[str, Any], size: int
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The structure of a tile of `size` detectors of the fields of `structure`, with strides.
+
+    The stride of each leaf is that of an ensemble of tiles: 1 for a leaf of the tile alone,
+    `'segment'` for one the tiles of its observation share.
+    """
+    # the structure of `detector_tile`'s output; the buffers hold whole tiles, so the first is full
+    padding = jax.tree.map(lambda leaf: np.zeros(len(leaf.shape), dtype=np.int64), structure)
+    tiles = jax.eval_shape(lambda data: detector_tile(data, padding, 0, size)[0], structure)
+
+    strides = {}
+    for field, value in tiles.items():
+        stride = 1 if ReaderField(field).per_detector else 'segment'
+        strides[field] = jax.tree.map(lambda _, stride=stride: stride, value)
+    if ReaderField.METADATA in tiles:
+        strides[ReaderField.METADATA] = replace(strides[ReaderField.METADATA], detector_uids=1)
+    return tiles, strides

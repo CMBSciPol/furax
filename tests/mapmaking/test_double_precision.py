@@ -88,19 +88,21 @@ def test_mapmaker_readers_use_config_dtype(double_precision: bool, expected_dtyp
         assert reader.out_structure[field].dtype == expected
 
 
-@pytest.mark.parametrize('detector_batch_size', [0, 3])
-def test_float32_tod_accumulates_like_float64(detector_batch_size: int) -> None:
+@pytest.mark.parametrize('detector_tile_size', [0, 3])
+def test_float32_tod_accumulates_like_float64(detector_tile_size: int) -> None:
     # The TOD is read in float32 and converted to float64 before use, whole or one detector
     # batch at a time. The fake TOD is float32 at the source, so a float64 read gives the same sums.
     observations = [FakeLazyObservation(n_dets=7)]
     config = healpix_config(
         nside=8,
         weighting=WeightingConfig(fitting=NoiseFitConfig(nperseg=256)),
-        detector_batch_size=detector_batch_size,
+        detector_tile_size=detector_tile_size,
     )
     maker = MultiObservationMapMaker(observations, config=config)
     reference = MultiObservationMapMaker(observations, config=config)
-    shapes = reference._probe_shapes
+    # like the mapmaker's own readers, read into buffers of whole tiles
+    (bucket,) = reference.layout.buckets
+    shapes = [shape.whole_tiles(bucket.tile_size) for shape in reference._probe_shapes]
     reference.readers = (
         ObservationReader.from_observations(
             observations,

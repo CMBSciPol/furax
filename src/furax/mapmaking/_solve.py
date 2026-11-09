@@ -17,7 +17,7 @@ from furax.linalg._lanczos import LanczosWhich
 
 from ._checkpoint import CHECKPOINT_FILES, SolveCheckpoint
 from .config import SolverConfig, TwoLevelConfig
-from .layout import SlotPlacement
+from .layout import TilePlacement
 from .preconditioner import make_two_level_preconditioner
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ class MapMakingSystem:
     def solve(
         self,
         config: SolverConfig,
-        placement: SlotPlacement,
+        placement: TilePlacement,
         checkpoint_dir: Path | None = None,
         resume: bool = False,
     ) -> SystemSolution:
@@ -142,7 +142,7 @@ def _solve(
     name: str,
     checkpoint: SolveCheckpoint | None,
     config: SolverConfig,
-    placement: SlotPlacement,
+    placement: TilePlacement,
     resume: bool,
 ) -> tuple[CGResult, dict[str, Any]]:
     """Solve the normal system for the right-hand side `b`, checkpointing if requested."""

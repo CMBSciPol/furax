@@ -159,7 +159,7 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
     [
         (lambda: MapMakingConfig(max_buckets=0), 'max_buckets must be >= 1'),
         (lambda: SotodlibConfig(downsample=0), 'downsample must be >= 1'),
-        (lambda: MapMakingConfig(detector_batch_size=-1), 'detector_batch_size must be >= 0'),
+        (lambda: MapMakingConfig(detector_tile_size=-1), 'detector_tile_size must be >= 0'),
         (lambda: T2PConfig(zernike_order=-1), 'zernike_order'),
         (lambda: T2PConfig(quadrupole_order=0), 'quadrupole_order'),
         (lambda: T2PConfig(zernike_order=2, quadrupole_order=1), 'exclusive'),
@@ -176,7 +176,7 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
     ids=[
         'max_buckets',
         'downsample',
-        'detector_batch_size',
+        'detector_tile_size',
         'zernike_order',
         'quadrupole_order',
         'zernike-quadrupole-exclusive',
@@ -202,21 +202,21 @@ def test_bilinear_pointing_rejects_nested_healpix():
 
 
 @pytest.mark.parametrize('treatment', [GapTreatment.FILL, GapTreatment.NESTED])
-def test_correlated_gap_treatments_reject_detector_batches(treatment: GapTreatment):
+def test_correlated_gap_treatments_reject_detector_tiles(treatment: GapTreatment):
     correlated = WeightingConfig(mode=WeightingMode.TOEPLITZ)
-    with pytest.raises(ValueError, match='set detector_batch_size to 0'):
+    with pytest.raises(ValueError, match='set detector_tile_size to 0'):
         MapMakingConfig(weighting=correlated, gaps=GapsConfig(treatment=treatment))
     MapMakingConfig(
-        weighting=correlated, gaps=GapsConfig(treatment=treatment), detector_batch_size=0
+        weighting=correlated, gaps=GapsConfig(treatment=treatment), detector_tile_size=0
     )
     # with diagonal weights, gaps need no special treatment
-    MapMakingConfig(gaps=GapsConfig(treatment=treatment), detector_batch_size=16)
+    MapMakingConfig(gaps=GapsConfig(treatment=treatment), detector_tile_size=16)
 
 
 def test_correlated_weight_rejects_implicit_templates():
     options = {
         'weighting': WeightingConfig(mode=WeightingMode.TOEPLITZ),
-        'detector_batch_size': 0,
+        'detector_tile_size': 0,
         'gaps': GapsConfig(treatment=GapTreatment.INNER_MASK),
     }
     with pytest.raises(ValueError, match='explicit=true for spline_drift'):
@@ -231,7 +231,7 @@ def test_correlated_weight_rejects_implicit_templates():
 def test_correlated_weight_with_templates_rejects_gap_filling():
     options = {
         'weighting': WeightingConfig(mode=WeightingMode.TOEPLITZ),
-        'detector_batch_size': 0,  # gap treatments other than the inner mask need every detector
+        'detector_tile_size': 0,  # gap treatments other than the inner mask need every detector
         'templates': TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)),
     }
     with pytest.raises(ValueError, match='inner_mask or nested'):

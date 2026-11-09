@@ -34,7 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LowRankFourierOperator`: a diagonal plus low-rank matrix across channels in each frequency bin, with its inverse from the Woodbury identity (#465)
 - `Stencil.voided`: the stencil reading no pixel for the given samples (#425)
 - Ensemble members can be grouped in segments of varying length through an `owner` index: `StackedEnsemble` leaves of stride `'segment'` hold one entry per segment, and `map_reduce` keeps outputs per segment with `'segment'` and `'segment_sum'` (#445)
-- `furax.mapmaking.layout.TileLayout` splits observations into detector tiles spread over the devices, with `TileBucket` and `partition_tiles` grouping the observations by length (#446)
 
 ### Changed
 
@@ -66,6 +65,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** a pixel index of -1 reads no pixel: `PointingOperator` gathers zero for it and skips it when binning, and a resolved `Stencil` keeps -1 for a neighbour outside the map instead of pixel 0 (#425)
 - **Breaking:** `LocalStokesLandscape` maps pixels outside its subset to -1: its maps have `nlocal` pixels, and `sink`, `with_sink` and `drop_sink` are removed (#425)
 - **Breaking:** the reader pads boresight and detector quaternions with zero quaternions, which `QuaternionSampler` reads as samples without pointing (#425)
+- `MultiObservationMapMaker` splits each observation into tiles of `detector_tile_size` detectors spread over the devices, and buckets the observations by length only (#447)
+- **Breaking:** `MapMakingConfig.detector_batch_size` is renamed `detector_tile_size` (#447)
+- **Breaking:** `furax.mapmaking.layout` replaces `Bucket`, `SlotLayout`, `SlotPlacement`, `partition_padded`, `padded_volume` and `unpadded_volume` with `TileBucket`, `TileLayout`, `TilePlacement` and `partition_tiles` (#447)
 
 ### Fixed
 

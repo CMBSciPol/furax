@@ -6,10 +6,7 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-from furax.linalg import (
-    BorderedBandedMatrix,
-    probe_bordered_banded,
-)
+from furax.linalg import BorderedBandedMatrix, probe_bordered_banded
 
 BATCH = (2,)
 

@@ -5,13 +5,7 @@ from jaxtyping import Array, Float
 from furax import AbstractLinearOperator
 from furax.core.rules import AbstractCompositionRule
 
-from ..stokes import (
-    Stokes,
-    StokesI,
-    StokesQU,
-    StokesType,
-    ValidStokesLiteral,
-)
+from ..stokes import Stokes, StokesI, StokesQU, StokesType, ValidStokesLiteral
 from ._hwp import HWPOperator
 from ._qu_rotations import QURotationOperator
 

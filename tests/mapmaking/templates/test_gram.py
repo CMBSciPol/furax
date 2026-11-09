@@ -13,11 +13,7 @@ from furax.linalg import BorderedBandedMatrix
 from furax.mapmaking.templates import Template, TemplateOperator
 from furax.mapmaking.templates._builders import spline_drift_basis
 from furax.mapmaking.templates.bases import OffsetBasis, SegmentedBasis, TensorBasis
-from furax.mapmaking.templates.gram import (
-    _regularized,
-    factor,
-    template_gram,
-)
+from furax.mapmaking.templates.gram import _regularized, factor, template_gram
 from furax.mapmaking.templates.pomme import PommeProjectionOperator
 from furax.mapmaking.weight import MarginalizedWeightOperator
 from furax.obs import TODFormat

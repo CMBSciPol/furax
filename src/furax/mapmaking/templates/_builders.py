@@ -42,14 +42,7 @@ from ..config import (
     _per_stream_groups,
 )
 from ._operator import Template
-from .bases import (
-    Basis,
-    DecimatedBasis,
-    KroneckerBasis,
-    SplineBasis,
-    TensorBasis,
-    WindowedBasis,
-)
+from .bases import Basis, DecimatedBasis, KroneckerBasis, SplineBasis, TensorBasis, WindowedBasis
 
 __all__ = [
     'build_templates',

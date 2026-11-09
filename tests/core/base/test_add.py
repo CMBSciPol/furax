@@ -8,11 +8,7 @@ from jaxtyping import PyTree
 from numpy.testing import assert_array_equal
 
 from furax import AbstractLinearOperator, HomothetyOperator, IdentityOperator, square
-from furax.core import (
-    AdditionOperator,
-    CompositionOperator,
-    TransposeOperator,
-)
+from furax.core import AdditionOperator, CompositionOperator, TransposeOperator
 
 
 class Op(AbstractLinearOperator):

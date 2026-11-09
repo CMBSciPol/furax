@@ -29,7 +29,7 @@ Templates differ in a few ways:
 - a leakage that follows a field over the focal plane, the same for Q and U;
 - the offsets of Pomme, eliminated from every other template;
 - implicit templates, marginalized out of the weight;
-- a weight that correlates samples, such as a Toeplitz noise model;
+- a weight that correlates samples, such as a Toeplitz noise model, next to explicit templates;
 - several templates on one stream, of very different sizes.
 
 Treated one by one, each would need its own operator, its own Gram assembly and its own path
@@ -153,10 +153,10 @@ detector `d` and streams `s, s'`. The Gram is then
 G_gh[(o, m), (o', m')] = Σ_{d, s, s'} [o_g(s, d) = o] [o_h(s', d) = o'] C_g[s, d, m] C_h[s', d, m'] L^{d}_{ss'}
 ```
 
-Its sparsity follows from the template description and from what the weight couples. The weight may
-couple samples up to `bandwidth` apart, and the streams of a detector if `streams_coupled`; it must
-not couple detectors. Detector-correlated weights are not covered. The model admits them through
-probing, at the cost of merging detectors into larger blocks.
+Its sparsity follows from the template description. The weight is diagonal: it couples neither
+samples, nor streams, nor detectors. A correlated noise model is handled by taking the Gram under
+its zero-lag white weight, which serves the explicit templates, whose Gram only preconditions the
+system. The implicit ones need the exact Gram, so they require a diagonal weight.
 
 The amplitudes split into two classes:
 
@@ -178,7 +178,8 @@ The block structures are generic linear algebra:
 - a **bordered banded matrix**: a batch of symmetric matrices with a block-banded core and a dense
   border, each part optional, acting on `(core, border)` pairs. It factors by banded or bordered
   banded Cholesky;
-- its **recovery by probing**, from the operator it represents.
+- its **recovery by probing**, from the operator it represents, which the coarse level of a
+  marginalized global block uses.
 
 The Gram of one observation, or of one batch of its detectors, is a bordered banded matrix over
 the units, and one over the global block:
@@ -196,36 +197,19 @@ concatenate, the global blocks add up.
 ### Assembly
 
 ```python
-def template_gram(
-    operator, weight, *, bandwidth=0, streams_coupled=False, pomme_tau=None
-) -> BlockGram: ...
+def template_gram(operator, weight, *, pomme_tau=None) -> BlockGram: ...
 ```
 
-Two backends produce the same Gram, for the same layout. A diagonal weight (`bandwidth=0`,
-`streams_coupled=False`) is assembled from the structure, any other by probing. `pomme_tau` takes
-the Gram under Pomme.
+The weight is diagonal, and the Gram is assembled from the structure of the bases. `pomme_tau`
+takes the Gram under Pomme.
 
-- **Probing**, the reference. Apply `Tᵀ W T`, restricted to the templates of the block, to probe
-  amplitudes and read the Gram off the responses. Units never interact, so every unit takes the
-  same probe. The core is probed one color of blocks at a time, blocks far enough apart that their
-  responses do not overlap: `2·half_width + 1` colors, the half-width estimated from the basis
-  support and `bandwidth`. A core whose blocks are too short for that estimate is rejected. The
-  border is probed one amplitude at a time. Under a marginalized weight, the global block is all
-  border, and the responses to its probes on the local amplitudes are their coupling. It works for any
-  weight whose reach is declared, with any couplings, amplitude sets and streams. Cost: one
-  application of `T`, `W` and `Tᵀ` per probe.
-- **Structural**, for a weight diagonal in time and in streams, whose diagonal is read off by
-  applying it to ones: the banded Grams of the bases, for the core, and their dense cross Grams,
-  for the border and corner, with the weights of each (stream, detector), contracted with the
-  weights through which each detector sees the amplitude sets. The local blocks are mapped over
-  the detectors; the global ones are summed over them, in batches. For a global template with a
-  per-detector basis, such as the T2P field, that is `Σ_d C_d C_dᵀ ⊗ (B_dᵀ w_d B_d)`. The streams
-  are assembled one after the other, so that the transient memory is that of one stream.
-
-A new kind of weight works with probing first, and gets a structural fast path only if it is
-worth it. On CPU, for the per-detector templates of a demodulated SO SAT run (polynomial per
-interval and scan-synchronous on I, Q, U, T2P on Q, U; up to 512 detectors × 200 000 samples),
-probing takes 1.7 times as long as the structural assembly and 16 times its memory.
+The weight's diagonal is read off by applying it to ones. The Gram is made of the banded Grams of
+the bases, for the core, and their dense cross Grams, for the border and corner, with the weights
+of each (stream, detector), contracted with the weights through which each detector sees the
+amplitude sets. The local blocks are mapped over the detectors; the global ones are summed over
+them, in batches. For a global template with a per-detector basis, such as the T2P field, that is
+`Σ_d C_d C_dᵀ ⊗ (B_dᵀ w_d B_d)`. The streams are assembled one after the other, so that the
+transient memory is that of one stream.
 
 ### Pomme
 
@@ -238,18 +222,16 @@ is the Gram of the templates with the offsets marginalized, a Schur complement:
 G̃_TT = G_TT − G_TZ G_ZZ⁻¹ G_ZT
 ```
 
-- **By probing**, nothing changes: `W F` is a weight like any other, coupling the samples of an
-  interval, so its reach is `tau`.
-- **From the structure**, the offsets are eliminated analytically, on each detector, from the
-  weighted Grams of the bases, before their contraction with the couplings. There is one offset
-  every `tau` samples, too many to hold even as a banded core. Their Gram `D` is diagonal, the
-  weighted counts of the intervals, and each Gram of two bases loses `Cᵀ D⁻¹ C'`, with
-  `C = Zᵀ W B` a basis summed over each interval. A template shared by the detectors takes the
-  sum of these corrections over them.
-- **A time-local core keeps its band**, one block wider: an interval straddling two blocks couples
-  them. Its sums `C` are kept in the same band layout, so that no dense matrix of the core's size
-  is formed. Its blocks must be longer than an interval, such as the knots of a spline
-  HWP-synchronous template, which Pomme leaves since its harmonics are at high frequency.
+The offsets are eliminated analytically, on each detector, from the weighted Grams of the bases,
+before their contraction with the couplings. There is one offset every `tau` samples, too many to
+hold even as a banded core. Their Gram `D` is diagonal, the weighted counts of the intervals, and
+each Gram of two bases loses `Cᵀ D⁻¹ C'`, with `C = Zᵀ W B` a basis summed over each interval. A
+template shared by the detectors takes the sum of these corrections over them.
+
+A time-local core keeps its band, one block wider: an interval straddling two blocks couples them.
+Its sums `C` are kept in the same band layout, so that no dense matrix of the core's size is
+formed. Its blocks must be longer than an interval, such as the knots of a spline HWP-synchronous
+template, which Pomme leaves since its harmonics are at high frequency.
 
 A spline drift does not combine with Pomme: the offsets absorb anything smooth over `tau`, so the
 spline, smooth over much longer, would fit nothing they leave, and its Gram under `W F` would be
@@ -299,10 +281,10 @@ to the diagonal of its block, and turns deprojection into Wiener filtering,
   detector's batch. Every other amplitude, grouped ones included, is the observation's: its Gram
   and right-hand side are summed over the batches, and the Gram factored once per observation.
   Whether a template has a set per detector is read from its `per` and detector groups.
-- **The weight.** A diagonal weight gives the Gram from the structure of the bases. A banded
-  Toeplitz weight gives it by probing, with `bandwidth = correlation_length - 1`; the same
-  bandwidth applies to the templates of each detector and to the shared ones, whose Gram is summed
-  over the batches of an observation after being probed in each.
+- **The weight.** A diagonal weight gives the Gram from the structure of the bases. A correlated
+  one, a Toeplitz noise model, cannot be taken: its templates are all explicit, and
+  their Gram is taken under the zero-lag white weight, which preconditions the system and sets the
+  ridge. Configuring an implicit template with a correlated weight is an error.
 - **The system** is `A = [H T]ᵀ W' [H T]`, plus the ridge on the amplitudes, preconditioned by the
   block-Jacobi map preconditioner and `factor(gram)` on the amplitudes.
 - **The amplitudes** are one array per template, with the axes of `per` in front:
@@ -314,24 +296,23 @@ to the diagonal of its block, and turns deprojection into Wiener filtering,
 - **A new kind of template**: a new basis, if no existing one fits.
 - **A new way of sharing amplitudes**: a coupling and a choice of `per`. The T2P field common to Q
   and U is a coupling with `per=()`; a common mode per wafer is a coupling with detector groups.
-- **A new weight structure**: its reach, `bandwidth` and `streams_coupled`. It works through
-  probing, and may later get a structural fast path.
+- **A new weight structure**: a diagonal one needs nothing. Any other takes its Gram under the
+  zero-lag white weight, with explicit templates only.
 - **Marginalizing a template**: an implicit template, if it has a set per detector. One the
   detectors share would couple the batches of an observation, and take a second pass over them.
 
 ## Verification
 
 The model is checked over the combinations: each kind of basis, each choice of `per`, with and
-without coupling, on one stream or several, with one or several detector axes, under a diagonal,
-banded and stream-coupled weight. On instances small enough for dense matrices:
+without coupling, on one stream or several, with one or several detector axes, under a diagonal
+weight. On instances small enough for dense matrices:
 
 1. synthesis against the definition, one detector at a time;
 2. the transpose against the adjoint;
-3. the probed Gram against the dense `Tᵀ W T`;
-4. the structural Gram against the dense one, including detectors summed in batches that do
+3. the Gram against the dense `Tᵀ W T`, including detectors summed in batches that do
    not divide their number;
-5. `factor` against the dense Gram, exact and block by block, with and without the ridge;
-6. the Gram under Pomme against the dense `Tᵀ W F T`.
+4. `factor` against the dense Gram, exact and block by block, with and without the ridge;
+5. the Gram under Pomme against the dense `Tᵀ W F T`.
 
 Mapmaking runs check the whole: explicit and implicit templates give the same map, and detector
 batches change neither the map nor the amplitudes.

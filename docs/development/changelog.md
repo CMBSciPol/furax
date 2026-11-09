@@ -58,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The user-guide pages with code are notebooks, executed by the test suite and the documentation build (#461)
 - `HostEnsemble.read` returns member i as a pytree with the structure of the template, checked against it, instead of a tuple of its per-member leaves (#462)
 - `WindowedBasis` expands its amplitudes one window slot at a time, for a lower peak memory (#466)
+- **Breaking:** implicit templates need a diagonal weighting: `MapMakingConfig` rejects them with the Toeplitz mode, where the templates must be `explicit` and their Gram is taken under the white weight; `template_gram` loses `bandwidth`, `streams_coupled` and `method` (#472)
 
 ### Fixed
 

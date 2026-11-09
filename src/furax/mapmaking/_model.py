@@ -345,24 +345,20 @@ class TemplateBundle:
         weight: AbstractLinearOperator,
         config: TemplatesConfig,
         *,
-        bandwidth: int = 0,
         pomme_tau: int | None = None,
     ) -> Self:
         r"""Pair a template operator $T$ with its Gram inverse given a weight $W$.
 
         Args:
             operator: The template operator.
-            weight: The weight matrix.
+            weight: The diagonal weight matrix.
             config: Supplies the Gram regularization and batch size.
-            bandwidth: The largest distance, in samples, between two samples that $W$ couples; 0
-                for a diagonal $W$.
             pomme_tau: Pomme interval length, when the templates are combined with Pomme; the
                 Gram is then taken under the effective weight $W F$.
         """
         gram = template_gram(
             operator,
             weight,
-            bandwidth=bandwidth,
             pomme_tau=pomme_tau,
             batch_size=config.gram_batch_size,
         )
@@ -477,14 +473,15 @@ class ObservationTemplates:
         )
 
         # The Grams are taken under the weight of the system (see `deprojected_weight`), from
-        # `model.W` and `tau`.
+        # `model.W` and `tau`, when it is diagonal. A correlated weight couples samples, which the
+        # Grams cannot take. The templates are then all explicit (see `MapMakingConfig`), so their
+        # Grams only precondition the solve and set its ridge: those under the zero-lag white
+        # weight serve.
         pomme_tau = config.pomme_tau
-        # the Toeplitz band of a correlated weight holds lags 0 to `correlation_length - 1`
-        bandwidth = 0 if config.binned else config.weighting.correlation_length - 1
-        gram_options = {'bandwidth': bandwidth, 'pomme_tau': pomme_tau}
+        gram_weight = model.W if config.binned else model.diag_W()
 
         implicit = None
-        weight = model.W
+        weight = gram_weight
         if implicit_templates:
             if not all(template.per_detector for template in implicit_templates.values()):
                 raise NotImplementedError(
@@ -492,7 +489,7 @@ class ObservationTemplates:
                     'by detectors would couple the batches of an observation'
                 )
             op = TemplateOperator(implicit_templates)
-            implicit = TemplateBundle.create(op, model.W, tcfg, **gram_options)
+            implicit = TemplateBundle.create(op, model.W, tcfg, pomme_tau=pomme_tau)
             weight = MarginalizedWeightOperator.create(model.W, op, implicit.gram_inverse)
 
         def by_detectors(templates, per_detector):
@@ -503,14 +500,13 @@ class ObservationTemplates:
             'explicit': by_detectors(explicit_templates, True),
             'common': by_detectors(explicit_templates, False),
         }
-        weights = {'explicit': model.W, 'common': weight}
+        weights = {'explicit': gram_weight, 'common': weight}
         grams = {
             kind: None
             if op is None
             else template_gram(
                 op,
                 weights[kind],
-                bandwidth=bandwidth,
                 pomme_tau=pomme_tau,
                 batch_size=tcfg.gram_batch_size,
             )

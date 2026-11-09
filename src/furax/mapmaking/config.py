@@ -824,6 +824,15 @@ class TemplatesConfig:
             if field.metadata.get('template', True)
         )
 
+    def implicit_names(self) -> tuple[str, ...]:
+        """The enabled templates whose amplitudes are marginalized rather than solved for."""
+        return tuple(
+            field.name
+            for field in fields(self)
+            if (section := getattr(self, field.name)) is not None
+            and not getattr(section, 'explicit', True)
+        )
+
 
 @dataclass(frozen=True)
 class GapFillingConfig:
@@ -1149,16 +1158,13 @@ class MapMakingConfig:
                 )
         if self.pomme_tau is not None:
             self._check_pomme()
-        if (
-            self.use_templates
-            and not self.binned
-            and self.gaps.treatment != GapTreatment.INNER_MASK
-        ):
-            # gap filling bypasses the template path, and the nested weight couples samples
-            # across whole gaps, beyond the band of the template Grams
+        if self.use_templates and not self.binned and self.gaps.treatment == GapTreatment.FILL:
+            # gap filling bypasses the template path
             raise ValueError(
-                'Templates with correlated weighting require gaps.treatment=inner_mask.'
+                'Templates with correlated weighting require gaps.treatment=inner_mask or nested.'
             )
+        if self.templates is not None and not self.binned:
+            self._check_explicit_templates()
         if (templates := self.templates) is not None:
             for label, polarized in (
                 ('T2P', templates.t2p),
@@ -1183,6 +1189,17 @@ class MapMakingConfig:
             ):
                 if isinstance(per_stream, dict):
                     self._check_stream_groups(f'templates.{name}', per_stream)
+
+    def _check_explicit_templates(self) -> None:
+        """Check that no template is implicit: a correlated weight needs them all explicit."""
+        assert self.templates is not None
+        if implicit := self.templates.implicit_names():
+            # marginalizing amplitudes needs their exact Gram under the weight, which only a
+            # diagonal weight provides
+            raise ValueError(
+                f'weighting.mode={self.weighting.mode.value} requires explicit templates: set '
+                'explicit=true for ' + ', '.join(implicit)
+            )
 
     def _check_pomme(self) -> None:
         """Check that Pomme supports the config."""

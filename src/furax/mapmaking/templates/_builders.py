@@ -99,9 +99,12 @@ def build_templates(
         'binned_azimuth_hwp_synchronous': binned_azimuth_hwp_synchronous_templates,
         'spline_hwp_synchronous': spline_hwp_synchronous_templates,
     }
+    implicit_names = config.implicit_names()
     for name, build in builders.items():
         if (section := getattr(config, name)) is not None:
-            (explicit if section.explicit else implicit).update(build(section, data, tod_format))
+            (implicit if name in implicit_names else explicit).update(
+                build(section, data, tod_format)
+            )
     if config.t2p is not None:
         explicit.update(t2p_templates(config.t2p, data, tod_format, temperature=temperature))
     if config.common_mode is not None:

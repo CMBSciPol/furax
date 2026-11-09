@@ -98,20 +98,15 @@ class _DenseWeight(AbstractLinearOperator):
         return unravel(self.matrix @ flat)
 
 
-def _weight(op, key, bandwidth=0, streams=False, dets=ALL):
-    """A positive definite weight that couples no two detectors, nor samples more than
-    `bandwidth` apart, and couples the streams of a detector if `streams`. Each detector's own block
-    depends on that detector only."""
+def _weight(op, key, dets=ALL):
+    """A positive definite diagonal weight. Each detector's own entries depend on that detector
+    only."""
     n_streams = len(op.tod_format.stokes or 'x')  # a single stream unless demodulated
-    stream, det, samp = (a.ravel() for a in np.indices((n_streams, N_DETS, N_SAMPS)))
-    reach = (det[:, None] == det) & (np.abs(samp[:, None] - samp) <= bandwidth)
-    if not streams:
-        reach &= stream[:, None] == stream
-    a = np.asarray(jr.normal(key, reach.shape)) * reach
-    matrix = (a + a.T) / 2
-    matrix += np.diag(np.abs(matrix).sum(axis=1) + 1)  # diagonally dominant
-    kept = np.isin(det, dets)
-    return _DenseWeight(jnp.asarray(matrix[kept][:, kept]), in_structure=op.out_structure)
+    det = np.indices((n_streams, N_DETS, N_SAMPS))[1].ravel()
+    diagonal = np.abs(np.asarray(jr.normal(key, det.shape))) + 1
+    return _DenseWeight(
+        jnp.diag(jnp.asarray(diagonal[np.isin(det, dets)])), in_structure=op.out_structure
+    )
 
 
 def _dense_gram(op, weight):
@@ -146,36 +141,16 @@ def _without_coupling(matrix, op):
     return np.where(local[:, None] == local[None, :], matrix, 0)
 
 
-WEIGHTS = {
-    'diagonal': {'bandwidth': 0},
-    'banded': {'bandwidth': 3},
-    'streams_coupled': {'bandwidth': 2, 'streams': True},
-}
-
-
-# The assembly from the structure of the bases is for a diagonal weight only.
-CASES = [
-    pytest.param(templates, weight, method, id=f'{templates}-{weight}-{method}')
-    for templates in TEMPLATES
-    for weight in WEIGHTS
-    for method in ('probe', 'structure')
-    if method == 'probe' or weight == 'diagonal'
-]
-
-
-@pytest.mark.parametrize(('templates', 'weight', 'method'), CASES)
-def test_gram_is_the_dense_gram(templates, weight, method):
+@pytest.mark.parametrize('templates', list(TEMPLATES))
+def test_gram_is_the_dense_gram(templates):
     op = _operator(templates, jr.key(0))
-    W = _weight(op, jr.key(1), **WEIGHTS[weight])
-    _check_gram(op, W, WEIGHTS[weight]['bandwidth'], weight == 'streams_coupled', method)
+    _check_gram(op, _weight(op, jr.key(1)))
 
 
-def _check_gram(op, W, bandwidth, streams_coupled, method, batch_size=1, effective=None, **kw):
+def _check_gram(op, W, batch_size=1, effective=None, **kw):
     """The Gram assembled, against the dense one without the local-global coupling, under the
     weight `effective` if given."""
-    reach = {'bandwidth': bandwidth, 'streams_coupled': streams_coupled, 'method': method}
-    reach |= {'batch_size': batch_size} | kw
-    gram = template_gram(op, W, **reach)
+    gram = template_gram(op, W, batch_size=batch_size, **kw)
     expected = _without_coupling(_dense_gram(op, W if effective is None else effective), op)
     assert_allclose(_dense(gram, op), expected, rtol=1e-8, atol=1e-8)
 
@@ -217,16 +192,15 @@ def _templates_on(tod_format, key):
     }
 
 
-@pytest.mark.parametrize('method', ['probe', 'structure'])
 @pytest.mark.parametrize(
     ('stokes', 'det_shape'), [('IQU', (2, 2)), (None, (N_DETS,))], ids=['det_axes', 'no_streams']
 )
-def test_gram_on_other_tods_is_the_dense_gram(stokes, det_shape, method):
+def test_gram_on_other_tods_is_the_dense_gram(stokes, det_shape):
     tod_format = TODFormat((*det_shape, N_SAMPS), jnp.float64, stokes=stokes)
     op = TemplateOperator(_templates_on(tod_format, jr.key(14)))
     W = _weight(op, jr.key(15))
     # batches of 3 of the 4 detectors: the last one overlaps the first
-    _check_gram(op, W, 0, False, method, batch_size=3)
+    _check_gram(op, W, batch_size=3)
 
 
 def _pomme_weight(op, key):
@@ -238,18 +212,16 @@ def _pomme_weight(op, key):
     return _DenseWeight(jnp.diag(jnp.asarray(w.ravel())), in_structure=op.out_structure)
 
 
-@pytest.mark.parametrize('method', ['probe', 'structure'])
-def test_gram_under_pomme_is_the_dense_gram(method):
+def test_gram_under_pomme_is_the_dense_gram():
     tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64)
     op = TemplateOperator(_templates_on(tod_format, jr.key(18)))
     W = _pomme_weight(op, jr.key(19))
     F = PommeProjectionOperator(TAU, in_structure=tod_format.structure).as_matrix()
     effective = _DenseWeight(W.matrix @ F, in_structure=op.out_structure)
-    _check_gram(op, W, 0, False, method, batch_size=3, effective=effective, pomme_tau=TAU)
+    _check_gram(op, W, batch_size=3, effective=effective, pomme_tau=TAU)
 
 
-@pytest.mark.parametrize('method', ['probe', 'structure'])
-def test_amplitudes_the_pomme_offsets_absorb_come_back_unchanged(method):
+def test_amplitudes_the_pomme_offsets_absorb_come_back_unchanged():
     # The offsets absorb a constant on the intervals they cover: its Gram row is then zero up to
     # the rounding of the elimination, which gave it a tiny diagonal, even a negative one, and
     # NaN once factored. Here the first block of the time-local basis, and the dense one's whole.
@@ -268,7 +240,7 @@ def test_amplitudes_the_pomme_offsets_absorb_come_back_unchanged(method):
     F = PommeProjectionOperator(TAU, in_structure=tod_format.structure).as_matrix()
     effective = _DenseWeight(W.matrix @ F, in_structure=op.out_structure)
 
-    gram = template_gram(op, W, pomme_tau=TAU, method=method)
+    gram = template_gram(op, W, pomme_tau=TAU)
     assert_allclose(_dense(gram, op), _dense_gram(op, effective), rtol=1e-8, atol=1e-8)
     inverse, _ = factor(gram, regularization=1e-3)
 
@@ -298,19 +270,12 @@ def test_blocks_not_stated_longer_than_a_pomme_interval_are_rejected(block_lengt
         template_gram(op, _pomme_weight(op, jr.key(22)), pomme_tau=TAU)
 
 
-def test_structure_is_for_a_diagonal_weight_only():
-    op = _operator('local', jr.key(16))
-    W = _weight(op, jr.key(17), bandwidth=1)
-    with pytest.raises(ValueError, match='diagonal weight only'):
-        template_gram(op, W, bandwidth=1, method='structure')
-
-
 @pytest.mark.parametrize('regularization', [0.0, 0.1], ids=['plain', 'ridge'])
 @pytest.mark.parametrize('templates', list(TEMPLATES))
 def test_factor_inverts_the_gram(templates, regularization):
     op = _operator(templates, jr.key(4))
-    W = _weight(op, jr.key(5), bandwidth=2)
-    gram = template_gram(op, W, bandwidth=2)
+    W = _weight(op, jr.key(5))
+    gram = template_gram(op, W)
     inverse, ridge = factor(gram, regularization=regularization)
     assert (ridge is None) == (regularization == 0)
 
@@ -323,14 +288,13 @@ def test_factor_inverts_the_gram(templates, regularization):
 
 
 @pytest.mark.parametrize('regularization', [0.0, 0.1], ids=['plain', 'ridge'])
-@pytest.mark.parametrize('method', ['probe', 'structure'])
-def test_gram_under_a_marginalized_weight(method, regularization):
+def test_gram_under_a_marginalized_weight(regularization):
     local = TemplateOperator(_local(jr.key(9)))
     shared = TemplateOperator(_global(jr.key(10)))
     W = _weight(TemplateOperator(local.templates | shared.templates), jr.key(11))
-    local_inverse, _ = factor(template_gram(local, W, method=method), regularization=regularization)
+    local_inverse, _ = factor(template_gram(local, W), regularization=regularization)
     W_marginal = MarginalizedWeightOperator.create(W, local, local_inverse)
-    gram = template_gram(shared, W_marginal, method=method)
+    gram = template_gram(shared, W_marginal)
     inverse, ridge = factor(gram, regularization=regularization)
 
     x = tree.normal_like(shared.in_structure, jr.key(12))
@@ -374,31 +338,23 @@ def _time_local(key, block_lengths=(64, 64), field=False):
     return TemplateOperator(local), TemplateOperator(shared)
 
 
-def _banded_weight(op, key, bandwidth):
-    """A positive definite weight coupling no two detectors, nor samples more than `bandwidth`
-    apart."""
-    det, samp = (a.ravel() for a in np.indices((N_DETS, LONG)))
-    reach = (det[:, None] == det) & (np.abs(samp[:, None] - samp) <= bandwidth)
-    a = np.asarray(jr.normal(key, reach.shape)) * reach
-    matrix = (a + a.T) / 2
-    matrix += np.diag(np.abs(matrix).sum(axis=1) + 1)
-    return _DenseWeight(jnp.asarray(matrix), in_structure=op.out_structure)
+def _long_weight(op, key):
+    """A positive definite diagonal weight over the long TOD."""
+    diagonal = np.abs(np.asarray(jr.normal(key, (N_DETS * LONG,)))) + 1
+    return _DenseWeight(jnp.diag(jnp.asarray(diagonal)), in_structure=op.out_structure)
 
 
 @pytest.mark.parametrize('field', [False, True], ids=['core', 'bordered'])
-@pytest.mark.parametrize('bandwidth', [1, 9])
-def test_gram_of_time_local_templates_under_a_marginalized_weight_is_probed_by_color(
-    bandwidth, field
-):
+def test_gram_of_time_local_templates_under_a_marginalized_weight_is_probed_by_color(field):
     # The coupling of a time-local common mode to time-local templates of each detector is read
     # off the colored probes of its band, fewer than its amplitudes. The block keeps its band, the
     # Gram under the plain weight, and the term the marginalized weight takes from it is that on
     # the coarse amplitudes and the border, when the block is too large to be dense.
     local, shared = _time_local(jr.key(13), field=field)
-    W = _banded_weight(shared, jr.key(14), bandwidth)
-    local_inverse, _ = factor(template_gram(local, W, bandwidth=bandwidth), regularization=0.1)
+    W = _long_weight(shared, jr.key(14))
+    local_inverse, _ = factor(template_gram(local, W), regularization=0.1)
     W_marginal = MarginalizedWeightOperator.create(W, local, local_inverse)
-    gram = template_gram(shared, W_marginal, bandwidth=bandwidth, max_dense=0)
+    gram = template_gram(shared, W_marginal, max_dense=0)
     assert gram.coarse is not None
     plain = _dense_gram(shared, W)
     assert_allclose(gram.global_.matrix.as_matrix(), plain, rtol=1e-7, atol=1e-8)
@@ -415,19 +371,16 @@ def test_gram_of_time_local_templates_under_a_marginalized_weight_is_probed_by_c
     assert np.linalg.eigvalsh((dense + dense.T) / 2).min() > 0
 
 
-@pytest.mark.parametrize('bandwidth', [1, 9])
 @pytest.mark.parametrize('block_lengths', [(64, 64), None], ids=['small', 'unbounded'])
-def test_marginalized_gram_of_time_local_templates_is_inverted_exactly_when_dense(
-    bandwidth, block_lengths
-):
+def test_marginalized_gram_of_time_local_templates_is_inverted_exactly_when_dense(block_lengths):
     # A block of at most `max_dense` amplitudes is assembled dense and inverted exactly, as is any
     # block when the local templates state no block lengths: the coarse amplitudes then have no
     # bounded band.
     local, shared = _time_local(jr.key(13), block_lengths=block_lengths)
-    W = _banded_weight(shared, jr.key(14), bandwidth)
-    local_inverse, _ = factor(template_gram(local, W, bandwidth=bandwidth), regularization=0.1)
+    W = _long_weight(shared, jr.key(14))
+    local_inverse, _ = factor(template_gram(local, W), regularization=0.1)
     W_marginal = MarginalizedWeightOperator.create(W, local, local_inverse)
-    gram = template_gram(shared, W_marginal, bandwidth=bandwidth)
+    gram = template_gram(shared, W_marginal)
     assert gram.coarse is None
     inverse, ridge = factor(gram, regularization=0.1)
     assert ridge is not None
@@ -438,20 +391,14 @@ def test_marginalized_gram_of_time_local_templates_is_inverted_exactly_when_dens
     assert_allclose(ravel_pytree(inverse(unravel(gram_x)))[0], flat, rtol=1e-7, atol=1e-8)
 
 
-@pytest.mark.parametrize(
-    ('bandwidth', 'regularization'),
-    [(0, 0.0), (9, 0.0), (0, 1e-6)],
-    ids=['structure', 'probe', 'ridge'],
-)
-def test_absorbed_directions_are_inverted_at_the_ridge_or_the_rounding_cutoff(
-    bandwidth, regularization
-):
+@pytest.mark.parametrize('regularization', [0.0, 1e-6], ids=['plain', 'ridge'])
+def test_absorbed_directions_are_inverted_at_the_ridge_or_the_rounding_cutoff(regularization):
     # The local templates absorb some directions of the common mode, which only the ridge holds:
     # `r / (1 + r)` normalized by the diagonal of the regularized Gram. The inverse solves the
     # Gram on the other directions, and inverts those at the ridge, or at the rounding cutoff if
     # larger, so that it stays positive definite.
-    shared, W, W_marginal = _absorbed_common_mode(bandwidth)
-    gram = template_gram(shared, W_marginal, bandwidth=bandwidth)
+    shared, W, W_marginal = _absorbed_common_mode()
+    gram = template_gram(shared, W_marginal)
     inverse, _ = factor(gram, regularization=regularization)
 
     G = np.asarray(_dense_gram(shared, W_marginal))
@@ -491,7 +438,7 @@ def test_banded_coupling_apply_is_the_transpose_of_contract():
         jr.normal(k[0], (n_colors, n_k, n_units, n_local, 1)),
         jr.randint(k[1], (n_colors, n_local), 0, n_blocks + 1),  # `n_blocks` reaches none
         jr.normal(k[2], (n_border, n_units, n_local)),
-        jr.permutation(k[3], n_blocks * n_k + n_border),
+        n_blocks,
     )
     v = jr.normal(k[4], (coupling.n_rows,))
     w = jr.normal(k[5], (n_units, n_local))
@@ -512,11 +459,9 @@ def test_coarse_amplitudes_synthesize_the_local_functions():
         }
     )
     layout = gram_module._Layout.of(
-        operator, ('common',), local=False, dense=False, streams_coupled=True
+        operator, ('common',), local=False, dense=False, split_streams=False
     )
-    reading = gram_module._Layout.of(
-        operator, ('drift',), local=True, dense=False, streams_coupled=False
-    )
+    reading = gram_module._Layout.of(operator, ('drift',), local=True, dense=False)
     coarse = gram_module._coarse_projection(operator, layout, reading, batch_size=4)
     assert coarse is not None and coarse.size == local.size
     for j in range(local.size):
@@ -557,7 +502,7 @@ def _coarse_matrix(coarse, n_border=0):
     return block_diag(projection, np.eye(n_border))
 
 
-def _absorbed_common_mode(bandwidth):
+def _absorbed_common_mode():
     """A common mode, the weight, and that weight with a template absorbing some of it marginalized.
 
     Each detector's constant over 8 blocks absorbs those of the common mode: the Gram of the common
@@ -573,28 +518,22 @@ def _absorbed_common_mode(bandwidth):
         OffsetBasis(8, LONG, jnp.float64), tod_format, per=(), coupling=jr.normal(k[1], (N_DETS, 1))
     )
     shared = TemplateOperator({'common': common})
-    W = _banded_weight(shared, k[0], bandwidth)
-    local_inverse, _ = factor(template_gram(local, W, bandwidth=bandwidth))
+    W = _long_weight(shared, k[0])
+    local_inverse, _ = factor(template_gram(local, W))
     return shared, W, MarginalizedWeightOperator.create(W, local, local_inverse)
 
 
-@pytest.mark.parametrize('bandwidth', [0, 3, 20])
-def test_reach_of_time_blocks_matches_the_bases(bandwidth):
+def test_reach_of_time_blocks_matches_the_bases():
     local, shared = _time_local(jr.key(16))
     local_basis = local.templates['drift'].basis
     global_basis = shared.templates['common'].basis
-    first, last = gram_module._reach(local_basis, global_basis, bandwidth)
-    # brute force: the global blocks read by samples within `bandwidth` of each local block's
+    first, last = gram_module._reach(local_basis, global_basis)
+    # brute force: the global blocks read by the samples reading each local block
     local_blocks = np.asarray(local_basis.support().blocks)
     global_blocks = np.asarray(global_basis.support().blocks)
     for block in range(local_basis._n_blocks):
         samples = np.flatnonzero((local_blocks == block).any(axis=1))
-        near = np.unique(
-            np.clip(
-                np.arange(samples.min() - bandwidth, samples.max() + bandwidth + 1), 0, LONG - 1
-            )
-        )
-        reached = global_blocks[near].ravel()
+        reached = global_blocks[np.arange(samples.min(), samples.max() + 1)].ravel()
         assert (int(first[block]), int(last[block])) == (reached.min(), reached.max())
 
 
@@ -623,36 +562,17 @@ def test_unseen_amplitudes_come_back_unchanged():
     assert_allclose(inverse(x)['wafer'][1], x['wafer'][1])
 
 
-@pytest.mark.parametrize(
-    ('streams_coupled', 'method'),
-    [(False, 'probe'), (False, 'structure'), (True, 'probe')],
-    ids=['streams_apart-probe', 'streams_apart-structure', 'streams_coupled-probe'],
-)
-def test_units_split_the_streams_the_weight_does_not_couple(streams_coupled, method):
+def test_units_split_the_streams():
     # every template here has its own amplitudes on each stream
     templates = _local(jr.key(10)) | {'common': _global(jr.key(11))['common']}
     op = TemplateOperator(templates)
-    W = _weight(op, jr.key(12), streams=streams_coupled)
-    gram = template_gram(op, W, streams_coupled=streams_coupled, method=method)
+    W = _weight(op, jr.key(12))
+    gram = template_gram(op, W)
 
-    n_streams = 1 if streams_coupled else len(STOKES)
-    assert gram.local.matrix.bands.shape[0] == N_DETS * n_streams
-    assert gram.global_.matrix.bands.shape[0] == n_streams
+    assert gram.local.matrix.bands.shape[0] == N_DETS * len(STOKES)
+    assert gram.global_.matrix.bands.shape[0] == len(STOKES)
     expected = _without_coupling(_dense_gram(op, W), op)
     assert_allclose(_dense(gram, op), expected, rtol=1e-8, atol=1e-8)
-
-
-def test_blocks_of_unknown_length_are_probed_whole():
-    # three 1-sample intervals: samples 3 apart couple blocks 3 apart, which a band estimated
-    # from the mean block length would miss
-    segment = jnp.repeat(
-        jnp.arange(4), jnp.array([1, 1, 1, N_SAMPS - 3]), total_repeat_length=N_SAMPS
-    )
-    basis = SegmentedBasis(segment.astype(jnp.int32), jnp.ones((1, N_SAMPS)), 4)
-    op = TemplateOperator({'poly': Template(basis, _tod_format(), streams='iqu')})
-    W = _weight(op, jr.key(13), bandwidth=3)
-    gram = template_gram(op, W, bandwidth=3)
-    assert_allclose(_dense(gram, op), _dense_gram(op, W), rtol=1e-10, atol=1e-10)
 
 
 def test_regularized_adds_the_ridge_and_a_unit_diagonal_on_unseen_rows():

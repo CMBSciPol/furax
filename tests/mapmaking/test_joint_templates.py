@@ -15,6 +15,7 @@ from polars.testing import assert_frame_equal
 
 from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
+    AzimuthSynchronousConfig,
     CommonModeConfig,
     GapsConfig,
     GapTreatment,
@@ -22,8 +23,6 @@ from furax.mapmaking.config import (
     MapMakingConfig,
     NoiseFitConfig,
     NoiseSource,
-    PolynomialOrders,
-    ScanSynchronousConfig,
     SolverConfig,
     SotodlibConfig,
     SplineDriftConfig,
@@ -59,6 +58,10 @@ def _hwp_obs(n_obs: int = 2, n_dets: int = 8, n_samples: int = 1024):
     return [FakeLazyObservation(seed=i, n_dets=n_dets, n_samples=n_samples) for i in range(n_obs)]
 
 
+def _azimuth_spline(n_knots: int, explicit: bool, split: bool = False) -> AzimuthSynchronousConfig:
+    return AzimuthSynchronousConfig(n_knots=n_knots, split_scans=split, explicit=explicit)
+
+
 def _ground_obs(n_obs: int = 2, n_dets: int = 8, n_samples: int = 1024, **kwargs):
     return [
         FakeLazyGroundObservation(seed=i, n_dets=n_dets, n_samples=n_samples, **kwargs)
@@ -72,10 +75,14 @@ def _ground_obs(n_obs: int = 2, n_dets: int = 8, n_samples: int = 1024, **kwargs
         (_hwp_obs, lambda e: TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=e))),
         (
             _ground_obs,
-            lambda e: TemplatesConfig(scan_synchronous=ScanSynchronousConfig(explicit=e)),
+            lambda e: TemplatesConfig(azimuth_synchronous=_azimuth_spline(6, e)),
+        ),
+        (
+            _ground_obs,
+            lambda e: TemplatesConfig(azimuth_synchronous=_azimuth_spline(6, e, split=True)),
         ),
     ],
-    ids=['hwp_synchronous', 'scan_synchronous'],
+    ids=['hwp_synchronous', 'azimuth_spline', 'azimuth_spline_split'],
 )
 def test_explicit_and_implicit_give_the_same_map(observations, template):
     # Marginalising the amplitudes (implicit deprojection) is exactly equivalent to solving
@@ -97,12 +104,12 @@ def test_mixed_explicit_and_implicit():
     cfg = _config(
         TemplatesConfig(
             hwp_synchronous=HWPSynchronousConfig(2, explicit=True),
-            scan_synchronous=ScanSynchronousConfig(explicit=False),
+            azimuth_synchronous=_azimuth_spline(6, False),
         )
     )
     templates = accumulate(MultiObservationMapMaker(_ground_obs(), config=cfg)).buckets[0].templates
     assert list(templates.explicit.operator.templates) == ['hwp_synchronous']
-    assert list(templates.implicit.operator.templates) == ['scan_synchronous']
+    assert list(templates.implicit.operator.templates) == ['azimuth_synchronous']
 
 
 def test_two_level_preconditioner_with_explicit_templates():
@@ -135,20 +142,20 @@ def test_spline_drift_has_amplitudes_per_detector_and_knot():
             {'i': 256, 'q': 128, 'u': 128},
             {'spline_drift_i': 'i', 'spline_drift_qu': 'qu'},
         ),
-        ('scan_synchronous', {'qu': PolynomialOrders(2, 5)}, {'scan_synchronous_qu': 'qu'}),
+        ('azimuth_synchronous', {'qu': 6}, {'azimuth_synchronous_qu': 'qu'}),
     ],
 )
 def test_demodulated_streams_fitted_alike_form_one_template(name, option, templates):
     # the streams fitted alike share one template, so an observation stores its basis once; the
     # amplitudes stay one set per stream, on the streams given an option only
-    template = SplineDriftConfig() if name == 'spline_drift' else ScanSynchronousConfig()
+    template = SplineDriftConfig() if name == 'spline_drift' else _azimuth_spline(6, False)
     cfg = _config(TemplatesConfig(**{name: template}))
     cfg.sotodlib = SotodlibConfig(demodulated=True)
     # set after demodulation, which per-stream options require
     if name == 'spline_drift':
         template.samples_per_knot = option
     else:
-        template.legendre = option
+        template.n_knots = option
     acc = accumulate(MultiObservationMapMaker(_ground_obs(), config=cfg))
     operator = acc.buckets[0].templates.implicit.operator
     assert {key: t.streams for key, t in operator.templates.items()} == templates
@@ -182,9 +189,7 @@ def _detector_batch_systems(cfg: MapMakingConfig, observations=_ground_obs, **ob
         ),
         (
             _ground_obs,
-            TemplatesConfig(
-                scan_synchronous=ScanSynchronousConfig(explicit=False), t2p=T2PConfig()
-            ),
+            TemplatesConfig(azimuth_synchronous=_azimuth_spline(6, False), t2p=T2PConfig()),
             True,
         ),
     ],
@@ -353,8 +358,8 @@ def test_explicit_and_implicit_agree_under_a_ridge(batch):
     # amplitude block, otherwise the two solves estimate different maps. With one detector per
     # batch, the ridge is laid out over several slices per observation.
     def run(explicit: bool):
-        scan = ScanSynchronousConfig(legendre=PolynomialOrders(0, 3), explicit=explicit)
-        config = _pomme_config(TemplatesConfig(scan_synchronous=scan))
+        scan = _azimuth_spline(5, explicit)
+        config = _pomme_config(TemplatesConfig(azimuth_synchronous=scan))
         config.templates.regularization = 1e-3  # large enough to tell the two systems apart
         config = replace(config, detector_batch_size=batch)
         observations = _ground_obs(n_obs=1, n_dets=2, n_samples=256)
@@ -386,12 +391,10 @@ def _toeplitz_config(
         (_hwp_obs, lambda e: TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=e))),
         (
             _ground_obs,
-            lambda e: TemplatesConfig(
-                scan_synchronous=ScanSynchronousConfig(PolynomialOrders(1, 3), explicit=e)
-            ),
+            lambda e: TemplatesConfig(azimuth_synchronous=_azimuth_spline(4, e)),
         ),
     ],
-    ids=['hwp_synchronous', 'scan_synchronous'],
+    ids=['hwp_synchronous', 'azimuth_spline'],
 )
 def test_correlated_weight_explicit_and_implicit_give_the_same_map(observations, template):
     # Under a correlated weight, marginalizing the amplitudes needs the exact Gram, probed from the

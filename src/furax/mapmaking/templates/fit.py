@@ -35,14 +35,13 @@ class TemplateFit:
 
     Args:
         operator: The template operator $T$.
-        weight: The weight $W$ on the TOD.
+        weight: The weight $W$ on the TOD, diagonal.
         regularization: The relative ridge of the Gram blocks; 0 for none.
-        batch_size: The number of detectors, or probes, the Gram is assembled from at once.
+        batch_size: The number of detectors the Gram is assembled from at once.
         solver: The conjugate gradient settings, by default those of
             [`CGSolver`][furax.linalg.CGSolver].
         **gram_options: The other options of
-            [`template_gram`][furax.mapmaking.templates.gram.template_gram], such as `bandwidth`
-            for a weight that couples samples, or `pomme_tau`.
+            [`template_gram`][furax.mapmaking.templates.gram.template_gram], such as `pomme_tau`.
 
     Examples:
         Two detectors, each with a linear drift and an unknown offset, and a flagged sample:

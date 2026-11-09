@@ -1,11 +1,9 @@
 r"""The Gram $T^\top W T$ of a template operator, its assembly and its inverse.
 
-Under a weight $W$ diagonal in time and in streams, the Gram is assembled from the structure of the
-bases, their weighted Grams ([`Basis.gram`][furax.mapmaking.templates.bases.Basis.gram]).
-Otherwise it is assembled by probing: applying $T^\top W T$ to a few probe amplitudes and reading
-its entries off the responses. That needs no structure from the
-weight beyond its reach: it must not couple detectors, nor samples more than `bandwidth` apart, nor
-streams unless declared. Both lay out the Gram alike, the probed bands possibly wider.
+The weight $W$ is diagonal in time, in streams and in detectors, so the Gram is assembled from the
+structure of the bases, their weighted Grams
+([`Basis.gram`][furax.mapmaking.templates.bases.Basis.gram]). Only the coupling of a time-local
+global block to local templates, under a marginalized weight, is read off colored probes.
 
 The amplitudes split in two. The **local** ones belong to templates with a set per detector
 ([`Template.per_detector`][furax.mapmaking.templates.Template.per_detector]): a detector's
@@ -26,7 +24,7 @@ the others are seen: the Gram of global templates is also assembled under a
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from math import prod
-from typing import Literal, NamedTuple, Self
+from typing import NamedTuple, Self
 
 import jax
 import jax.numpy as jnp
@@ -47,7 +45,6 @@ from ..weight import MarginalizedWeightOperator
 from . import _structure
 from ._operator import TemplateOperator
 from .bases import Basis, OffsetBasis, _einsum
-from .pomme import PommeProjectionOperator
 
 __all__ = [
     'BlockGram',
@@ -79,26 +76,21 @@ def template_gram(
     operator: TemplateOperator,
     weight: AbstractLinearOperator,
     *,
-    bandwidth: int = 0,
-    streams_coupled: bool = False,
     pomme_tau: int | None = None,
-    method: Literal['structure', 'probe'] | None = None,
     batch_size: int = 1,
     max_dense: int = 4096,
 ) -> BlockGram:
     r"""Assemble the Gram $T^\top W T$, or $T^\top W F T$ with the Pomme projector $F$.
 
-    A weight diagonal in time and in streams (`bandwidth=0`, `streams_coupled=False`) is read off by
-    applying it to ones, and the Gram assembled from the structure of the bases. Any other weight
-    is probed.
+    The weight must be diagonal: it is read off by applying it to ones, and the Gram assembled from
+    the structure of the bases.
 
     With `pomme_tau`, the Gram is that under $W F$, with $F$ the
     [`PommeProjectionOperator`][furax.mapmaking.templates.pomme.PommeProjectionOperator] removing
     the mean of each interval of `pomme_tau` samples. $W$ must then be constant on each interval, as
-    the Pomme path makes it by masking intervals whole: $W F$ is the weight with the interval offsets
-    marginalized. Probed, $W F$ is a weight reaching `pomme_tau` samples; from the structure, the
-    offsets are eliminated from the Gram. A time-local template next to Pomme must have blocks
-    longer than an interval.
+    the Pomme path makes it by masking intervals whole: $W F$ is the weight with the interval
+    offsets marginalized: the offsets are eliminated from the Gram. A time-local template next to
+    Pomme must have blocks longer than an interval.
 
     Under a [`MarginalizedWeightOperator`][furax.mapmaking.weight.MarginalizedWeightOperator]
     $W' = W - W T_i G_i^{-1} T_i^\top W$ of templates $T_i$ whose amplitudes are each
@@ -106,9 +98,8 @@ def template_gram(
 
     $$ T_g^\top W' T_g = T_g^\top W T_g - C^\top G_i^{-1} C, $$
 
-    with $C = T_i^\top W T_g$ their coupling. `bandwidth` and `streams_coupled` then describe
-    $W$, and `pomme_tau` applies $F$ to it. As the local templates couple all the global amplitudes
-    they see, the Gram is one dense block, the subtracted term held apart (`marginal`) so that
+    with $C = T_i^\top W T_g$ their coupling, and `pomme_tau` applies $F$ to $W$. As the local
+    templates couple all the global amplitudes they see, the Gram is one dense block, the subtracted term held apart (`marginal`) so that
     [`factor`][] takes the ridge from $T_g^\top W T_g$. When both the global block and the local
     templates are time-local, and the global block has more than `max_dense` amplitudes, it keeps
     its band instead, $T_g^\top W T_g$, and the subtracted term is taken on coarse amplitudes only
@@ -119,26 +110,20 @@ def template_gram(
 
     Args:
         operator: The template operator $T$.
-        weight: The weight $W$. It must not couple detectors, nor samples more than `bandwidth`
-            apart, nor the streams of a detector unless `streams_coupled`. It may also be such a
-            weight with local templates marginalized, when `operator` has global templates only.
-        bandwidth: The largest distance, in samples, between two samples that $W$ couples.
-        streams_coupled: Whether $W$ couples the streams of a detector, such as Q and U.
+        weight: The weight $W$, diagonal. It may also be such a weight with local templates
+            marginalized, when `operator` has global templates only.
         pomme_tau: The length of the Pomme intervals, when the templates are combined with Pomme.
-        method: `'structure'` or `'probe'` to choose the assembly; by default, from the
-            structure when the weight is diagonal, by probing otherwise.
-        batch_size: The number of probes applied at once, or of detectors assembled at once
-            from the structure, bounding the memory of the assembly.
+        batch_size: The number of detectors, or of probes, assembled at once, bounding the memory
+            of the assembly.
         max_dense: The most global amplitudes whose Gram under a marginalized weight is one dense
             block, inverted exactly, rather than banded with coarse amplitudes. The dense block
             takes memory quadratic in their number.
 
     Raises:
         TypeError: If the templates of a marginalized weight are not a [`TemplateOperator`][].
-        ValueError: If the weight is marginalized and `operator` has local templates. If the assembly from the structure is asked for a weight that is not
-            diagonal, or Pomme for a demodulated TOD, or, from the structure, Pomme next to a
-            time-local template whose `block_lengths` do not state blocks at least an interval
-            long.
+        ValueError: If the weight is marginalized and `operator` has local templates, or Pomme is
+            asked for a demodulated TOD, or Pomme is next to a time-local template whose
+            `block_lengths` do not state blocks at least an interval long.
     """
     marginalized = None
     if isinstance(weight, MarginalizedWeightOperator):
@@ -155,28 +140,20 @@ def template_gram(
         if tod_format.stokes is not None:
             raise ValueError('Pomme filtering applies to a TOD that is not demodulated')
         pomme = OffsetBasis(pomme_tau, tod_format.n_samples, tod_format.dtype)
-    diagonal = bandwidth == 0 and not streams_coupled
-    if method is None:
-        method = 'structure' if diagonal else 'probe'
-    if method == 'structure' and not diagonal:
-        raise ValueError('the Gram is assembled from the structure for a diagonal weight only')
     local = tuple(name for name, t in operator.templates.items() if t.per_detector)
     rest = tuple(name for name in operator.templates if name not in local)
     local_layout = global_layout = None
     if local:
-        local_layout = _Layout.of(
-            operator, local, local=True, dense=False, streams_coupled=streams_coupled
-        )
+        local_layout = _Layout.of(operator, local, local=True, dense=False)
     if rest:
         global_layout = _Layout.of(
             operator,
             rest,
             local=False,
             dense=marginalized is not None,
-            streams_coupled=streams_coupled,
         )
 
-    if method == 'structure' and pomme is not None:
+    if pomme is not None:
         # an interval straddles two blocks of a time-local core at most, its band one wider
         for layout in (local_layout, global_layout):
             if layout is not None and layout.core is not None:
@@ -189,45 +166,30 @@ def template_gram(
                     )
                     raise ValueError(msg)
 
-    diagonal_weights = None
-    if method == 'structure':
-        weights = tod_format.as_array(weight(tod_format.ones()))
-        diagonal_weights = tuple(
-            weights.reshape(tod_format.n_streams, tod_format.n_dets, tod_format.n_samples)
-        )
-    elif pomme is not None:  # W F couples the samples of an interval
-        weight = weight @ PommeProjectionOperator(pomme.tau, in_structure=tod_format.structure)
-        bandwidth = max(bandwidth, pomme.tau - 1)
+    weights = tod_format.as_array(weight(tod_format.ones()))
+    diagonal_weights = tuple(
+        weights.reshape(tod_format.n_streams, tod_format.n_dets, tod_format.n_samples)
+    )
 
     def assemble(layout, reading):
-        if diagonal_weights is None:
-            matrix, cross = _probe(operator, weight, layout, reading, bandwidth, batch_size)
-        else:
-            matrix, cross = _structure.assemble(
-                operator, diagonal_weights, layout, reading, batch_size, pomme
-            )
+        matrix, cross = _structure.assemble(
+            operator, diagonal_weights, layout, reading, batch_size, pomme
+        )
         return _Part(matrix, layout), cross
 
     if marginalized is not None:  # the local block is that of the marginalized templates
         assert global_layout is not None and local_layout is not None
         # a single unit, as the dense layout, but with the time-local core of the global block
-        banded = _Layout.of(operator, rest, local=False, dense=False, streams_coupled=True)
+        banded = _Layout.of(operator, rest, local=False, dense=False, split_streams=False)
         time_local = _time_local(operator, banded, local_layout)
-        # The coarse amplitudes need the block probed under `weight` itself, which carries the
-        # Pomme projector wherever Pomme applies, except on the structure path.
+        # The coarse amplitudes need the block probed under `weight` itself, which does not carry
+        # the Pomme projector: with Pomme, the block is dense.
         coarse = None
-        if (
-            time_local
-            and (diagonal_weights is None or pomme is None)
-            and global_layout.size > max_dense
-        ):
+        if time_local and pomme is None and global_layout.size > max_dense:
             coarse = _coarse_projection(operator, banded, local_layout, batch_size)
-        if coarse is not None or (time_local and diagonal_weights is None):
-            dense = None if coarse is not None else global_layout
-            matrix, cross = _probe_time_local(
-                operator, weight, banded, local_layout, dense, bandwidth, batch_size
-            )
-            global_part = _Part(matrix, global_layout if dense else banded)
+        if coarse is not None:
+            matrix, cross = _probe_time_local(operator, weight, banded, local_layout, batch_size)
+            global_part = _Part(matrix, banded)
         else:
             global_part, rows = assemble(global_layout, local_layout)
             assert rows is not None
@@ -364,57 +326,51 @@ class _BandedCoupling(NamedTuple):
 
     The responses to the colored probes of the global core (see `_probe_time_local`): a local
     block's response to a color is its coupling to the one global block of that color it reaches,
-    if any. The global amplitudes are those of the core, block by block, then of the border, in
-    the order `order` gives.
+    if any. The global amplitudes are those of the core, block by block, then of the border.
     """
 
     core: Float[Array, 'color k unit local_block local_k']
     reached: Int[Array, 'color local_block']
     """The global block of each color a local block reaches, `n_blocks` for none."""
     border: Float[Array, 'border unit local']
-    order: Int[Array, ' global']
-    """Where each global amplitude is among the core ones, then the border ones."""
+    n_blocks: int
+    """The number of blocks of the global core."""
 
     @property
     def n_rows(self) -> int:
-        return self.order.shape[0]
+        return self.n_blocks * self.core.shape[1] + self.border.shape[0]
 
     def row(self, p: Int[Array, '']) -> Float[Array, 'unit local']:
         """The coupling of the global amplitude `p`."""
         n_colors, k, n_units = self.core.shape[:3]
-        i = self.order[p]
-        block = i // k
+        block = p // k
         color = block % n_colors
         reaches = (self.reached[color] == block)[None, :, None]
-        row = jnp.where(reaches, self.core[color, i % k], 0).reshape(n_units, -1)
+        row = jnp.where(reaches, self.core[color, p % k], 0).reshape(n_units, -1)
         if n_border := self.border.shape[0]:
             n_core = self.n_rows - n_border
-            border = self.border[jnp.clip(i - n_core, 0, n_border - 1)]
-            row = jnp.where(i < n_core, row, border)
+            border = self.border[jnp.clip(p - n_core, 0, n_border - 1)]
+            row = jnp.where(p < n_core, row, border)
         return row
 
     def apply(self, v: Float[Array, ' global']) -> Float[Array, 'unit local']:
         """$C v$, from global amplitudes to local ones."""
         _, k, n_units, _, _ = self.core.shape
-        n_border = self.border.shape[0]
-        n_blocks = (self.n_rows - n_border) // k
-        banded = jnp.zeros_like(v).at[self.order].set(v)
-        core = jnp.concatenate(
-            [banded[: n_blocks * k].reshape(n_blocks, k), jnp.zeros((1, k), v.dtype)]
-        )
+        n_blocks = self.n_blocks
+        core = jnp.concatenate([v[: n_blocks * k].reshape(n_blocks, k), jnp.zeros((1, k), v.dtype)])
         reached = core[self.reached]  # (color, local block, k), zero where none is reached
         out = _einsum('caujl,cja->ujl', self.core, reached).reshape(n_units, -1)
-        return out + _einsum('rui,r->ui', self.border, banded[n_blocks * k :])
+        return out + _einsum('rui,r->ui', self.border, v[n_blocks * k :])
 
     def contract(self, v: Float[Array, 'unit local']) -> Float[Array, ' global']:
         r"""$C^\top v$, from local amplitudes to global ones."""
         _, k, n_units, n_local, local_k = self.core.shape
-        n_blocks = (self.n_rows - self.border.shape[0]) // k
+        n_blocks = self.n_blocks
         by_color = _einsum('caujl,ujl->caj', self.core, v.reshape(n_units, n_local, local_k))
         core = jnp.zeros((n_blocks, k), v.dtype)
         core = core.at[self.reached[:, None, :], jnp.arange(k)[:, None]].add(by_color, mode='drop')
         border = _einsum('rui,ui->r', self.border, v)
-        return jnp.concatenate([core.ravel(), border])[self.order]
+        return jnp.concatenate([core.ravel(), border])
 
 
 @register_dataclass_with_keys
@@ -507,7 +463,7 @@ def _coarse_projection(
         return None
     margin = 2  # global blocks either side of those a local function overlaps
     n_blocks = global_._n_blocks
-    width = min(n_blocks, _reach_bound(local, global_, 0) + 2 * margin)
+    width = min(n_blocks, _reach_bound(local, global_) + 2 * margin)
 
     ones = jnp.ones(global_.n_points, global_.dtype)
     cross = _structure._cross_gram(global_, local, ones)  # (block, function)
@@ -643,16 +599,16 @@ class _Layout(NamedTuple):
         *,
         local: bool,
         dense: bool,
-        streams_coupled: bool,
+        split_streams: bool = True,
     ) -> Self:
         """The layout of the templates `names` in one block; all in the border if `dense`.
 
-        The streams are units of their own if every template has its own amplitudes on each stream,
-        the weight does not couple them, and the block is not laid out dense.
+        The streams are units of their own if `split_streams`, every template has its own amplitudes
+        on each stream, and the block is not laid out dense.
         """
         templates = {name: operator.templates[name] for name in names}
         per_stream = (
-            not streams_coupled
+            split_streams
             and not dense
             and all('stream' in template.per for template in templates.values())
         )
@@ -795,64 +751,30 @@ class _Entry(NamedTuple):
     """The indices along the TOD's stream axis of the streams the template covers."""
 
 
-def _probe(
-    operator: TemplateOperator,
-    weight: AbstractLinearOperator,
-    layout: _Layout,
-    reading: _Layout | None,
-    bandwidth: int,
-    batch_size: int,
-) -> tuple[BorderedBandedMatrix, Array | None]:
-    """One block of the Gram, read off the responses to its probes.
-
-    Every unit takes the same probe, as no two units interact (see
-    [`probe_bordered_banded`][furax.linalg.probe_bordered_banded]). With `reading`, the responses
-    on the local amplitudes of that layout are read too: the coupling of each unit's amplitudes to
-    the block's, the block being all border, so probed one amplitude at a time.
-    """
-    apply = _probe_apply(operator, weight, layout, reading)
-    half_width = _band_half_width(operator, layout, bandwidth)
-    matrix, cross = probe_bordered_banded(
-        apply,
-        batch_shape=(layout.n_units(operator.tod_format.n_dets),),
-        n_blocks=layout.n_blocks,
-        k=layout.k,
-        n_border=layout.n_border,
-        half_width=half_width,
-        dtype=operator.tod_format.dtype,
-        batch_size=batch_size,
-    )
-    return matrix, cross
-
-
 def _probe_apply(
     operator: TemplateOperator,
     weight: AbstractLinearOperator,
     layout: _Layout,
-    reading: _Layout | None,
-) -> Callable[
-    [tuple[Array | None, Array | None]], tuple[tuple[Array | None, Array | None], Array | None]
-]:
+    reading: _Layout,
+) -> Callable[[tuple[Array | None, Array | None]], tuple[tuple[Array | None, Array | None], Array]]:
     """The Gram's response to probes of the amplitudes of `layout`, on those and on `reading`."""
     # the probes need only the templates whose responses are read
-    names = layout.names + (() if reading is None else reading.names)
+    names = layout.names + reading.names
     probed = TemplateOperator({name: operator.templates[name] for name in names})
     gram = probed.T @ weight @ probed
     zeros = tree.zeros_like(probed.in_structure)
 
     def apply(x):
         response = gram(zeros | layout.scatter(*x))
-        local = None if reading is None else reading.flat(*reading.gather(response))
+        local = reading.flat(*reading.gather(response))
         return layout.gather(response), local
 
     return apply
 
 
-def _band_half_width(operator: TemplateOperator, layout: _Layout, bandwidth: int) -> int:
-    """How many blocks of the core of `layout` samples up to `bandwidth` apart couple, either side.
+def _band_half_width(operator: TemplateOperator, layout: _Layout) -> int:
+    """How many blocks of the core of `layout` couple, either side, under a diagonal weight.
 
-    Samples that far apart start their windows at most `⌈bandwidth / fewest⌉` blocks apart, with
-    `fewest` the shortest block between the first and the last (see `Basis.block_lengths`).
     Without block lengths, any two blocks may couple.
     """
     if layout.core is None:
@@ -860,8 +782,7 @@ def _band_half_width(operator: TemplateOperator, layout: _Layout, bandwidth: int
     basis = operator.templates[layout.core.name].basis
     if basis.block_lengths is None:
         return layout.n_blocks - 1
-    fewest, _ = basis.block_lengths
-    return min(layout.n_blocks - 1, basis._support_window - 1 + -(-bandwidth // fewest))
+    return min(layout.n_blocks - 1, basis._support_window - 1)
 
 
 def _time_local(operator: TemplateOperator, layout: _Layout, reading: _Layout) -> bool:
@@ -879,28 +800,26 @@ def _probe_time_local(
     weight: AbstractLinearOperator,
     layout: _Layout,
     reading: _Layout,
-    dense: _Layout | None,
-    bandwidth: int,
     batch_size: int,
 ) -> tuple[BorderedBandedMatrix, '_BandedCoupling']:
     """A time-local global block of the Gram, and its coupling to time-local amplitudes.
 
-    The block is dense in the layout `dense`, or banded in `layout` without one, its coupling
-    that to the local amplitudes of `reading`, both read off colored probes of the global core.
-    A local time block couples to the global blocks read by samples within `bandwidth` of those
-    reading it: a few consecutive ones. With the probes of the global core spread so that no two
-    blocks of a color lie within the reach of one local block, the response of a local block to a
-    probe is its coupling to the one block of that color it reaches. The probes are those of the
-    band of the global block, with that many colors, rather than one per global amplitude.
+    The block is banded in `layout`, its coupling that to the local amplitudes of `reading`, both
+    read off colored probes of the global core. A local time block couples to the global blocks
+    read by the samples reading it: a few consecutive ones. With the probes of the global core
+    spread so that no two blocks of a color lie within the reach of one local block, the response
+    of a local block to a probe is its coupling to the one block of that color it reaches. The
+    probes are those of the band of the global block, with that many colors, rather than one per
+    global amplitude.
     """
     apply = _probe_apply(operator, weight, layout, reading)
     assert layout.core is not None and reading.core is not None
-    half_width = _band_half_width(operator, layout, bandwidth)
+    half_width = _band_half_width(operator, layout)
     global_basis = operator.templates[layout.core.name].basis
     local_basis = operator.templates[reading.core.name].basis
-    first, last = _reach(local_basis, global_basis, bandwidth)
+    first, last = _reach(local_basis, global_basis)
     n_colors = min(
-        layout.n_blocks, max(2 * half_width + 1, _reach_bound(local_basis, global_basis, bandwidth))
+        layout.n_blocks, max(2 * half_width + 1, _reach_bound(local_basis, global_basis))
     )
 
     n_units = reading.n_units(operator.tod_format.n_dets)
@@ -926,45 +845,34 @@ def _probe_time_local(
     reached = jnp.where(reached <= last, reached, layout.n_blocks)  # none
     border = responses[n_core:]  # probed one at a time
 
-    if dense is None:
-        order = jnp.arange(layout.n_blocks * layout.k + layout.n_border)
-        return matrix, _BandedCoupling(core, reached, border, order)
-    # in the order of the dense layout, its global block all border
-    order = _order(layout, dense)
-    corner = matrix.as_matrix()[order][:, order]
-    coupling = _BandedCoupling(core, reached, border, order)
-    return BorderedBandedMatrix(corner=corner[None]), coupling
+    return matrix, _BandedCoupling(core, reached, border, layout.n_blocks)
 
 
-def _reach_bound(local: Basis, global_: Basis, bandwidth: int) -> int:
+def _reach_bound(local: Basis, global_: Basis) -> int:
     """At most how many blocks of `global_` one block of `local` reaches (see [`_reach`][]).
 
     The samples reading a block of `local` are those of the `window` runs whose windows contain
-    it, at most `window · most` samples; those up to `bandwidth` from them span `bandwidth` more on
-    either side, over which the windows of `global_` start at most `⌈(span − 1) / fewest⌉` blocks
-    apart (see `Basis.block_lengths`). Without block lengths, all of them.
+    it, at most `window · most` samples, over which the windows of `global_` start at most
+    `⌈(span − 1) / fewest⌉` blocks apart (see `Basis.block_lengths`). Without block lengths, all of
+    them.
     """
     if local.block_lengths is None or global_.block_lengths is None:
         return global_._n_blocks
     _, most = local.block_lengths
     fewest, _ = global_.block_lengths
-    span = local._support_window * most + 2 * bandwidth
+    span = local._support_window * most
     return -(-(span - 1) // fewest) + global_._support_window
 
 
-def _reach(
-    local: Basis, global_: Basis, bandwidth: int
-) -> tuple[Int[Array, ' block'], Int[Array, ' block']]:
+def _reach(local: Basis, global_: Basis) -> tuple[Int[Array, ' block'], Int[Array, ' block']]:
     """The first and the last block of `global_` each block of `local` reaches.
 
-    A block reaches those read by samples up to `bandwidth` apart from those reading it, over the
-    batch of `local` if it has one. Blocks are non-decreasing in time.
+    A block reaches those read by the samples reading it, over the batch of `local` if it has one.
+    Blocks are non-decreasing in time.
     """
     support = global_.support()
-    n = support.n_points
-    t = jnp.arange(n)
-    lowest = support.offset[jnp.maximum(t - bandwidth, 0)]
-    highest = support.offset[jnp.minimum(t + bandwidth, n - 1)] + support.taps.shape[-1] - 1
+    lowest = support.offset
+    highest = support.offset + support.taps.shape[-1] - 1
 
     def single(basis: Basis, _: Array) -> Array:
         own = basis.support()
@@ -980,15 +888,6 @@ def _reach(
     ends = local._map_batch(single, jnp.zeros(local.batch_shape), 0)  # (*batch, 2, block)
     ends = ends.reshape(-1, *ends.shape[-2:])
     return ends[:, 0].min(axis=0), ends[:, 1].max(axis=0)
-
-
-def _order(layout: _Layout, dense: _Layout) -> Int[Array, ' m']:
-    """Where each amplitude of `dense`, all border in a single unit, is in `layout.flat`."""
-    n = layout.n_blocks * layout.k + layout.n_border
-    amplitudes = layout.scatter(*layout.unflat(jnp.arange(n, dtype=jnp.float64)[None]))
-    _, border = dense.gather(amplitudes)
-    assert border is not None
-    return border[0].astype(jnp.int32)
 
 
 @register_dataclass_with_keys

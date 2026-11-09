@@ -463,6 +463,28 @@ def test_ravel_concatenates_the_leaves_in_order() -> None:
     assert_array_equal(fx.tree.ravel(x, 1), [[0.0, 1.0, 2.0, 10.0], [3.0, 4.0, 5.0, 20.0]])
 
 
+@pytest.mark.parametrize(('batch_ndim', 'trailing_ndim'), [(0, 1), (0, 2), (1, 1), (2, 1)], ids=str)
+def test_ravel_unravel_roundtrip_with_trailing_axes(batch_ndim, trailing_ndim) -> None:
+    batch = (2, 3)[:batch_ndim]
+    trailing = (5, 2)[:trailing_ndim]
+    keys = jax.random.split(jax.random.key(1), 3)
+    x = {
+        'a': jax.random.normal(keys[0], (*batch, 4, 2, *trailing)),
+        'b': (jax.random.normal(keys[1], (*batch, *trailing)), None),
+        'c': [jax.random.normal(keys[2], (*batch, 3, *trailing))],
+    }
+    flat = fx.tree.ravel(x, batch_ndim, trailing_ndim)
+    assert flat.shape == (*batch, 12, *trailing)
+    assert tree_equal(fx.tree.unravel(x, flat, batch_ndim, trailing_ndim), x)
+    assert tree_equal(fx.tree.unravel(fx.tree.as_structure(x), flat, batch_ndim, trailing_ndim), x)
+
+
+def test_ravel_concatenates_along_the_flattened_axis_with_trailing_axes() -> None:
+    x = (jnp.arange(6.0).reshape(2, 3), jnp.array([10.0, 20.0, 30.0]))
+    expected = [[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [10.0, 20.0, 30.0]]
+    assert_array_equal(fx.tree.ravel(x, trailing_ndim=1), expected)
+
+
 def test_unravel_takes_the_batch_axes_of_the_vectors() -> None:
     # the structure of one batch element, the vectors with batch axes of their own
     structure = {

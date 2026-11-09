@@ -10,10 +10,7 @@ from sotodlib.core import Context
 from sotodlib.core.metadata.loader import LoaderError
 from sotodlib.preprocess import preprocess_util as pu
 
-from furax.interfaces.sotodlib import (
-    LazyPreprocSOTODLibObservation,
-    LazySOTODLibObservation,
-)
+from furax.interfaces.sotodlib import LazyPreprocSOTODLibObservation, LazySOTODLibObservation
 from furax.interfaces.sotodlib.observation import _is_missing_record
 from furax.mapmaking import (
     AbstractGroundObservation,
@@ -23,12 +20,7 @@ from furax.mapmaking import (
     ObservationReader,
     ReaderField,
 )
-from furax.mapmaking.config import (
-    HealpixConfig,
-    LandscapeConfig,
-    PointingConfig,
-    SotodlibConfig,
-)
+from furax.mapmaking.config import HealpixConfig, LandscapeConfig, PointingConfig, SotodlibConfig
 from furax.obs.stokes import Stokes
 from furax.tree import as_structure
 

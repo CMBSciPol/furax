@@ -11,12 +11,7 @@ from fastquat import Quaternion
 from jaxtyping import Array, Float, Int, Integer
 
 from furax.core.utils import register_dataclass_with_keys
-from furax.math.coords import (
-    XiEtaAngles,
-    ZSPhi,
-    gamma_angle_cos_sin,
-    polarization_angle_cos_sin,
-)
+from furax.math.coords import XiEtaAngles, ZSPhi, gamma_angle_cos_sin, polarization_angle_cos_sin
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators import Spin2Rotation
 from furax.obs.spin2 import transport_rotation

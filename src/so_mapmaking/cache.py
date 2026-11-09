@@ -17,14 +17,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from cyclopts import App, Parameter
 
-from .util import (
-    Band,
-    Wafer,
-    enable_x64,
-    preproc_observations,
-    resolve_obsids,
-    setup_logger,
-)
+from .util import Band, Wafer, enable_x64, preproc_observations, resolve_obsids, setup_logger
 
 if TYPE_CHECKING:
     from furax.interfaces.sotodlib import LazyPreprocSOTODLibObservation

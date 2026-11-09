@@ -197,6 +197,9 @@ ignore = [
 'tests/**' = ['D'] # docstring conventions only matter for the rendered API, not tests
 '*.ipynb' = ['BLE001']
 
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false
+
 [tool.ruff.lint.pydocstyle]
 convention = 'google'
 

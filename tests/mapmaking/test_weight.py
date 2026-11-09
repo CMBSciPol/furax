@@ -9,11 +9,7 @@ from furax.mapmaking.config import NestedConfig
 from furax.mapmaking.templates import Template, TemplateOperator
 from furax.mapmaking.templates.bases import TensorBasis
 from furax.mapmaking.templates.gram import factor, template_gram
-from furax.mapmaking.weight import (
-    MarginalizedWeightOperator,
-    NestedWeightOperator,
-    WeightOperator,
-)
+from furax.mapmaking.weight import MarginalizedWeightOperator, NestedWeightOperator, WeightOperator
 from furax.obs import TODFormat
 
 # A banded SPD inverse-noise; the covariance N is its dense inverse.

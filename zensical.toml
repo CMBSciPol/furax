@@ -15,6 +15,7 @@ nav = [
       "user-guide/getting-started.md",
       "user-guide/data-structures.md",
       "user-guide/operators.md",
+      "user-guide/distributing-work.md",
       "user-guide/ensembles.md",
       "user-guide/so-mapmaking.md",
   ] },

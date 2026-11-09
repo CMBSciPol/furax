@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HealpixConfig` accepts `ordering='nest'`; it cannot be combined with bilinear pointing (#431)
 - `furax-so-map` and `furax-so-cache` take the default of `--loglevel` from the `LOGLEVEL` variable (#430)
 - `furax.tree.size`: the number of elements of a pytree (#432)
+- `furax.tree.ravel` and `furax.tree.unravel` take `trailing_ndim`, the number of trailing axes kept (#468)
 - `ZeroOperator`, the all-zero map: `0 * op` and compositions with one return it, reduced sums drop it (#457)
 - The ensemble engine in `furax.core`: `map_reduce` evaluates one computation over the members of an `Ensemble` (`ListEnsemble`, `StackedEnsemble` or `HostEnsemble`) with summed or strided outputs, `'auto'` inferring the output strides; `Policy` and `Policy.from_budget` set the batching and device sharding; `lift` applies a function member-wise over ensembles (#399)
 - `AdditionOperator`, `BlockRowOperator`, `BlockColumnOperator` and `BlockDiagonalOperator` accept an `Ensemble` of operators as their container, evaluated through the engine with the ensemble's policy, and the block composition rules combine ensembles member-wise (#400)

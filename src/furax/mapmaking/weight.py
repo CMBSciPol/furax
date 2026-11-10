@@ -1,14 +1,12 @@
-import math
 from dataclasses import field
-from typing import Self
+from typing import Any, Self
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Inexact, PyTree
+from jaxtyping import Array, Float, Inexact, PyTree
 
 from furax import AbstractLinearOperator, MaskOperator, symmetric, tree
-from furax.core import DiagonalOperator, IndexOperator
-from furax.linalg import cg
+from furax.core import DiagonalOperator, SymmetricBandToeplitzOperator
 
 from .config import NestedConfig
 
@@ -70,129 +68,231 @@ class NestedWeightOperator(AbstractLinearOperator):
     r"""Minimum-variance inverse-noise weighting for gappy data, using an iterative algorithm.
 
     The minimum-variance weight for gappy data is the inverse of the *good-good block* of the noise
-    covariance, `W_exact = Pᵀ N_gg⁻¹ P` (with `P` selecting the good samples). Forming `N_gg⁻¹`
-    directly would need the covariance `N`; instead, block-inverse algebra moves the whole correction
-    onto the *flagged* samples, expressing the weight through `N⁻¹` alone:
+    covariance, $W_\text{exact} = S^\top N_{gg}^{-1} S$, with $S$ selecting the good samples. The
+    noise models provide $N^{-1}$ as an operator that is cheap to apply, but not $N_{gg}^{-1}$:
+    applying it would take an iterative solve with $N_{gg}$ over every good sample, at each
+    application. Instead, the weight is written with $N^{-1}$ and a solve over the flagged samples
+    only:
 
-        W_exact = N⁻¹ − N⁻¹ Qᵀ (Q N⁻¹ Qᵀ)⁻¹ Q N⁻¹,
+    $$ W = M \left[ N^{-1} - N^{-1} C \left( C^\top N^{-1} C \right)^{-1} C^\top N^{-1} \right] M, $$
 
-    where `Q` packs the flagged samples. Sketch: order the samples good/bad and split `N⁻¹` into
-    `2×2` blocks; the Schur complement of its good-good block is exactly `N_gg⁻¹`, and rearranging
-    that relation gives the line above. The correction lives entirely in the flagged subspace, whose
-    block `Q N⁻¹ Qᵀ` is small and well-conditioned; the flagged rows of the output are zeroed
-    automatically (no outer mask needed). Only `N⁻¹` appears, so this is valid for any symmetric PSD
-    inverse-noise -- including det-det correlations, where forming `N = (N⁻¹)⁻¹` is intractable. The
-    inner factor `(Q N⁻¹ Qᵀ)⁻¹` is applied by a CG solve, never materialised.
+    where $M$ is the mask of the good samples and $C$ selects the flagged ones. Order the samples
+    good/flagged and split $N^{-1}$ into $2 \times 2$ blocks: the Schur complement of its flagged
+    block, $(N^{-1})_{gg} - (N^{-1})_{gf} \left( (N^{-1})_{ff} \right)^{-1} (N^{-1})_{fg}$, is
+    exactly $N_{gg}^{-1}$: it is the good-good block of the bracket above, which $M$ selects.
 
-    **Fixed flagged-subspace budget.** Under jit the flagged subspace must have a static size, but
-    the flag count is a runtime value. We therefore pad the flagged-index set to a fixed
-    `n_flag_max` (``jnp.nonzero(..., size=n_flag_max)``); a validity vector `v` marks the real
-    flagged slots, and the inner system is `V (Q N⁻¹ Qᵀ) V + (I − V)` so padding slots act as the
-    identity and contribute nothing. When the flag count exceeds the budget the weight falls back
-    (per ``jax.lax.cond``) to the cheap inner-mask weight `M N⁻¹ M` -- still unbiased, just
-    suboptimal -- so correctness never depends on the budget. A fully-masked input exceeds the
-    budget and falls back to `M N⁻¹ M = 0`, contributing nothing.
+    **Inner solve.** $W$ must be a constant linear operator, identical on the RHS and on every
+    application in the system, so $A^{-1}$, with $A = C^\top N^{-1} C$, is applied by a fixed
+    polynomial whose coefficients do not depend on the vector $b$ it acts on: `inner_steps` steps
+    of Chebyshev iteration, preconditioned by $P$, the inverse of the diagonal of $D$ = `white`, a
+    diagonal approximation of $N^{-1}$ such as the white-noise weight. The iteration needs an
+    interval $[a, b]$ holding the spectrum of $P A$. $N^{-1}$ is a banded Toeplitz matrix per
+    channel, so the spectrum of $A$, a principal submatrix of it, lies within the range of its
+    frequency response: with $P$ the inverse white level of each channel, $[a, b]$ is the range of
+    the frequency response over the white level, over the channels, whatever the gaps. Its
+    residual polynomial $r(\lambda) = 1 - \lambda p(\lambda)$, with $p$ the polynomial applied, is
+    scaled to stay nonnegative on $[a, b]$, which keeps $W$ positive semidefinite for any number of
+    steps: $M N^{-1} M \succeq W \succeq W_\text{exact}$. Only $b$ must bound the spectrum: an
+    eigenvalue below $a$ just converges more slowly, so $a$ is raised to what the steps can
+    resolve. A tolerance-based inner solve, or CG, would make $W$ depend on its input.
 
-    The inner solve runs a fixed number of iterations, so `W` is a constant linear operator --
-    identical on the RHS and on every system-operator apply. A tolerance-based inner solve would
-    make `W` depend on its input, i.e. no longer linear. Assumes a single-leaf time-ordered
-    structure (the SO TOD layout).
-
-    **Optional preconditioner.** When there are a few gaps wider than the correlation length the inner
-    block `Q N⁻¹ Qᵀ` is ill-conditioned; passing the covariance `N` (``cov``, the banded/Fourier
-    approximation from the noise model) builds the flagged-block preconditioner `Q N Qᵀ`, whose product
-    with the inner operator differs from the identity by a boundary term of rank ≈ 2×(correlation
-    bandwidth)×(number of gaps), so inner CG converges in roughly that many steps. This wins only when
-    that rank is below the bare inner-solve count. For the common case of many short gaps
-    (turnarounds/glitches) the bare block is already well-conditioned and preconditioning is a net
-    loss -- pass no ``cov`` there (the default). Without ``cov`` the inner solve is unpreconditioned.
+    **Static shapes.** Under jit the flagged subspace must have a static size, but the flag count
+    is a runtime value. The unknowns of the inner solve therefore live on the samples of the TOD:
+    those of the good samples act as the identity and solve to 0. The flags are read from the mask
+    at each application, so the weight holds nothing the size of the TOD beyond $N^{-1}$. A
+    fully-masked input gives 0. The TOD is a single array with the samples last, plain or in a
+    [`Stokes`][furax.obs.stokes.Stokes] container, as [`TODFormat`][furax.obs.tod.TODFormat]
+    describes it.
     """
 
-    ninv: AbstractLinearOperator  # N⁻¹, symmetric PSD
-    mask: MaskOperator  # M (defines the flagged set and the .mask contract)
-    max_flag_fraction: float = field(metadata={'static': True})
-    n_flag_max: int = field(metadata={'static': True})
+    ninv: SymmetricBandToeplitzOperator
+    """The inverse noise covariance $N^{-1}$, a banded Toeplitz matrix per channel, symmetric
+    positive semidefinite."""
+    mask: MaskOperator
+    """The mask $M$ of the good samples, which also sets the flagged ones."""
+    white: AbstractLinearOperator
+    """The diagonal approximation $D$ of $N^{-1}$ that preconditions the inner solve."""
+    spectrum: Array
+    """The interval $[a, b]$ holding the spectrum of $P A$, `(2,)`."""
     inner_steps: int = field(metadata={'static': True})
-    rtol: float = field(metadata={'static': True})
-    atol: float = field(metadata={'static': True})
-    cov: AbstractLinearOperator | None = None
+    """The number of Chebyshev steps of the inner solve."""
 
     @classmethod
     def create(
         cls,
-        ninv: AbstractLinearOperator,
+        ninv: SymmetricBandToeplitzOperator,
         mask: MaskOperator,
         config: NestedConfig,
-        cov: AbstractLinearOperator | None = None,
+        white: AbstractLinearOperator,
     ) -> Self:
+        r"""Build the weight.
+
+        Args:
+            ninv: The inverse noise covariance $N^{-1}$, a banded Toeplitz matrix per channel.
+            mask: The mask $M$ of the good samples.
+            config: The inner-solve options.
+            white: A diagonal approximation $D$ of $N^{-1}$, such as the white-noise weight,
+                under which the inner solve is preconditioned.
+        """
+        spectrum = _spectrum(ninv, white, mask.in_structure, config.inner_steps)
         return cls(
             ninv,
             mask,
-            max_flag_fraction=config.max_flag_fraction,
-            n_flag_max=_resolve_n_flag_max(mask, config.max_flag_fraction),
+            white,
+            spectrum,
             inner_steps=config.inner_steps,
-            rtol=config.rtol,
-            atol=config.atol,
-            cov=cov,
             in_structure=mask.in_structure,
         )
 
-    def _inner_mask(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
-        """Fallback weight `M N⁻¹ M` for an over-budget (or fully-masked) input."""
-        return (self.mask @ self.ninv @ self.mask).reduce()(x)
-
-    def _woodbury(
-        self,
-        x: PyTree[Inexact[Array, '...']],
-        bad: Array,
-        n_flag: Array,
-    ) -> PyTree[Inexact[Array, '...']]:
-        ninv, k = self.ninv, self.n_flag_max
-        dtype = jax.tree.leaves(self.in_structure)[0].dtype
-
-        # Pack the flagged samples into a fixed-size block; padding slots point at index 0 and are
-        # deactivated by the validity vector v.
-        idx = jnp.nonzero(bad, size=k, fill_value=0)
-        q = IndexOperator(idx, in_structure=self.in_structure)
-        kstruct = jax.ShapeDtypeStruct((k,), dtype)
-        v = (jnp.arange(k) < n_flag).astype(dtype)
-        vop = DiagonalOperator(v, in_structure=kstruct)
-        vcomp = DiagonalOperator(1 - v, in_structure=kstruct)  # I − V
-
-        # Inner system A_in = V (Q N⁻¹ Qᵀ) V + (I − V): the real flagged block on valid slots,
-        # the identity on padding (so padded slots solve to 0 and drop out of the correction).
-        a_in = vop @ q @ ninv @ q.T @ vop + vcomp
-        # Preconditioner V (Q N Qᵀ) V + (I − V): the flagged block of the covariance N.
-        preconditioner = None
-        if self.cov is not None:
-            preconditioner = (vop @ q @ self.cov @ q.T @ vop + vcomp).reduce()
-        nx = ninv(x)
-        rhs = vop(q(nx))
-        y = cg(
-            a_in,
-            rhs,
-            preconditioner=preconditioner,
-            max_steps=self.inner_steps,
-            rtol=self.rtol,
-            atol=self.atol,
-        ).solution
-        correction = ninv(q.T(vop(y)))
-        return tree.sub(nx, correction)
-
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
-        bad = jax.tree.leaves(self.mask.to_boolean_mask())[0] == 0
-        n_flag = bad.sum()
-        # Over-budget inputs (including fully-masked ones) fall back to the inner-mask
-        # weight; both branches are traced, one is selected at runtime.
-        return jax.lax.cond(
-            n_flag <= self.n_flag_max,
-            lambda operand: self._woodbury(operand, bad, n_flag),
-            self._inner_mask,
-            x,
+        C, inner, preconditioner = _inner_system(self.ninv, self.mask, self.white)
+        x = self.mask(x)  # the flagged samples carry no data
+        nx = self.ninv(x)
+        y = _chebyshev(inner, C.T(nx), self.spectrum, self.inner_steps, preconditioner)
+        return self.mask(tree.sub(nx, self.ninv(C(y))))
+
+
+def _inner_system(
+    ninv: AbstractLinearOperator, mask: MaskOperator, white: AbstractLinearOperator
+) -> tuple['_FlaggedSamples', AbstractLinearOperator, AbstractLinearOperator]:
+    """The flagged-sample selection `C`, the inner operator, and its preconditioner `P`.
+
+    The unknowns live on the samples of the TOD. `V` marks those in use, the flagged samples of
+    the live channels, and the inner operator is `V A V + (I − V)`, with `A = Cᵀ N⁻¹ C`: the other
+    unknowns act as the identity and solve to 0. A dead channel, without white weight, carries no
+    data, so its flagged samples are left out too. `P` is the inverse of the diagonal of `Cᵀ D C`.
+    """
+    leaf = jax.tree.leaves(mask.in_structure)[0]
+    flagged = jax.tree.leaves(mask.to_boolean_mask())[0] == 0
+    C = _FlaggedSamples.create(flagged, mask.in_structure)
+    diagonal = C.T(white(tree.ones_like(mask.in_structure)))  # of Cᵀ D C
+    active = flagged & (diagonal > 0)
+    structure = C.in_structure
+    V = DiagonalOperator(active.astype(leaf.dtype), in_structure=structure)
+    rest = DiagonalOperator(1 - active.astype(leaf.dtype), in_structure=structure)
+    inner = V @ C.T @ ninv @ C @ V + rest
+    inverse = jnp.where(active, 1 / jnp.where(active, diagonal, 1), 1).astype(leaf.dtype)
+    return C, inner.reduce(), DiagonalOperator(inverse, in_structure=structure)
+
+
+def _chebyshev(
+    operator: AbstractLinearOperator,
+    b: PyTree[Array],
+    interval: Float[Array, '2'],
+    steps: int,
+    preconditioner: AbstractLinearOperator | None = None,
+) -> PyTree[Array]:
+    r"""A fixed polynomial approximation of $A^{-1} b$: `steps` steps of Chebyshev iteration.
+
+    The iteration starts from 0 and applies $A$ = `operator` `steps` times. Its result is
+    $p(PA) P b$, with $P$ = `preconditioner` (the identity by default) and $p$ a polynomial set by
+    `interval` $= [a, b]$ and `steps` alone, not by the vector $b$: the result is linear in $b$,
+    and symmetric in it when $A$ and $P$ are, unlike a CG solve stopped early.
+
+    The residual polynomial $r(\lambda) = 1 - \lambda p(\lambda)$ is that of Chebyshev iteration,
+    $T_k(z) / T_k(z_0)$ with $k$ = `steps` + 1, $z$ mapping $[a, b]$ to $[1, -1]$ and $z_0$ the
+    image of 0, shifted and scaled into $(1 + T_k(z)) / (1 + T_k(z_0))$. It converges at the same
+    rate, and $0 \le r(\lambda) < 1$ for $0 < \lambda \le b$: if the spectrum of $PA$ lies in
+    $[0, b]$, then $p(PA) P$ is symmetric positive definite whenever $A$ is symmetric positive
+    semidefinite and $P$ symmetric positive definite, so it can precondition CG.
+
+    The upper end `b` must bound the spectrum of $PA$. The lower end `a` need not: an eigenvalue
+    below it only converges more slowly. In $k$ steps, eigenvalues down to about $b / k^2$ can be
+    resolved.
+
+    Args:
+        operator: The operator $A$.
+        b: The right-hand side.
+        interval: The interval $[a, b]$ of the spectrum of $PA$, with $0 < a < b$, `(2,)`.
+        steps: The number of applications of $A$.
+        preconditioner: The preconditioner $P$; the identity by default.
+
+    Returns:
+        $p(PA) P b$, an approximation of $A^{-1} b$.
+    """
+
+    def precondition(x):
+        return x if preconditioner is None else preconditioner(x)
+
+    lower, upper = interval[0], interval[1]
+    center, half_width = (upper + lower) / 2, (upper - lower) / 2
+    sigma = center / half_width
+    rho = 1 / sigma
+    d = tree.mul(1 / center, precondition(b))
+
+    def step(_, carry):
+        y, r, d, rho = carry
+        y = tree.add(y, d)
+        r = tree.sub(r, operator(d))
+        rho_next = 1 / (2 * sigma - rho)
+        d = tree.add(
+            tree.mul(rho_next * rho, d), tree.mul(2 * rho_next / half_width, precondition(r))
         )
+        return y, r, d, rho_next
+
+    y, _, d, _ = jax.lax.fori_loop(0, steps, step, (tree.zeros_like(b), b, d, rho))
+    # T_k(z_0) for z_0 = sigma > 1; 1 / T_k(z_0) underflows to 0 rather than overflowing
+    inverse_t = 1 / jnp.cosh((steps + 1) * jnp.arccosh(sigma))
+    return tree.mul(1 / (1 + inverse_t), tree.add(y, d))
 
 
-def _resolve_n_flag_max(mask: MaskOperator, max_flag_fraction: float) -> int:
-    """Resolve the static flagged-subspace size from a mask."""
-    n_total: int = sum(math.prod(leaf.shape) for leaf in jax.tree.leaves(mask.in_structure))
-    return math.ceil(max_flag_fraction * n_total)
+def _spectrum(
+    ninv: SymmetricBandToeplitzOperator,
+    white: AbstractLinearOperator,
+    tod_structure: PyTree[jax.ShapeDtypeStruct],
+    steps: int,
+) -> Array:
+    r"""The interval `[a, b]` of the Chebyshev iteration for `P A`, `(2,)`, of `steps` steps.
+
+    The eigenvalues of a principal submatrix of a symmetric Toeplitz matrix lie within the range of
+    its frequency response $s(\omega) = b_0 + 2 \sum_k b_k \cos k\omega$. Under `P`, the inverse
+    white level $d$ of each channel, the interval is the range of $s / d$ over the live channels.
+    The response is read on a fine frequency grid; `b` gets a margin for its maximum between the
+    grid points, since an eigenvalue above it would make the weight indefinite.
+
+    `a` need not hold the spectrum: an eigenvalue below it only converges more slowly. In $k$
+    steps, Chebyshev iteration resolves the spectrum down to about $b / k^2$, so a lower `a`
+    spreads the polynomial over eigenvalues it cannot reach anyway: `a` is raised to
+    $b \, (c / k)^2$.
+    """
+    band = ninv.band_values
+    n_lags = band.shape[-1]
+    response = 2 * jnp.fft.rfft(band, n=_OVERSAMPLING * 2 * n_lags).real - band[..., :1]
+    level = jax.tree.leaves(white(tree.ones_like(tod_structure)))[0][..., 0]  # d per channel
+    shape = jnp.broadcast_shapes(response.shape[:-1], level.shape)
+    response = jnp.broadcast_to(response, (*shape, response.shape[-1]))
+    level = jnp.broadcast_to(level, shape)[..., None]
+    live = level > 0  # a dead channel takes no part in the inner solve
+    ratio = response / jnp.where(live, level, 1)
+    lower = jnp.min(jnp.where(live, ratio, jnp.inf))
+    upper = jnp.max(jnp.where(live, ratio, -jnp.inf))
+    upper = _MARGIN * upper
+    lower = jnp.maximum(lower, upper * (_RESOLVED / max(steps, 1)) ** 2)
+    bounds = jnp.stack([jnp.minimum(lower, upper / 2), upper])
+    return jnp.where(jnp.any(live), bounds, jnp.array([0.0, 1.0], bounds.dtype))
+
+
+_OVERSAMPLING = 8  # frequencies per lag of the band, twice over, reading its frequency response
+_MARGIN = 1.01  # over the largest response on the grid, below its maximum between grid points
+_RESOLVED = 3  # c: the lowest eigenvalue worth resolving in k steps is b (c / k)²
+
+
+class _FlaggedSamples(AbstractLinearOperator):
+    """The selection `C` of the flagged samples: from unknowns on the TOD to the TOD.
+
+    The unknowns are a plain array of the shape of the TOD's single leaf.
+    """
+
+    flagged: Array
+    """The mask of the flagged samples, `(..., samp)`."""
+    tod_treedef: Any = field(metadata={'static': True})
+    """The pytree structure of the TOD, whose single leaf the selection fills."""
+
+    @classmethod
+    def create(cls, flagged: Array, tod_structure: PyTree[jax.ShapeDtypeStruct]) -> Self:
+        (leaf,), treedef = jax.tree.flatten(tod_structure)
+        structure = jax.ShapeDtypeStruct(leaf.shape, leaf.dtype)
+        return cls(flagged, treedef, in_structure=structure)
+
+    def mv(self, x: Array) -> PyTree[Array]:
+        return jax.tree.unflatten(self.tod_treedef, [jnp.where(self.flagged, x, 0)])

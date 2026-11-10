@@ -4,16 +4,17 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-from furax import MaskOperator, SymmetricBandToeplitzOperator
+from furax import DiagonalOperator, HomothetyOperator, MaskOperator, SymmetricBandToeplitzOperator
+from furax.core import DenseBlockDiagonalOperator
 from furax.mapmaking.config import NestedConfig
 from furax.mapmaking.templates import Template, TemplateOperator
 from furax.mapmaking.templates.bases import TensorBasis
 from furax.mapmaking.templates.gram import factor, template_gram
-from furax.mapmaking.weight import MarginalizedWeightOperator, NestedWeightOperator
+from furax.mapmaking.weight import MarginalizedWeightOperator, NestedWeightOperator, _chebyshev
 from furax.obs import TODFormat
 
 # A banded SPD inverse-noise; the covariance N is its dense inverse.
-NINV_BAND = np.array([2.5, -1.0, -0.3])
+NINV_BAND = np.array([2.5, -1.0, 0.2])
 
 
 def _band_toeplitz(band: np.ndarray, n: int) -> np.ndarray:
@@ -47,19 +48,29 @@ def _inv_noise_op(ndet: int, n: int) -> SymmetricBandToeplitzOperator:
     return SymmetricBandToeplitzOperator(band, in_structure=struct)
 
 
+def _nested_weight(good: np.ndarray, config: NestedConfig) -> NestedWeightOperator:
+    """The nested weight of the banded noise, over the good samples `good`, `(det, samp)`."""
+    struct = jax.ShapeDtypeStruct(good.shape, jnp.float64)
+    mask = MaskOperator.from_boolean_mask(jnp.asarray(good), in_structure=struct)
+    white = HomothetyOperator(NINV_BAND[0], in_structure=struct)  # the zero lag of N⁻¹
+    return NestedWeightOperator.create(_inv_noise_op(*good.shape), mask, config, white)
+
+
+def _gaps_of_every_length(ndet: int, n: int) -> np.ndarray:
+    """Gaps from one sample to much longer than the correlation, in each channel."""
+    good = np.ones((ndet, n), bool)
+    for start, length in [(5, 1), (20, 5), (40, 9), (70, 30)]:
+        good[:, start : start + length] = False
+    return good
+
+
 @pytest.mark.parametrize('ndet', [1, 3])
 def test_nested_weight_matches_w_exact(ndet: int) -> None:
     n = 120
     ninv_mat = _band_toeplitz(NINV_BAND, n)
     cov = np.linalg.inv(ninv_mat)  # N = (N⁻¹)⁻¹
-    good = _gappy_mask(ndet, n)
-    struct = jax.ShapeDtypeStruct((ndet, n), jnp.float64)
-
-    inv_noise = _inv_noise_op(ndet, n)
-    mask = MaskOperator.from_boolean_mask(jnp.asarray(good), in_structure=struct)
-    # Budget comfortably above the flag count -> Woodbury path; fixed iterations (rtol=atol=0).
-    config = NestedConfig(max_flag_fraction=0.5, inner_steps=200, rtol=0.0, atol=0.0)
-    weight = NestedWeightOperator.create(inv_noise, mask, config)
+    good = _gappy_mask(ndet, n) & _gaps_of_every_length(ndet, n)
+    weight = _nested_weight(good, NestedConfig(inner_steps=60))
 
     x = np.asarray(jax.random.normal(jax.random.key(0), (ndet, n), dtype=jnp.float64))
     out = np.asarray(weight(jnp.asarray(x)))
@@ -73,62 +84,74 @@ def test_nested_weight_matches_w_exact(ndet: int) -> None:
         assert not np.allclose(z @ ninv_mat @ z, _w_exact(cov, good[d]), atol=1e-3)
 
 
-@pytest.mark.parametrize('ndet', [1, 3])
-def test_over_budget_falls_back_to_inner_mask(ndet: int) -> None:
-    """When the flag count exceeds n_flag_max, mv returns Z N⁻¹ Z (unbiased), not W_exact."""
-    n = 120
-    ninv_mat = _band_toeplitz(NINV_BAND, n)
-    cov = np.linalg.inv(ninv_mat)
-    good = _gappy_mask(ndet, n)
-    struct = jax.ShapeDtypeStruct((ndet, n), jnp.float64)
-
-    inv_noise = _inv_noise_op(ndet, n)
-    mask = MaskOperator.from_boolean_mask(jnp.asarray(good), in_structure=struct)
-    # Budget below the flag count -> fallback branch.
-    config = NestedConfig(max_flag_fraction=0.01, inner_steps=50)
-    weight = NestedWeightOperator.create(inv_noise, mask, config)
-
-    x = np.asarray(jax.random.normal(jax.random.key(1), (ndet, n), dtype=jnp.float64))
-    out = np.asarray(weight(jnp.asarray(x)))
-
-    inner_mask_ref = np.stack(
-        [np.diag(good[d]) @ ninv_mat @ np.diag(good[d]) @ x[d] for d in range(ndet)]
-    )
-    assert_allclose(out, inner_mask_ref, rtol=1e-10, atol=1e-12)
-    w_exact_ref = np.stack([_w_exact(cov, good[d]) @ x[d] for d in range(ndet)])
-    assert not np.allclose(out, w_exact_ref, atol=1e-3)
-
-
 def test_fully_masked_contributes_zero() -> None:
-    """A fully-flagged (gated) observation exceeds any budget -> Z N⁻¹ Z = 0."""
+    """A fully-flagged (gated) observation contributes nothing."""
     n = 64
-    struct = jax.ShapeDtypeStruct((1, n), jnp.float64)
-    inv_noise = _inv_noise_op(1, n)
-    mask = MaskOperator.from_boolean_mask(jnp.zeros((1, n), bool), in_structure=struct)
-    weight = NestedWeightOperator.create(
-        inv_noise, mask, NestedConfig(max_flag_fraction=0.2, inner_steps=10)
-    )
+    weight = _nested_weight(np.zeros((1, n), bool), NestedConfig(inner_steps=10))
     x = jax.random.normal(jax.random.key(2), (1, n), dtype=jnp.float64)
     assert_allclose(np.asarray(weight(x)), 0.0, atol=1e-12)
 
 
-def test_nested_weight_is_symmetric() -> None:
-    n = 64
-    struct = jax.ShapeDtypeStruct((1, n), jnp.float64)
-    inv_noise = _inv_noise_op(1, n)
-    good = np.ones((1, n), bool)
-    good[0, 20:26] = good[0, 40:44] = False
-    mask = MaskOperator.from_boolean_mask(jnp.asarray(good), in_structure=struct)
-    weight = NestedWeightOperator.create(
-        inv_noise, mask, NestedConfig(max_flag_fraction=0.5, inner_steps=200)
-    )
+@pytest.mark.parametrize('inner_steps', [0, 1, 4])
+def test_weight_lies_between_exact_and_inner_mask(inner_steps: int) -> None:
+    """At any number of steps, M N⁻¹ M ⪰ W ⪰ W_exact, and W is symmetric."""
+    n = 120
+    ninv_mat = _band_toeplitz(NINV_BAND, n)
+    good = _gaps_of_every_length(1, n)
+    weight = _nested_weight(good, NestedConfig(inner_steps=inner_steps))
 
-    assert weight.is_symmetric
-    assert weight.T is weight
     matrix = np.asarray(weight.as_matrix())
-    assert_allclose(matrix, matrix.T, rtol=1e-6, atol=1e-8)
-    # Flagged rows/cols are zeroed automatically (Woodbury touches data only through good samples).
-    assert_allclose(matrix[~good.ravel()], 0.0, atol=1e-8)
+    assert_allclose(matrix, matrix.T, atol=1e-12)
+    z = np.diag(good[0].astype(float))
+    assert np.linalg.eigvalsh(z @ ninv_mat @ z - matrix).min() > -1e-10
+    assert np.linalg.eigvalsh(matrix - _w_exact(np.linalg.inv(ninv_mat), good[0])).min() > -1e-10
+
+
+@pytest.mark.parametrize('steps', [0, 1, 6])
+def test_residual_polynomial(steps: int) -> None:
+    """On eigenvalues in, below and at the top of the interval, `1 − λ p(λ)` is the shifted
+    Chebyshev residual, between 0 and 1."""
+    lower, upper = 0.5, 4.0
+    eigenvalues = jnp.array([1e-3, 0.1, 0.5, 1.3, 2.7, 4.0])
+    p = _chebyshev(DiagonalOperator(eigenvalues), jnp.ones(6), jnp.array([lower, upper]), steps)
+    residual = np.asarray(1 - eigenvalues * p)
+
+    k = steps + 1
+    z = (upper + lower - 2 * np.asarray(eigenvalues)) / (upper - lower)
+    inside = np.cos(k * np.arccos(np.clip(z, -1, 1)))
+    t = np.where(np.abs(z) <= 1, inside, np.cosh(k * np.arccosh(np.maximum(np.abs(z), 1))))
+    t0 = np.cosh(k * np.arccosh((upper + lower) / (upper - lower)))
+    assert_allclose(residual, (1 + t) / (1 + t0), atol=1e-12)
+    assert np.all(residual >= 0) and np.all(residual < 1)
+
+
+def test_preconditioned_solve_converges() -> None:
+    """With the preconditioned spectrum inside the interval, it approaches the inverse."""
+    rng = np.random.default_rng(0)
+    q, _ = np.linalg.qr(rng.normal(size=(8, 8)))
+    scale = rng.uniform(1, 10, 8)
+    # A = S^½ Q diag(λ) Qᵀ S^½, preconditioned by P = S⁻¹: P A has the eigenvalues λ
+    root = np.sqrt(scale)
+    matrix = root[:, None] * (q * np.linspace(1, 3, 8)) @ q.T * root[None, :]
+    A = DenseBlockDiagonalOperator(
+        jnp.asarray(matrix), in_structure=jax.ShapeDtypeStruct((8,), jnp.float64)
+    )
+    b = jnp.asarray(rng.normal(size=8))
+    x = _chebyshev(A, b, jnp.array([1.0, 3.0]), 30, DiagonalOperator(jnp.asarray(1 / scale)))
+    assert_allclose(x, np.linalg.solve(matrix, b), rtol=1e-10)
+
+
+def test_spectrum_bounds_that_of_the_preconditioned_inner_block() -> None:
+    """The upper bound from the frequency response holds every eigenvalue, and is nearly reached."""
+    n = 120
+    good = _gaps_of_every_length(1, n)
+    weight = _nested_weight(good, NestedConfig())
+    flagged = ~good[0]
+    inner = _band_toeplitz(NINV_BAND, n)[np.ix_(flagged, flagged)] / NINV_BAND[0]
+    eigenvalues = np.linalg.eigvalsh(inner)
+    lower, upper = np.asarray(weight.spectrum)
+    assert eigenvalues.max() <= upper < 1.1 * eigenvalues.max()  # a 30-sample gap reaches it
+    assert 0 < lower <= upper / 2
 
 
 def test_marginalized_weight_is_blind_to_its_templates():

@@ -19,8 +19,10 @@ from numpy.typing import NDArray
 from sotodlib import coords
 from sotodlib.coords.helpers import get_deflected_sightline
 from sotodlib.core import AxisManager
+from sotodlib.core.flagman import has_any_cuts
 from sotodlib.core.metadata.loader import LoaderError
 from sotodlib.mapmaking.utils import downsample_obs
+from sotodlib.preprocess.pcore import Pipeline
 
 from furax.mapmaking import (
     AbstractGroundObservation,
@@ -715,14 +717,16 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
     def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
         """Returns an upper bound on the variable padded-buffer dimensions for ``fields``.
 
-        All values are read from the init preprocess metadata: no heavy I/O work is done.
+        All values are read from the preprocessing metadata: no TOD is read and no pipeline is
+        run. A load larger than this shape fails, a smaller one is padded.
 
-        The value is only an *upper bound*, not the exact post-pipeline shape:
-
-        - ``n_detectors`` is the count after applying ``detector_selection`` (wafer slot / bandpass)
-          but before the process pipeline, which only ever restricts detectors further.
+        - ``n_detectors`` is the number of detectors that the cuts of the process pipeline keep.
+          It is selected from the stored cut flags the way the loaders do, so it is expected to
+          equal the number loaded, but it follows their logic rather than their result. It is at
+          least 1: an observation with every detector cut probes one detector and fails to load.
         - ``n_samples`` is ``ceil(meta.samps.count / downsample)``. The process pipeline only trims
-          samples (e.g. edge cuts) before downsampling, so this bounds the actual samps count.
+          samples (e.g. edge cuts) before downsampling, so this bounds the actual samps count
+          without matching it.
 
         With ``join_groups``, the detectors are summed over the groups that have a preprocessing
         record, as loaded by ``from_preproc_groups``.
@@ -734,25 +738,45 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         # call get_preprocess_context through the module so the cached get_preprocess_context is used
         # (str, not Path: sotodlib and the cache key expect a posix string)
         _, context = pu.get_preprocess_context(self.init_config.as_posix())
-        metas = []
+        n_detectors, n_samps, n_intervals = 0, 0, 0
+        found = False
         for selection in self._selections:
             try:
-                metas.append(context.get_meta(self.observation_id, dets=selection))
+                meta = context.get_meta(self.observation_id, dets=selection)
+                n_detectors += self._detectors_after_cuts(meta, selection)
             except LoaderError:
                 if not self.join_groups:
                     raise
                 logger.warning(
                     'No preprocessing record for %s in %s', selection, self.observation_id
                 )
-        if not metas:
+                continue
+            found = True
+            n_samps = max(n_samps, meta.samps.count)
+            n_intervals = max(n_intervals, meta.subscans.count) if intervals else 0
+        if not found:
             raise RuntimeError(f'no preprocessing records for {self.observation_id}')
         downsample = self._sotodlib_config.downsample
-        n_samps = max(meta.samps.count for meta in metas)
         return ObservationBufferShape(
-            sum(meta.dets.count for meta in metas),
+            max(n_detectors, 1),
             -(-n_samps // downsample),  # ceil, matches downsample_obs
-            max(meta.subscans.count for meta in metas) if intervals else 0,
+            n_intervals,
         )
+
+    def _detectors_after_cuts(self, meta: AxisManager, selection: dict[str, Any]) -> int:
+        """Number of detectors of a group that the loaders keep, from its metadata `meta`.
+
+        Follows `load_and_preprocess` and, with a `proc_config`, `multilayer_load_and_preprocess`,
+        up to the point where they read the TOD.
+        """
+        configs, _ = pu.get_preprocess_context(self.init_config.as_posix())
+        kept = _survivors(meta, configs)
+        if self.proc_config is None:
+            return len(kept)
+        configs_proc, context_proc = pu.get_preprocess_context(self.proc_config.as_posix())
+        meta_proc = context_proc.get_meta(self.observation_id, dets=selection)
+        meta_proc.restrict('dets', kept)
+        return len(_survivors(meta_proc, configs_proc))
 
     @functools.cached_property
     def _selections(self) -> list[dict[str, Any]]:
@@ -821,6 +845,19 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         return SOTODLibObservation.from_file(
             path, requested_fields, self._sotodlib_config, processed=True
         )
+
+
+def _survivors(meta: AxisManager, configs: dict[str, Any]) -> NDArray[Any]:
+    """The detectors of `meta` that the cuts of one preprocessing layer keep."""
+    valid = meta.preprocess.get('valid_data') if 'preprocess' in meta else None
+    if isinstance(valid, AxisManager):
+        return meta.dets.vals[has_any_cuts(valid.valid_data)]
+    keep = np.ones(meta.dets.count, dtype=bool)
+    for process in Pipeline(configs['process_pipe'])[:]:
+        selected = process.select(meta, in_place=False)
+        if isinstance(selected, np.ndarray):
+            keep &= selected
+    return meta.dets.vals[keep]
 
 
 def _join_groups(observation_id: str, parts: list[SOTODLibObservation]) -> AxisManager:

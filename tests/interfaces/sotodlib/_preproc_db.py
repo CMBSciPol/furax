@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import so3g.proj
 import sotodlib.io.metadata  # noqa: F401  registers the hdf5 metadata loaders (AxisManagerHdf)
 import yaml
 from sotodlib.core import OBSLOADER_REGISTRY, AxisManager, Context, metadata
@@ -42,12 +43,20 @@ def _furax_test_loader(_obsfiledb, obs_id, dets=None, samples=None, no_signal=No
 OBSLOADER_REGISTRY.setdefault('furax_test', _furax_test_loader)
 
 
-def build_preproc_db(root: Path, files: list[Path], n_detsets: int = 1) -> Path:
+def build_preproc_db(
+    root: Path,
+    files: list[Path],
+    n_detsets: int = 1,
+    n_uncut: dict[str, int] | None = None,
+) -> Path:
     """Materialise a minimal preproc db for ``files`` under ``root``; return the config path.
 
     The returned config is exactly what ``from_preproc_group`` / ``furax-so-map
     --init-config`` consume. The detectors of each observation are split into ``n_detsets``
     detsets, its preprocessing groups.
+
+    `n_uncut` maps an observation id to the number of its leading detectors that survive the
+    cuts, stored as `valid_data`; the others have no valid sample. Without an entry, none is cut.
     """
     obsfiledb = metadata.ObsFileDb(map_file=(root / 'obsfiledb.sqlite').as_posix())
     obsdb = metadata.ObsDb()
@@ -79,6 +88,8 @@ def build_preproc_db(root: Path, files: list[Path], n_detsets: int = 1) -> Path:
         # pcore.Pipeline.run reads frequency_cutoffs; provide an empty one for the no-op pipe
         if 'frequency_cutoffs' not in preprocess._fields:
             preprocess.wrap('frequency_cutoffs', AxisManager())
+        if n_uncut and obs_id in n_uncut:
+            _wrap_valid_data(preprocess, n_uncut[obs_id])
         preprocess.save(archive_h5.as_posix(), obs_id, overwrite=True)
         mdb.add_entry(
             {'obs:obs_id': obs_id, 'loader': 'AxisManagerHdf', 'dataset': obs_id},
@@ -107,6 +118,20 @@ def build_preproc_db(root: Path, files: list[Path], n_detsets: int = 1) -> Path:
     config_path = root / 'config.yaml'
     config_path.write_text(yaml.safe_dump(config))
     return config_path
+
+
+def _wrap_valid_data(preprocess: AxisManager, n_uncut: int) -> None:
+    """Store the cuts as sotodlib does: a `valid_data` flag of the samples each detector keeps."""
+    n_samples = preprocess.samps.count
+    ranges = []
+    for i in range(preprocess.dets.count):
+        valid = so3g.proj.Ranges(n_samples)
+        if i < n_uncut:
+            valid.add_interval(0, n_samples)
+        ranges.append(valid)
+    flags = AxisManager(preprocess.dets, preprocess.samps)
+    flags.wrap('valid_data', so3g.proj.RangesMatrix(ranges), [(0, 'dets'), (1, 'samps')])
+    preprocess.wrap('valid_data', flags)
 
 
 def drop_group_record(monkeypatch: pytest.MonkeyPatch, detset: str) -> None:

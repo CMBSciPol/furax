@@ -53,6 +53,10 @@ class NoiseModel(ABC):
     @abstractmethod
     def to_white_noise_model(self) -> 'WhiteNoiseModel': ...
 
+    def detector_parameters(self) -> 'NoiseModel':
+        """The model as parameters of each detector, the form in which the results record it."""
+        return self
+
     def to_operator_fourier(
         self,
         in_structure: PyTree[jax.ShapeDtypeStruct],

@@ -9,7 +9,7 @@ from furax.mapmaking.config import NestedConfig
 from furax.mapmaking.templates import Template, TemplateOperator
 from furax.mapmaking.templates.bases import TensorBasis
 from furax.mapmaking.templates.gram import factor, template_gram
-from furax.mapmaking.weight import MarginalizedWeightOperator, NestedWeightOperator, WeightOperator
+from furax.mapmaking.weight import MarginalizedWeightOperator, NestedWeightOperator
 from furax.obs import TODFormat
 
 # A banded SPD inverse-noise; the covariance N is its dense inverse.
@@ -129,53 +129,6 @@ def test_nested_weight_is_symmetric() -> None:
     assert_allclose(matrix, matrix.T, rtol=1e-6, atol=1e-8)
     # Flagged rows/cols are zeroed automatically (Woodbury touches data only through good samples).
     assert_allclose(matrix[~good.ravel()], 0.0, atol=1e-8)
-
-
-def test_with_mask_rebuilds_the_weight_only() -> None:
-    """The noise and the budget fraction are kept; the flag budget is resolved from the new mask."""
-    n = 32
-    struct = jax.ShapeDtypeStruct((1, n), jnp.float64)
-    good = np.ones((1, n), bool)
-    good[0, 10:14] = False
-    mask = MaskOperator.from_boolean_mask(jnp.asarray(good), in_structure=struct)
-    weight = NestedWeightOperator.create(
-        _inv_noise_op(1, n), mask, NestedConfig(max_flag_fraction=0.5, inner_steps=50)
-    )
-    assert weight.n_flag_max == 16  # ceil(0.5 * 32)
-
-    # a new mask over a TOD twice as long
-    new_struct = jax.ShapeDtypeStruct((1, 2 * n), jnp.float64)
-    new_good = np.ones((1, 2 * n), bool)
-    new_good[0, 5:9] = False
-    new_mask = MaskOperator.from_boolean_mask(jnp.asarray(new_good), in_structure=new_struct)
-    rebuilt = weight.with_mask(new_mask)
-
-    assert isinstance(rebuilt, NestedWeightOperator)
-    assert rebuilt.max_flag_fraction == weight.max_flag_fraction
-    assert rebuilt.n_flag_max == 32  # ceil(0.5 * 64), not copied from the old budget
-    assert rebuilt.inner_steps == weight.inner_steps
-    assert rebuilt.ninv is weight.ninv
-    assert_allclose(np.asarray(rebuilt.mask.to_boolean_mask()), new_good)
-
-
-def test_weight_operator_with_mask() -> None:
-    """The plain inner-mask weight gained a matching ``with_mask`` for the polymorphic Z setter."""
-    n = 16
-    struct = jax.ShapeDtypeStruct((n,), jnp.float64)
-    inv_noise = SymmetricBandToeplitzOperator(jnp.array([2.0, -0.9]), in_structure=struct)
-    good = np.ones(n, bool)
-    good[4:6] = False
-    mask = MaskOperator.from_boolean_mask(jnp.asarray(good), in_structure=struct)
-    weight = WeightOperator.create(inv_noise, mask)
-
-    new_good = np.ones(n, bool)
-    new_good[8:10] = False
-    new_mask = MaskOperator.from_boolean_mask(jnp.asarray(new_good), in_structure=struct)
-    rebuilt = weight.with_mask(new_mask)
-
-    assert isinstance(rebuilt, WeightOperator)
-    assert rebuilt.weight is weight.weight
-    assert_allclose(np.asarray(rebuilt.mask.to_boolean_mask()), new_good)
 
 
 def test_marginalized_weight_is_blind_to_its_templates():

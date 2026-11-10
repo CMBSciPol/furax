@@ -69,6 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `MapMakingConfig.detector_batch_size` is renamed `detector_tile_size` (#447)
 - **Breaking:** `furax.mapmaking.layout` replaces `Bucket`, `SlotLayout`, `SlotPlacement`, `partition_padded`, `padded_volume` and `unpadded_volume` with `TileBucket`, `TileLayout`, `TilePlacement` and `partition_tiles` (#447)
 - `LazyPreprocSOTODLibObservation.probe_shape` counts the detectors left by the cuts, from the preprocessing metadata, instead of those before them (#474)
+- **Breaking:** `WeightOperator.with_mask` and `NestedWeightOperator.with_mask` are removed: the multi-observation mapmaker builds each weight once, with its final mask (#476)
 
 ### Fixed
 

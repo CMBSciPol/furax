@@ -81,6 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ListEnsemble` rejects members that differ by a non-array leaf, which it used to take from the first member for all of them, or by the shape or dtype of an array leaf (#463)
 - `map_reduce` over a `ListEnsemble` accepts members holding 0-d arrays (#463)
 - Padded samples are no longer binned onto one pixel, which serialized the GPU scatter in proportion to the padding (#425)
+- `MultiObservationMapMaker` builds the weight of each detector tile once, with its final mask, instead of building it again to gate out padding tiles and failed observations (#477)
 
 ## [0.17.2] - 2026-10-30
 

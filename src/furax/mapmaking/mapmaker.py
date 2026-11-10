@@ -605,10 +605,8 @@ class MultiObservationMapMaker[T]:
                 # The extra streams read, the I one for the T2P template, stay out of the model
                 temperature = data[ReaderField.SAMPLE_DATA].i
                 data, tod = restrict_streams(data, tod, landscape.stokes)
-            obs = ObservationModel.create(data, padding, config, landscape)
-
             # Padding/failed observations contribute nothing
-            obs.M = obs.M.restrict(use)
+            obs = ObservationModel.create(data, padding, config, landscape, use)
 
             # Hit map = nearest-neighbour coverage of the sample mask
             hit_pointing = PointingOperator.create(

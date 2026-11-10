@@ -18,6 +18,7 @@ from furax.mapmaking.config import (
     LandscapeConfig,
     MapMakingConfig,
     NestedConfig,
+    NoiseSource,
     PointingConfig,
     PolynomialOrders,
     SotodlibConfig,
@@ -223,9 +224,37 @@ def test_correlated_gap_treatments_reject_detector_tiles(treatment: GapTreatment
     MapMakingConfig(gaps=GapsConfig(treatment=treatment), detector_tile_size=16)
 
 
-def test_correlated_weight_rejects_implicit_templates():
+@pytest.mark.parametrize(
+    ('options', 'match'),
+    [
+        ({'detector_tile_size': 16}, 'detector_tile_size to 0'),
+        (
+            {
+                'weighting': WeightingConfig(
+                    mode=WeightingMode.LOW_RANK, source=NoiseSource.PRECOMPUTED
+                )
+            },
+            'source=fit',
+        ),
+        ({'gaps': GapsConfig(treatment=GapTreatment.FILL)}, 'inner_mask or explicit'),
+        ({'gaps': GapsConfig(treatment=GapTreatment.NESTED)}, 'inner_mask or explicit'),
+    ],
+    ids=['detector-tiles', 'precomputed', 'fill-gaps', 'nested-gaps'],
+)
+def test_low_rank_weighting_rejects(options, match):
+    base = {
+        'weighting': WeightingConfig(mode=WeightingMode.LOW_RANK),
+        'detector_tile_size': 0,
+        'gaps': GapsConfig(treatment=GapTreatment.INNER_MASK),
+    }
+    with pytest.raises(ValueError, match=match):
+        MapMakingConfig(**(base | options))
+
+
+@pytest.mark.parametrize('mode', [WeightingMode.TOEPLITZ, WeightingMode.LOW_RANK])
+def test_correlated_weight_rejects_implicit_templates(mode: WeightingMode):
     options = {
-        'weighting': WeightingConfig(mode=WeightingMode.TOEPLITZ),
+        'weighting': WeightingConfig(mode=mode),
         'detector_tile_size': 0,
         'gaps': GapsConfig(treatment=GapTreatment.INNER_MASK),
     }

@@ -60,6 +60,9 @@ class WeightingMode(Enum):
     TOEPLITZ = 'toeplitz'
     """Banded Toeplitz weighting ($1/f$ noise model)."""
 
+    LOW_RANK = 'low_rank'
+    """Detector-correlated weighting: a diagonal plus a few common modes per frequency bin."""
+
 
 class NoiseSource(Enum):
     """Where the noise model used for weighting comes from (see [`WeightingConfig.source`][])."""
@@ -247,6 +250,10 @@ class LowRankNoiseFitConfig:
     single_lim: float = 0.55
     """A mode is rejected when one channel carries a component of its unit vector above this."""
 
+    deproject: bool = True
+    """Whether to fit the model on the TOD less its fit by the configured templates, which their
+    amplitudes absorb in the solve, rather than on the TOD itself."""
+
 
 @dataclass
 class WeightingConfig:
@@ -278,10 +285,13 @@ class WeightingConfig:
     fitting: NoiseFitConfig = field(default_factory=NoiseFitConfig)
     """Options for fitting the noise PSD to the data."""
 
+    low_rank: LowRankNoiseFitConfig = field(default_factory=LowRankNoiseFitConfig)
+    """Options for fitting the detector-correlated noise model. Only relevant in `LOW_RANK` mode."""
+
     @property
     def diagonal_matrix(self) -> bool:
         """True when the inverse-noise matrix is diagonal (identity or white)."""
-        return self.mode != WeightingMode.TOEPLITZ
+        return self.mode not in (WeightingMode.TOEPLITZ, WeightingMode.LOW_RANK)
 
 
 @dataclass
@@ -1267,6 +1277,8 @@ class MapMakingConfig:
                 'Templates with correlated weighting require gaps.treatment=inner_mask, nested '
                 'or explicit.'
             )
+        if self.weighting.mode == WeightingMode.LOW_RANK:
+            self._check_low_rank()
         if self.templates is not None and not self.binned:
             self._check_explicit_templates()
         if (templates := self.templates) is not None:
@@ -1293,6 +1305,21 @@ class MapMakingConfig:
             ):
                 if isinstance(per_stream, dict):
                     self._check_stream_groups(f'templates.{name}', per_stream)
+
+    def _check_low_rank(self) -> None:
+        """Check that the detector-correlated weighting supports the config."""
+        if self.weighting.source != NoiseSource.FIT:
+            raise ValueError('weighting.mode=low_rank requires weighting.source=fit.')
+        if self.detector_tile_size:
+            raise ValueError(
+                'weighting.mode=low_rank couples the detectors of an observation: set '
+                f'detector_tile_size to 0 (got {self.detector_tile_size})'
+            )
+        if self.gaps.treatment in (GapTreatment.FILL, GapTreatment.NESTED):
+            # the nested weight solves with a banded Toeplitz N⁻¹, which the low-rank one is not
+            raise ValueError(
+                'weighting.mode=low_rank requires gaps.treatment=inner_mask or explicit.'
+            )
 
     def _check_explicit_templates(self) -> None:
         """Check that no template is implicit: a correlated weight needs them all explicit."""

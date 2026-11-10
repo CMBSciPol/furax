@@ -30,6 +30,7 @@ from ._bucket import BucketModel, BucketNormalOperator, MemberOperator, Tile, se
 from ._model import DROP_REASONS, FACTORED_KINDS, TemplateBundle
 from ._solve import MapMakingSystem
 from .layout import TilePlacement
+from .noise import NoiseModel
 from .preconditioner import BJPreconditioner
 
 
@@ -248,7 +249,7 @@ class AccumulatedModel:
         per_bucket = []
         for bm in self.buckets:
             # the parameters of the detectors are held per tile: `(tile, ..., detector)`
-            noise = lift(lambda tile: tile.model.noise_model, bm.tiles)
+            noise = lift(lambda tile: _detector_parameters(tile.model.noise_model), bm.tiles)
             assert isinstance(noise, StackedEnsemble)
             leaves, _ = jax.tree_util.tree_flatten_with_path(placement.gather(noise.stacked))
             per_bucket.append(
@@ -321,3 +322,10 @@ def _gram_inverse(
 def _parameter_name(path: tuple[Any, ...]) -> str:
     """The name of a leaf of a noise model, from its path: `sigma`, or `<key>/sigma` if nested."""
     return '/'.join(str(getattr(k, 'name', getattr(k, 'key', k))) for k in path)
+
+
+def _detector_parameters(noise_model: PyTree[NoiseModel]) -> PyTree[NoiseModel]:
+    """The noise model of a tile as parameters of each of its detectors."""
+    return jax.tree.map(
+        lambda m: m.detector_parameters(), noise_model, is_leaf=lambda m: isinstance(m, NoiseModel)
+    )

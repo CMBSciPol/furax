@@ -11,7 +11,7 @@ from sotodlib.core.metadata.loader import LoaderError
 from sotodlib.preprocess import preprocess_util as pu
 
 from furax.interfaces.sotodlib import LazyPreprocSOTODLibObservation, LazySOTODLibObservation
-from furax.interfaces.sotodlib.observation import _is_missing_record
+from furax.interfaces.sotodlib.observation import NoDetectorsLeftError, _is_missing_record
 from furax.mapmaking import (
     AbstractGroundObservation,
     HashedObservationMetadata,
@@ -226,6 +226,33 @@ def test_lazy_preproc_join_selected_groups(tmp_path) -> None:
 
     assert lazy.probe_shape() == (OBS_NDET[1] // 2, OBS_NSAMPLE[1], 0)
     assert lazy.get_data().n_detectors == OBS_NDET[1] // 2
+
+
+@pytest.mark.parametrize(
+    ('n_detsets', 'join_groups', 'n_uncut'),
+    [(1, False, 1), (2, True, 1), (2, True, 3), (2, True, 4)],
+)
+def test_lazy_preproc_probe_shape_counts_the_detectors_left_by_the_cuts(
+    tmp_path, n_detsets: int, join_groups: bool, n_uncut: int
+) -> None:
+    """The probe counts the detectors that survive the cuts, which are the ones loaded."""
+    config = build_preproc_db(
+        tmp_path, [FOLDER / FILES[1]], n_detsets=n_detsets, n_uncut={OBS_IDS[1]: n_uncut}
+    )
+    lazy = LazyPreprocSOTODLibObservation(OBS_IDS[1], config, join_groups=join_groups)
+
+    assert lazy.probe_shape().detector_count == n_uncut
+    assert lazy.get_data().n_detectors == n_uncut
+
+
+def test_lazy_preproc_probe_shape_of_an_observation_cut_entirely(tmp_path) -> None:
+    """Every detector cut leaves one detector to probe, and the load reports it."""
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_uncut={OBS_IDS[1]: 0})
+    lazy = LazyPreprocSOTODLibObservation(OBS_IDS[1], config)
+
+    assert lazy.probe_shape().detector_count == 1
+    with pytest.raises(NoDetectorsLeftError):
+        lazy.get_data()
 
 
 @pytest.fixture

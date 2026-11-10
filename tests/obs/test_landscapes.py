@@ -290,12 +290,12 @@ class TestInterp:
         assert_array_almost_equal(weights, [0.25, 0.25, 0.25, 0.25], decimal=12)
 
     def test_car_oob_contributes_nothing(self, car):
-        """A point far outside the map is resolved to a safe index carrying no weight."""
+        """A point far outside the map is resolved to index -1, carrying no weight."""
         # phi=radians(100) → pix_x ≈ -995.5, all four neighbors outside [0, 9]
         theta = jnp.array(np.pi / 2)
         phi = jnp.array(np.radians(100.0))
         indices, weights = car.world2interp(theta, phi)
-        assert_array_equal(indices, 0)
+        assert_array_equal(indices, -1)
         assert_array_equal(weights, 0.0)
 
 
@@ -485,18 +485,18 @@ class TestNearestStencil:
         assert_array_almost_equal(np.pi / 2 - theta_c, alt_centers[pix_i], decimal=12)
         assert_array_almost_equal(-centers.positions.phi[..., 0], az_centers[pix_j], decimal=12)
 
-    def test_local_landscape_sinks_unmapped_samples(self, angles):
-        """A sample outside the subset keeps the parent's center but loses its weight."""
+    def test_local_landscape_drops_unmapped_samples(self, angles):
+        """A sample outside the subset keeps the parent's center but reads no pixel."""
         parent = HealpixLandscape(16, 'IQU')
         centers = parent.world2stencil(*angles, Interpolation.NEAREST)
-        # keep half the hit pixels, so some samples sink
+        # keep half the hit pixels, so some samples fall outside
         local = LocalStokesLandscape(parent, centers.indices[::2, 0])
         local_stencil = local.world2stencil(*angles, Interpolation.NEAREST)
 
-        sunk = local_stencil.indices == local.sink
-        assert jnp.any(sunk) and not jnp.all(sunk), 'the fixture must sink some samples but not all'
-        assert_array_equal(local_stencil.weights[sunk], 0.0)
-        assert_array_equal(local_stencil.weights[~sunk], 1.0)
+        outside = local_stencil.indices == -1
+        assert jnp.any(outside) and not jnp.all(outside), 'the fixture must drop some samples only'
+        assert_array_equal(local_stencil.weights[outside], 0.0)
+        assert_array_equal(local_stencil.weights[~outside], 1.0)
         assert_array_equal(local_stencil.positions.z, centers.positions.z)
 
 
@@ -547,28 +547,28 @@ class TestIndexStencil:
         assert_array_almost_equal(stencil.positions.phi, expected.positions.phi, decimal=12)
 
     def test_an_out_of_map_index_contributes_nothing(self, car):
-        """A missed sample carries a safe index, a finite position and no weight."""
+        """A missed sample carries index -1, a finite position and no weight."""
         stencil = car.index2stencil(jnp.array([-1]))
-        assert_array_equal(stencil.indices, 0)
+        assert_array_equal(stencil.indices, -1)
         assert_array_equal(stencil.weights, 0.0)
         assert jnp.all(jnp.isfinite(stencil.positions.z)) and jnp.all(
             jnp.isfinite(stencil.positions.phi)
         )
 
-    def test_a_subset_landscape_sinks_the_indices_it_does_not_hold(self, angles):
-        """A local index in the sink reads the sink slot with no weight, as through the angles."""
+    def test_a_subset_landscape_drops_the_indices_it_does_not_hold(self, angles):
+        """A local index of -1 reads no pixel, as through the angles."""
         parent = HealpixLandscape(16, 'IQU')
         hit = np.unique(np.asarray(parent.world2index(*angles)))
-        local = LocalStokesLandscape(parent, hit[::2])  # keep half the hit pixels, sink the rest
+        local = LocalStokesLandscape(parent, hit[::2])  # keep half the hit pixels, drop the rest
         expected = local.world2stencil(*angles, Interpolation.NEAREST)
         stencil = local.index2stencil(local.world2index(*angles))
 
-        sunk = stencil.indices[..., 0] == local.sink
-        assert jnp.any(sunk) and not jnp.all(sunk), 'the fixture must sink some samples but not all'
+        sunk = stencil.indices[..., 0] == -1
+        assert jnp.any(sunk) and not jnp.all(sunk), 'the fixture must drop some samples only'
         assert_array_equal(stencil.indices, expected.indices)
         assert_array_equal(stencil.weights, expected.weights)
-        # A sunk index no longer names a parent pixel, so only the pixels actually read carry a
-        # position; the sunk ones are weightless either way.
+        # A -1 index names no parent pixel, so only the pixels actually read carry a position;
+        # the others are weightless either way.
         assert_array_almost_equal(
             stencil.positions.z[~sunk], expected.positions.z[~sunk], decimal=12
         )
@@ -749,17 +749,16 @@ class TestLocalStokesLandscape:
         mask = np.zeros(parent.shape, bool)
         mask[0, 0] = mask[1, 2] = mask[3, 5] = True
         local = LocalStokesLandscape.from_boolean_mask(parent, mask)
-        # global_indices are the sorted flat positions; shape carries the extra sink slot
+        # global_indices are the sorted flat positions
         assert_array_equal(local.global_indices, [0, 1 * 12 + 2, 3 * 12 + 5])
         assert local.nlocal == 3
-        assert local.sink == 3
-        assert local.shape == (4,)  # nlocal + 1 (sink)
+        assert local.shape == (3,)
 
-    def test_global2local_roundtrip_and_sink(self, parent: CARLandscape) -> None:
+    def test_global2local_roundtrip(self, parent: CARLandscape) -> None:
         local = LocalStokesLandscape(parent, jnp.array([0, 10, 29]))
         assert_array_equal(local.global2local(local.global_indices), [0, 1, 2])
-        # unmapped and out-of-bounds (-1) both fall in the sink
-        assert_array_equal(local.global2local(jnp.array([7, -1, 40])), [3, 3, 3])
+        # unmapped and out-of-bounds (-1) both map to no pixel
+        assert_array_equal(local.global2local(jnp.array([7, -1, 40])), [-1, -1, -1])
         # local2global inverts, out-of-range -> -1
         assert_array_equal(local.local2global(jnp.array([0, 1, 2, 3])), [0, 10, 29, -1])
 
@@ -769,9 +768,7 @@ class TestLocalStokesLandscape:
             jnp.arange(2 * len(parent), dtype=jnp.float64).reshape(2, *parent.shape)
         )
         restricted = local.restrict(sky)
-        # restrict lands in the map space `self.shape` (sink slot included, zero-padded)
-        assert restricted.shape == local.shape == (4,)
-        assert_array_equal(restricted.data[:, -1], 0.0)
+        assert restricted.shape == local.shape == (3,)
         promoted = local.promote(restricted)
         assert promoted.shape == parent.shape
         gi = local.global_indices
@@ -779,21 +776,8 @@ class TestLocalStokesLandscape:
         assert_array_equal(promoted.data.reshape(2, -1)[:, gi], sky.data.reshape(2, -1)[:, gi])
         assert_array_equal(promoted.data.reshape(2, -1).at[:, gi].set(0.0), 0.0)
 
-    def test_with_drop_sink_roundtrip(self, parent: CARLandscape) -> None:
-        local = LocalStokesLandscape(parent, jnp.array([0, 10, 29]))
-        compact = Stokes.class_for('QU').from_array(
-            jnp.arange(2 * local.nlocal, dtype=jnp.float64).reshape(2, local.nlocal)
-        )
-        padded = local.with_sink(compact, fill_value=-1.0)
-        assert padded.shape == local.shape
-        assert_array_equal(padded.data[:, -1], -1.0)
-        assert_array_equal(padded.data[:, :-1], compact.data)
-        roundtripped = local.drop_sink(padded)
-        assert roundtripped.shape == (local.nlocal,)
-        assert_array_equal(roundtripped.data, compact.data)
-
     def test_promote_accepts_landscape_maps(self, parent: CARLandscape) -> None:
-        # zeros()/structure and restrict/promote all live in the same (nlocal + 1) space
+        # zeros()/structure and restrict/promote all live in the same nlocal-pixel space
         local = LocalStokesLandscape(parent, jnp.array([0, 10, 29]))
         promoted = local.promote(local.zeros())
         assert promoted.shape == parent.shape
@@ -810,7 +794,7 @@ class TestLocalStokesLandscape:
         restricted = local.restrict(sky)
         assert restricted.shape == (nfreq, *local.shape)
         gi = local.global_indices
-        assert_array_equal(restricted.data[..., :-1], sky.data.reshape(2, nfreq, -1)[..., gi])
+        assert_array_equal(restricted.data, sky.data.reshape(2, nfreq, -1)[..., gi])
         promoted = local.promote(restricted)
         assert promoted.shape == (nfreq, *parent.shape)
         assert_array_equal(
@@ -826,12 +810,12 @@ class TestLocalStokesLandscape:
         lidx, lweights = local.world2interp(theta, phi)
         assert_array_equal(local.local2global(lidx), gidx)
         assert_array_equal(lweights, gweights)
-        # drop one neighbor: it maps to the sink and its weight is zeroed
+        # drop one neighbor: it maps to no pixel and its weight is zeroed
         dropped = gidx.ravel()[0]
         local = LocalStokesLandscape(parent, gidx.ravel()[1:])
         lidx, lweights = local.world2interp(theta, phi)
         mask = gidx == dropped
-        assert_array_equal(lidx[mask], local.sink)
+        assert_array_equal(lidx[mask], -1)
         assert_array_equal(lweights[mask], 0.0)
         # the survivors are rescaled over the covered neighbors, so they still sum to one
         assert_allclose(lweights[~mask], gweights[~mask] / gweights[~mask].sum(), rtol=1e-14)
@@ -864,9 +848,9 @@ class TestLocalStokesLandscape:
         theta, phi = parent.quat2world(sampler.quaternions())
         gidx, _ = parent.world2interp(theta, phi)
         assert_array_equal(interp.global_indices, jnp.unique(gidx))
-        # every stencil neighbor is local (nothing falls in the sink) -> weights preserved
+        # every stencil neighbor is local (none is dropped) -> weights preserved
         lidx, lweights = interp.world2interp(theta, phi)
-        assert not jnp.any(lidx == interp.sink)
+        assert not jnp.any(lidx == -1)
         _, gweights = parent.world2interp(theta, phi)
         assert_array_equal(lweights, gweights)
 

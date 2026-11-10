@@ -8,9 +8,10 @@ from enum import IntEnum
 from typing import NamedTuple, Self
 
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, Integer
+from jaxtyping import Array, Bool, DTypeLike, Float, Integer
 
 from furax.math.coords import ZSPhi
+from furax.obs._indexing import NO_PIXEL
 
 __all__ = [
     'Interpolation',
@@ -37,13 +38,12 @@ class Interpolation(IntEnum):
 def _resolve(
     indices: Integer[Array, '*dims neighbors'], weights: Float[Array, '*weight_dims neighbors']
 ) -> tuple[Integer[Array, '*dims neighbors'], Float[Array, '*weight_dims neighbors']]:
-    """Make an interpolation stencil safe to gather with, and normalize its weights.
+    """Mark the neighbours outside the map, and normalize the weights of the others.
 
-    Neighbours outside the map (negative index) are sent to pixel 0 with their weight zeroed, so
-    that the stencil can be gathered unconditionally, and the remaining weights are rescaled to sum
-    to one, which keeps a partially covered sample unbiased. A sample with no neighbour left in the
-    map has nothing to rescale: its weights stay at zero instead of being divided by zero, so it
-    reads pixel 0 and contributes nothing.
+    Neighbours outside the map (negative index) get index -1 and a zero weight, and the remaining
+    weights are rescaled to sum to one, which keeps a partially covered sample unbiased. A sample
+    with no neighbour left in the map has nothing to rescale: its weights stay at zero instead of
+    being divided by zero, and it reads nothing.
 
     The weights may carry a leading Stokes axis the indices do not have, one row per component;
     the normalization is along the neighbour axis alone, so each component sums to one on its own.
@@ -53,12 +53,12 @@ def _resolve(
         weights: Interpolation weights, one per neighbour, broadcastable to the indices.
 
     Returns:
-        The in-bounds indices and the normalized weights.
+        The indices, -1 outside the map, and the normalized weights.
     """
     # Every operator must resolve a stencil the same way: the forward gather and the transposed
     # scatter are adjoint only if they normalize against identical weights.
     valid = indices >= 0
-    indices = jnp.where(valid, indices, 0)
+    indices = jnp.where(valid, indices, NO_PIXEL)
     weights = jnp.where(valid, weights, 0.0)
     weight_sum = weights.sum(axis=-1, keepdims=True)
     return indices, weights / jnp.where(weight_sum > 0, weight_sum, 1.0)
@@ -67,9 +67,11 @@ def _resolve(
 class Stencil(NamedTuple):
     r"""The pixels one sample reads, their weights, and where they sit on the sky.
 
-    A stencil is *resolved*: its indices are safe to gather with unconditionally and its weights
-    sum to one. Build one with [`Stencil.resolve`][] or [`Stencil.nearest`][] rather than by
-    calling the constructor, which does not enforce that invariant.
+    A stencil is *resolved*: its indices are in the map or -1 for a neighbour outside it, which has
+    a zero weight, and the weights of the others sum to one. Operators gather a -1 as zero and
+    drop it when scattering: a sample that reads nothing costs no memory traffic. Build one with
+    [`Stencil.resolve`][] or [`Stencil.nearest`][] rather than by calling the constructor, which
+    does not enforce that invariant.
 
     Nearest-neighbour sampling is the case of a single neighbour, not a different type: the
     trailing neighbour axis has length one and the weight is one.
@@ -82,7 +84,7 @@ class Stencil(NamedTuple):
     [`Stencil.unpositioned`][] builds; only a map with no polarisation can be sampled through one.
 
     Attributes:
-        indices: Neighbour pixel indices into the raveled map, all in bounds.
+        indices: Neighbour pixel indices into the raveled map, -1 outside it.
         weights: Interpolation weights, one per neighbour, summing to one, optionally with a
             leading Stokes axis.
         positions: Where the neighbours sit on the sphere, of the shape of the indices, or `None`
@@ -120,7 +122,7 @@ class Stencil(NamedTuple):
         weights: Float[Array, '*weight_dims neighbors'],
         positions: ZSPhi | None,
     ) -> Self:
-        """Build a stencil, sending out-of-map neighbours to a safe index and normalizing weights.
+        """Build a stencil, marking out-of-map neighbours with -1 and normalizing the weights.
 
         Args:
             indices: Neighbour pixel indices, negative for neighbours outside the map.
@@ -239,3 +241,21 @@ class Stencil(NamedTuple):
             The resolved stencil.
         """
         return self.resolve(indices, weights, self.positions)
+
+    def voided(self, void: Bool[Array, ' *dims']) -> Self:
+        """Return the stencil reading no pixel for the samples where `void` is set.
+
+        For samples without pointing. Their neighbours get index -1 and a zero weight; the other
+        samples are unchanged. A voided sample has no weight left to renormalize, so the stencil
+        stays resolved without the normalization of [`Stencil.resolve`][].
+
+        Args:
+            void: Per sample, whether it reads no pixel, of the shape of the stencil minus its
+                neighbour axis.
+
+        Returns:
+            The resolved stencil.
+        """
+        void = void[..., None]
+        indices = jnp.where(void, NO_PIXEL, self.indices)
+        return type(self)(indices, jnp.where(void, 0, self.weights), self.positions)

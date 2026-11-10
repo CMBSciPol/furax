@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LowRankFourierOperator`: a diagonal plus low-rank matrix across channels in each frequency bin, with its inverse from the Woodbury identity (#465)
 - `Stencil.voided`: the stencil reading no pixel for the given samples (#425)
 - Ensemble members can be grouped in segments of varying length through an `owner` index: `StackedEnsemble` leaves of stride `'segment'` hold one entry per segment, and `map_reduce` keeps outputs per segment with `'segment'` and `'segment_sum'` (#445)
+- `furax.mapmaking.layout.TileLayout` splits observations into detector tiles spread over the devices, with `TileBucket` and `partition_tiles` grouping the observations by length (#446)
 
 ### Changed
 

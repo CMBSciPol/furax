@@ -16,6 +16,7 @@ from furax.mapmaking.config import (
     HWPSynchronousConfig,
     LandscapeConfig,
     MapMakingConfig,
+    NestedConfig,
     PointingConfig,
     PolynomialOrders,
     SotodlibConfig,
@@ -172,6 +173,7 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
             lambda: AzimuthSynchronousConfig(bins=BinsConfig(), n_knots=20),
             'exactly one',
         ),
+        (lambda: NestedConfig(inner_steps=-1), 'inner_steps'),
     ],
     ids=[
         'max_buckets',
@@ -186,6 +188,7 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
         'n_knots',
         'azimuth-no-alternative',
         'azimuth-two-alternatives',
+        'inner_steps',
     ],
 )
 def test_rejects_out_of_range_values(make, match):

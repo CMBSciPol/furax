@@ -856,23 +856,17 @@ class GapFillingConfig:
 class NestedConfig:
     """Inner-solver options for the nested-inverse gap weight (`GapTreatment.NESTED`)."""
 
-    max_flag_fraction: float = 0.3
-    """Flagged-fraction budget; observations flagged above this fall back to `INNER_MASK`."""
-
     inner_steps: int = 20
-    """Maximum number of inner CG iterations for the flagged-block solve.
+    """Number of steps of the solve for the flagged samples.
 
-    Set `rtol = atol = 0` to force exactly this number of steps.
+    The solve is a fixed number of preconditioned Chebyshev steps, which keeps the weight linear,
+    symmetric and positive semidefinite however few they are; more steps bring it closer to the
+    minimum-variance weight.
     """
 
-    rtol: float = 0
-    """Relative tolerance."""
-
-    atol: float = 0
-    """Absolute tolerance."""
-
-    precondition: bool = False
-    """Use the noise-model covariance to precondition the solve (off by default)."""
+    def __post_init__(self) -> None:
+        if self.inner_steps < 0:
+            raise ValueError(f"'inner_steps' must be >= 0, got {self.inner_steps}")
 
 
 @dataclass

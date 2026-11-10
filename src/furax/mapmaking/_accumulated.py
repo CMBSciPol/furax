@@ -16,13 +16,19 @@ from jaxtyping import Array, Int64, PyTree
 
 import furax.tree
 from furax import AbstractLinearOperator, IdentityOperator
-from furax.core import AdditionOperator, BlockDiagonalOperator, BlockSelectOperator
+from furax.core import (
+    AdditionOperator,
+    BlockDiagonalOperator,
+    BlockSelectOperator,
+    StackedEnsemble,
+    lift,
+)
 from furax.obs.stokes import StokesType
 
-from ._bucket import Batch, BucketModel, BucketNormalOperator, MemberOperator
+from ._bucket import BucketModel, BucketNormalOperator, MemberOperator, Tile, segment_ensemble
 from ._model import FACTORED_KINDS, TemplateBundle
 from ._solve import MapMakingSystem
-from .layout import Bucket, SlotLayout, SlotPlacement
+from .layout import TilePlacement
 from .preconditioner import BJPreconditioner
 
 
@@ -38,9 +44,7 @@ class AccumulatedModel:
     map_rhs: StokesType
     """Map RHS over every observation, replicated on every device."""
 
-    def block_jacobi(
-        self, placement: SlotPlacement, binned: bool, in_structure: PyTree
-    ) -> BJPreconditioner:
+    def block_jacobi(self, binned: bool, in_structure: PyTree) -> BJPreconditioner:
         """The block-Jacobi preconditioner, from the diagonal pixel system summed over the buckets.
 
         The system is under the weight without the noise correlations, nor the implicit templates.
@@ -51,7 +55,6 @@ class AccumulatedModel:
                 BucketNormalOperator(
                     bm,
                     None,
-                    placement.axis,
                     weight,
                     amplitudes=False,
                     in_structure=in_structure,
@@ -66,8 +69,6 @@ class AccumulatedModel:
         self,
         S: AbstractLinearOperator,
         BJ: BJPreconditioner,
-        layout: SlotLayout,
-        placement: SlotPlacement,
         sky: StokesType | None = None,
     ) -> MapMakingSystem:
         r"""Assembles the GLS normal system $J^T W' J x = J^T W' d$ over the selected pixels.
@@ -75,15 +76,12 @@ class AccumulatedModel:
         Args:
             S: Selection of the estimated pixels out of the full sky grid.
             BJ: Block-Jacobi preconditioner.
-            layout: The layout of the observations in buckets.
-            placement: The placement of the data on the devices.
             sky: A simulated sky on the full grid, whose right-hand side `injected_b` is added.
 
         Returns:
             The system to solve. Its unknowns are the selected sky pixels, then the amplitudes
             of each kind of explicit template present, if any, one block per bucket.
         """
-        axis = placement.axis
         # Restrict BJ preconditioner to selected pixels
         M = (S @ BJ.I @ S.T).reduce()
 
@@ -95,8 +93,7 @@ class AccumulatedModel:
 
         if not kinds:
             terms = [
-                BucketNormalOperator(bm, S, axis, in_structure=S.out_structure)
-                for bm in self.buckets
+                BucketNormalOperator(bm, S, in_structure=S.out_structure) for bm in self.buckets
             ]
             A = AdditionOperator(terms, sequential=True)
             response = None
@@ -105,14 +102,10 @@ class AccumulatedModel:
             return MapMakingSystem(A, S(self.map_rhs), M, has_amplitudes=False, injected_b=response)
 
         # The unknowns are the selected sky pixels, then, per kind of amplitudes present, one block
-        # per bucket: those of each detector batch alone, `(slot, batch, ...)`, and those the
-        # detectors of an observation share, `(slot, ...)`.
+        # per bucket: those of each detector tile alone, `(tile, ...)`, and those the detectors of
+        # an observation share, `(segment, ...)`.
         structures = {
-            kind: [
-                _amplitude_structure(bucket, bm, kind)
-                for bucket, bm in zip(layout.buckets, self.buckets, strict=True)
-            ]
-            for kind in kinds
+            kind: [_amplitude_structure(bm, kind) for bm in self.buckets] for kind in kinds
         }
         at = {kind: 1 + k for k, kind in enumerate(kinds)}  # their block among the unknowns
 
@@ -121,15 +114,15 @@ class AccumulatedModel:
         terms, responses = [], []
         for b, bm in enumerate(self.buckets):
             in_structure = [S.out_structure, *(structures[kind][b] for kind in kinds)]
-            normal = BucketNormalOperator(bm, S, axis, in_structure=in_structure)
+            normal = BucketNormalOperator(bm, S, in_structure=in_structure)
             picks = [BlockSelectOperator(b, in_structure=structures[kind]) for kind in kinds]
             E = BlockDiagonalOperator([IdentityOperator(in_structure=S.out_structure), *picks])
             terms.append((E.T @ normal @ E).reduce())
             if sky is not None:
                 responses.append(E.T(normal.response(sky)))
 
-        # The Gram inverses of the amplitudes of each detector batch alone are per batch, those
-        # of the common amplitudes per observation.
+        # The Gram inverses of the amplitudes of each detector tile alone are per tile, those of
+        # the common amplitudes per observation.
         inverses: dict[str, list[AbstractLinearOperator]] = {kind: [] for kind in kinds}
         ridges: dict[str, list[AbstractLinearOperator | None]] = {kind: [] for kind in kinds}
         for b, bm in enumerate(self.buckets):
@@ -150,10 +143,12 @@ class AccumulatedModel:
         rhs = [
             S(self.map_rhs),
             *(
-                # declared stacked over the batches, the right-hand sides of each batch's own
-                # amplitudes are wholly per batch
+                # declared stacked over the tiles, the right-hand sides of each tile's own
+                # amplitudes are wholly per tile
                 [
-                    bm.batches.amplitude_rhs if FACTORED_KINDS[kind] == 'stack' else bm.common_rhs
+                    bm.tiles.stacked.amplitude_rhs
+                    if FACTORED_KINDS[kind] == 'stack'
+                    else bm.common_rhs
                     for bm in self.buckets
                 ]
                 for kind in kinds
@@ -167,10 +162,7 @@ class AccumulatedModel:
         return MapMakingSystem(A, rhs, M, has_amplitudes=True, injected_b=response)
 
     def template_amplitudes(
-        self,
-        blocks: list[list[PyTree[Array]]],
-        layout: SlotLayout,
-        placement: SlotPlacement,
+        self, blocks: list[list[PyTree[Array]]], placement: TilePlacement
     ) -> dict[str, np.ndarray]:
         """The explicit-template amplitudes solved for, per observation, from their CG blocks.
 
@@ -186,53 +178,57 @@ class AccumulatedModel:
             per_bucket = [placement.gather(a) for a in own]
             for name in per_bucket[0]:
                 # the detector axis follows the stream axis, if any (see `Template`), after the
-                # slot and batch axes
-                axis = 2 + explicit.operator.templates[name].per.index('det')
-                amplitudes[name] = layout.to_observation_order(
+                # tile axis
+                axis = 1 + explicit.operator.templates[name].per.index('det')
+                amplitudes[name] = placement.layout.to_observation_order(
                     [a[name] for a in per_bucket], detector_axis=axis
                 )
-        for common in blocks:  # one set per slot, no detector axis
+        for common in blocks:  # one set per segment, no detector axis
             amplitudes |= jax.tree.map(
-                lambda *leaves: layout.to_observation_order(leaves),
+                lambda *leaves: placement.layout.to_observation_order(leaves),
                 *[placement.gather(a) for a in common],
             )
         return amplitudes
 
-    def noise_parameters(
-        self, layout: SlotLayout, placement: SlotPlacement
-    ) -> dict[str, np.ndarray]:
-        """The noise model parameters of every detector slot, in observation order.
+    def noise_parameters(self, placement: TilePlacement) -> dict[str, np.ndarray]:
+        """The noise model parameters of every detector, in observation order.
 
         Each parameter is `(n_observations, [stream,] detector)`, its detector axis padded.
         """
         per_bucket = []
         for bm in self.buckets:
-            # every parameter is a detector's, so held per batch: `(slot, batch, ..., detector)`
-            leaves, _ = jax.tree_util.tree_flatten_with_path(
-                placement.gather(bm.batches.model.noise_model)
+            # the parameters of the detectors are held per tile: `(tile, ..., detector)`
+            noise = lift(lambda tile: tile.model.noise_model, bm.tiles)
+            assert isinstance(noise, StackedEnsemble)
+            leaves, _ = jax.tree_util.tree_flatten_with_path(placement.gather(noise.stacked))
+            per_bucket.append(
+                {
+                    _parameter_name(path): leaf
+                    for (path, leaf), stride in zip(leaves, noise.strides, strict=True)
+                    if stride == 1
+                }
             )
-            per_bucket.append({_parameter_name(path): leaf for path, leaf in leaves})
         return {
-            name: layout.to_observation_order([p[name] for p in per_bucket], detector_axis=-1)
+            name: placement.layout.to_observation_order(
+                [p[name] for p in per_bucket], detector_axis=-1
+            )
             for name in per_bucket[0]
         }
 
 
-def _amplitude_structure(
-    bucket: Bucket, bm: BucketModel, kind: str
-) -> dict[str, jax.ShapeDtypeStruct]:
+def _amplitude_structure(bm: BucketModel, kind: str) -> dict[str, jax.ShapeDtypeStruct]:
     """The amplitudes of a kind of a bucket.
 
-    Those of each batch alone are `(slot, batch, ...)`, those of each observation `(slot, ...)`.
+    Those of each tile alone are `(tile, ...)`, those of each observation `(segment, ...)`.
     """
     assert bm.templates is not None
     bundle = getattr(bm.templates, kind)
     assert bundle is not None
-    leading = (bucket.n_slots,)
-    if FACTORED_KINDS[kind] == 'stack':
-        leading += (bucket.n_batches,)
+    tiles = bm.tiles
+    assert tiles.segments is not None
+    leading = tiles.size if FACTORED_KINDS[kind] == 'stack' else tiles.segments
     return {
-        name: jax.ShapeDtypeStruct((*leading, *s.shape), s.dtype)
+        name: jax.ShapeDtypeStruct((leading, *s.shape), s.dtype)
         for name, s in bundle.operator.in_structure.items()
     }
 
@@ -242,22 +238,21 @@ def _gram_inverse(
 ) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
     """The inverse of the Gram of a kind of amplitudes of a bucket, and the ridge added."""
 
-    def bundle(batch: Batch) -> TemplateBundle:
-        assert batch.templates is not None
-        bundle = getattr(batch.templates, kind)
+    def bundle(tile: Tile) -> TemplateBundle:
+        assert tile.templates is not None
+        bundle = getattr(tile.templates, kind)
         assert bundle is not None
         return bundle
 
-    # those of each batch alone hold per batch what depends on the batch, the others whole
-    own, kept = bundle(bm.batches), bundle(bm.shared)
-
     def member(part: str) -> AbstractLinearOperator | None:
-        operators, shared = getattr(own, part), getattr(kept, part)
-        if operators is None and shared is None:
+        if getattr(bundle(bm.tiles.template), part) is None:
             return None
-        if FACTORED_KINDS[kind] == 'stack':
-            return MemberOperator(operators, shared, batches=True, in_structure=structure)
-        return MemberOperator(shared, in_structure=structure)
+        # structural: the operators keep the leaves of the tiles, and their strides
+        operators = lift(lambda tile: getattr(bundle(tile), part), bm.tiles)
+        assert isinstance(operators, StackedEnsemble)
+        if FACTORED_KINDS[kind] != 'stack':
+            operators = segment_ensemble(operators)
+        return MemberOperator(operators, in_structure=structure)
 
     inverse = member('gram_inverse')
     assert inverse is not None

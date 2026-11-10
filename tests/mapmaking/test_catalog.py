@@ -35,14 +35,14 @@ def test_observation_catalog_keeps_the_probes_and_replaces_the_reads():
 
 
 def test_detector_frame_follows_the_detector_axis():
-    # 2 and 1 detectors read on 3 padded slots, and an observation not read, on a QU TOD; only
+    # 2 and 1 detectors read on 3 padded detectors, and an observation not read, on a QU TOD; only
     # the second has its quaternions read, its detector at the centre of the focal plane
     reads = {
         0: ObservationRecord('a', ['d0', 'd1'], n_samples=10),
         1: ObservationRecord('b', ['d2'], quaternions=np.array([[1.0, 0, 0, 0]]), n_samples=5),
         2: 'OSError',
     }
-    sigma = np.arange(3 * 2 * 3, dtype=float).reshape(3, 2, 3)  # (obs, stream, slot)
+    sigma = np.arange(3 * 2 * 3, dtype=float).reshape(3, 2, 3)  # (obs, stream, detector)
     table = detector_table(reads, {'sigma': sigma}, 'QU')
     assert table['observation'].to_list() == [0, 0, 1]
     assert table['detector'].to_list() == [0, 1, 0]

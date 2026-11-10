@@ -1,10 +1,12 @@
+import threading
+
 import jax
 import numpy as np
 import pytest
 from numpy.testing import assert_array_equal
 
-from furax.mapmaking import ObservationReader
-from furax.mapmaking._reader import ObservationRecord
+from furax.mapmaking import ObservationBufferShape, ObservationReader
+from furax.mapmaking._reader import ObservationRecord, TileReader
 from tests.mapmaking.helpers import FakeLazyObservation, FakeObservation
 
 
@@ -77,6 +79,65 @@ def test_sample_data_reaches_a_cpu_device_without_a_copy(demodulated: bool):
     (tod,) = jax.tree.leaves(data['sample_data'])
     on_device = jax.device_put(tod[None], jax.devices('cpu')[0], may_alias=True)
     assert on_device.unsafe_buffer_pointer() == tod.ctypes.data
+
+
+def test_tile_reader_cuts_tiles_out_of_the_observations():
+    # buffers of whole tiles: 3 detectors read of 4, in tiles of 2
+    observations = [FakeLazyObservation(n_dets=3, n_samples=500), FakeLazyObservation(n_dets=2)]
+    reader = ObservationReader.from_observations(
+        observations, requested_fields=['sample_data'], shapes=[ObservationBufferShape(4, 500)] * 2
+    )
+    tiles = TileReader(reader, tile_size=2, tile_counts=[2, 1])
+    whole, _, _ = reader.read_host(0)
+    (tod,) = jax.tree.leaves(whole['sample_data'])
+
+    for start, past_read in [(0, 0), (2, 1)]:
+        data, padding, read = tiles.read(0, start)
+        (tile,) = jax.tree.leaves(data['sample_data'])
+        (widths,) = jax.tree.leaves(padding['sample_data'])
+        assert_array_equal(tile, tod[..., start : start + 2, :])
+        assert widths[-2] == past_read  # detectors of the tile past those the observation has
+        assert read
+    _, _, read = tiles.filler
+    assert not read
+    assert jax.tree.map(np.shape, tiles.read(1, 0)[0]) == jax.tree.map(np.shape, tiles.filler[0])
+
+
+def test_tile_reader_slices_the_detector_uids_with_the_tiles():
+    reader = ObservationReader.from_observations(
+        [FakeLazyObservation(n_dets=3, n_samples=500)],
+        requested_fields=['sample_data', 'metadata'],
+        shapes=[ObservationBufferShape(4, 500)],
+    )
+    tiles = TileReader(reader, tile_size=2, tile_counts=[2])
+    whole, _, _ = reader.read_host(0)
+    uids = whole['metadata'].detector_uids
+
+    for start, past_read in [(0, 0), (2, 1)]:
+        data, padding, _ = tiles.read(0, start)
+        assert_array_equal(data['metadata'].detector_uids, uids[start : start + 2])
+        assert padding['metadata'].detector_uids[-1] == past_read
+
+
+def test_tile_reader_reads_an_observation_once_and_releases_it_after_its_last_tile():
+    reader = ObservationReader.from_observations(
+        [FakeLazyObservation(n_dets=4, n_samples=500)],
+        requested_fields=['sample_data'],
+        shapes=[ObservationBufferShape(4, 500)],
+    )
+    reads = []
+    read_host = reader.read_host
+    reader.read_host = lambda i: reads.append(i) or read_host(i)  # ty: ignore[invalid-assignment]
+    tiles = TileReader(reader, tile_size=1, tile_counts=[4])
+
+    threads = [threading.Thread(target=tiles.read, args=(0, start)) for start in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert reads == [0]
+    assert not tiles._held
 
 
 def test_records_every_item_of_a_repeated_observation():

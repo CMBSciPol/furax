@@ -11,12 +11,8 @@ import numpy as np
 import pytest
 
 from furax.core._base import structure_equal
-from furax.mapmaking import (
-    AbstractLazyObservation,
-    MapMakingConfig,
-    MultiObservationMapMaker,
-    ObservationReader,
-)
+from furax.mapmaking import AbstractLazyObservation, MapMakingConfig, MultiObservationMapMaker
+from furax.mapmaking._reader import detector_tile_structure
 from furax.mapmaking.config import (
     GapTreatment,
     HealpixConfig,
@@ -100,20 +96,24 @@ def test_interface_observations_are_mapped(
 def test_model_matches_the_reader_and_the_landscape(stokes, demodulated):
     observations = [FakeLazyObservation(seed=i) for i in range(2)]
     maker = MultiObservationMapMaker(observations, config=_config('healpix', stokes, demodulated))
-    reader = ObservationReader.from_observations(
-        observations, stokes=stokes if demodulated else None
-    )
-    model = accumulate(maker).buckets[0].batches.model
-    n_obs = jax.tree.leaves(model)[0].shape[0]
-    assert n_obs == len(observations) == reader.count
+    (bucket,) = maker.layout.buckets
+    (reader,) = maker.readers
+    assert reader.count == len(observations)
+    tiles = accumulate(maker).buckets[0].tiles
+    assert tiles.size == bucket.n_tiles
+    model = tiles.template.model
     # structures compared ignoring sharding (the model is built sharded inside shard_map)
     assert structure_equal(model.map_structure, maker.landscape.structure)
-    assert structure_equal(model.tod_format.structure, reader.out_structure['sample_data'])
+    # the samples are read in float32, and cast to the dtype of the model
+    tile, _ = detector_tile_structure(reader.out_structure, bucket.tile_size)
+    dtype = model.tod_format.dtype
+    expected = jax.tree.map(lambda s: jax.ShapeDtypeStruct(s.shape, dtype), tile['sample_data'])
+    assert structure_equal(model.tod_format.structure, expected)
     # a single white noise model covers both paths; on a demodulated TOD, its per-detector sigma
-    # carries the stream axis (after the slot and detector batch axes of the accumulation)
+    # carries the stream axis (after the tile axis of the accumulation)
     assert isinstance(model.noise_model, WhiteNoiseModel)
     if demodulated:
-        assert model.noise_model.sigma.shape[2] == len(stokes)
+        assert tiles.stacked.model.noise_model.sigma.shape[1] == len(stokes)
 
 
 @pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])
@@ -196,7 +196,7 @@ class TestBuckets:
         assert covered == list(range(len(self.N_SAMPLES)))
         for bucket, reader in zip(layout.buckets, maker.readers, strict=True):
             assert reader.count == bucket.n_observations
-            assert bucket.n_slots % jax.device_count() == 0
+            assert bucket.n_tiles % jax.device_count() == 0
             # each reader pads to its own bucket's envelope, not the dataset's largest
             n_samples = reader.out_structure['sample_data'].shape[-1]
             assert n_samples == bucket.envelope.sample_count
@@ -435,7 +435,7 @@ class TestGapTreatmentMapMaker:
             solver=SolverConfig(rtol=1e-6, atol=0, max_steps=30),
             landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8)),
             pointing=PointingConfig(on_the_fly=True, interpolation='nearest'),
-            detector_batch_size=0,  # the default gap filling works on whole observations
+            detector_tile_size=0,  # the default gap filling works on whole observations
         )
         cfg.gaps.treatment = treatment
         return cfg

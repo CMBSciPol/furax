@@ -487,23 +487,23 @@ class ObservationBufferShape(NamedTuple):
         """
         return self.detector_count * self.sample_count
 
-    def whole_detector_batches(self, batch_size: int) -> Self:
-        """This shape with its detector count padded up to whole batches of `batch_size`.
+    def whole_tiles(self, tile_size: int) -> Self:
+        """This shape with its detector count padded up to whole tiles of `tile_size` detectors.
 
-        An observation with no more detectors than one batch is a single batch, left unpadded.
+        An observation with no more detectors than one tile is a single tile, left unpadded.
 
         Args:
-            batch_size: Detectors per batch; 0 for a single batch of every detector.
+            tile_size: Detectors per tile; 0 for a single tile of every detector.
 
         Examples:
-            >>> ObservationBufferShape(100, 10).whole_detector_batches(64).detector_count
+            >>> ObservationBufferShape(100, 10).whole_tiles(64).detector_count
             128
-            >>> ObservationBufferShape(50, 10).whole_detector_batches(64).detector_count
+            >>> ObservationBufferShape(50, 10).whole_tiles(64).detector_count
             50
         """
-        if batch_size == 0 or self.detector_count <= batch_size:
+        if tile_size == 0 or self.detector_count <= tile_size:
             return self
-        return self._replace(detector_count=-(-self.detector_count // batch_size) * batch_size)
+        return self._replace(detector_count=-(-self.detector_count // tile_size) * tile_size)
 
     def fft_friendly(self) -> Self:
         """This shape with its sample count padded up to a product of the factors 2, 3 and 5.

@@ -266,7 +266,7 @@ def test_the_response_through_a_t2p_template_is_the_same_in_detector_batches(sky
     config = _demodulated_config(InjectionConfig(path, mode=InjectionMode.RESPONSE), templates)
     whole, batched = [
         MultiObservationMapMaker(
-            _observations(), config=replace(config, detector_batch_size=b)
+            _observations(), config=replace(config, detector_tile_size=b)
         ).make_maps()
         for b in (0, 4)
     ]

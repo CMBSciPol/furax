@@ -669,13 +669,19 @@ class WindowedBasis(Basis):
         batch = signal.shape[:-1]
         signals = signal.reshape(-1, self.n_points)
         # one scatter per window slot keeps each slot's block ids sorted, as `offset` is
-        sums = jnp.zeros((self.n_blocks, signals.shape[0], self.shape[1]), self.dtype)
-        for o in range(self.taps.shape[1]):  # window width is static
+
+        def add(sums: Array, o: Array) -> tuple[Array, None]:
+            # scanned rather than unrolled, so that one slot's `(samp, batch, k)` product is live
+            # at a time instead of all of them before the first sum
             slot = self.taps[:, o] * self.values  # (k, samp)
             contrib = signals.T[:, :, None] * slot.T[:, None, :]  # (samp, batch, k)
-            sums = sums + jax.ops.segment_sum(
+            summed = jax.ops.segment_sum(
                 contrib, self.offset + o, self.n_blocks, indices_are_sorted=True
             )
+            return sums + summed, None
+
+        zeros = jnp.zeros((self.n_blocks, signals.shape[0], self.shape[1]), self.dtype)
+        sums = jax.lax.scan(add, zeros, jnp.arange(self.taps.shape[1]))[0]
         return jnp.moveaxis(sums, 1, 0).reshape(*batch, *self.shape)
 
     def _gram(self, weights: Float[Array, ' samp']) -> Float[Array, 'n w1 k k']:

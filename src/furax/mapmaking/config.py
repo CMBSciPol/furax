@@ -22,6 +22,7 @@ __all__ = [
     'NoiseSource',
     'NoiseFitConfig',
     'LowRankNoiseFitConfig',
+    'CirculantBridgeConfig',
     'SolverConfig',
     'DiagnosticsConfig',
     'TwoLevelConfig',
@@ -270,6 +271,30 @@ class NoiseFitConfig:
 
 
 @dataclass
+class CirculantBridgeConfig:
+    """The padding after the data of each observation under the circulant low-rank weight.
+
+    The weight applies across the end of the buffer to its start: without padding, the end of the
+    data meets its start there, and the step between them spreads noise into the map. Every
+    observation gets this much padding. With explicit gaps, a cubic spline of `amplitudes` per
+    channel, solved for with the map, bridges the end of the data to its start across it; under
+    other gap treatments, the padding is left empty.
+    """
+
+    length: float = 128.0
+    """Padding after the data, in seconds."""
+
+    amplitudes: int = 8
+    """Amplitudes per channel of the spline over the padding; at least 4, for a cubic."""
+
+    def __post_init__(self) -> None:
+        if self.length <= 0:
+            raise ValueError(f"'length' must be positive, got {self.length}")
+        if self.amplitudes < 4:
+            raise ValueError(f"'amplitudes' must be at least 4, got {self.amplitudes}")
+
+
+@dataclass
 class LowRankNoiseFitConfig:
     """Options for fitting a detector-correlated noise model: a diagonal plus a few common modes."""
 
@@ -298,6 +323,10 @@ class LowRankNoiseFitConfig:
     deproject: bool = True
     """Whether to fit the model on the TOD less its fit by the configured templates, which their
     amplitudes absorb in the solve, rather than on the TOD itself."""
+
+    bridge: CirculantBridgeConfig | None = field(default_factory=CirculantBridgeConfig)
+    """The padding, and its spline, between the end of the data and its start, where the weight
+    wraps around; `None` for none."""
 
 
 @dataclass

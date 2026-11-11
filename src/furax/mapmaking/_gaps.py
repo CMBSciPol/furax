@@ -33,7 +33,11 @@ class GapSplines:
     resolution: int
     """The knot spacing $r$, in samples; 1 for one amplitude per flagged sample."""
     budget: int
-    """The number of amplitude slots of each channel."""
+    """The number of amplitude slots of each channel for its gaps."""
+    bridge: int = 0
+    """The number of amplitudes of the cubic spline over the padding after the data, in the slots
+    after the budget; 0 for none. Under a circulant weight, the padding joins the end of the data
+    to its start: the spline bridges them, so that the weight sees no step there."""
 
     def counts(
         self, good: Bool[Array, '... samp'], n_samples: Int[Array, ''] | int
@@ -49,14 +53,19 @@ class GapSplines:
     def basis(self, mask: MaskOperator, n_samples: Int[Array, ''] | int) -> 'GapSplineOperator':
         """The basis $C$ of the gaps of the mask $M$ of the good samples of a TOD.
 
-        Only the first `n_samples` samples are data, those after them padding. Each channel of the TOD has amplitudes of its own: the streams of a demodulated TOD, which
-        share the mask of their detector, too.
+        Only the first `n_samples` samples are data, those after them padding, which the bridge
+        spans, if any. Each channel of the TOD has amplitudes of its own: the streams of a
+        demodulated TOD, which share the mask of their detector, too.
         """
         leaf = jax.tree.leaves(mask.in_structure)[0]
         good = jnp.broadcast_to(jax.tree.leaves(mask.to_boolean_mask())[0] != 0, leaf.shape)
-        return GapSplineOperator.create(
-            _flagged(good, n_samples), self.resolution, self.budget, mask
+        basis = GapSplineOperator.create(
+            _flagged(good, n_samples), self.resolution, self.budget, mask, self.bridge
         )
+        if not self.bridge:
+            return basis
+        # only the channels holding data have something to bridge
+        return basis.with_bridge(n_samples, jnp.any(good, axis=-1), self.budget)
 
 
 def knot_spacing(resolution: float, sample_rate: float) -> int:
@@ -120,8 +129,12 @@ class GapSplineOperator(AbstractLinearOperator):
         resolution: int,
         budget: int,
         mask: MaskOperator,
+        extra: int = 0,
     ) -> Self:
-        """The basis of the gaps of `flagged`, on the TOD of `mask`, in `budget` slots."""
+        """The basis of the gaps of `flagged`, on the TOD of `mask`, in `budget` slots.
+
+        `extra` more slots follow them, left unused.
+        """
         (leaf,), treedef = jax.tree.flatten(mask.in_structure)
         layout = _GapLayout.create(flagged, resolution)
         dtype = leaf.dtype
@@ -142,8 +155,31 @@ class GapSplineOperator(AbstractLinearOperator):
         first_slot = jnp.cumsum(jnp.where(layout.first, layout.functions, 0), axis=-1)
         first_slot = first_slot - layout.functions
         index = jnp.clip(first_slot[..., None] + local[..., None] + o, 0, budget - 1)
-        structure = jax.ShapeDtypeStruct((*leaf.shape[:-1], budget), dtype)
+        structure = jax.ShapeDtypeStruct((*leaf.shape[:-1], budget + extra), dtype)
         return cls(index, values, treedef, in_structure=structure)
+
+    def with_bridge(
+        self, n_samples: Int[Array, ''] | int, channels: Bool[Array, '...'], first: int
+    ) -> Self:
+        """The basis with a cubic spline over the samples from `n_samples` on.
+
+        The spline takes the slots from `first` to the last one, on the `channels` given.
+        """
+        bridge = self.in_structure.shape[-1] - first
+        n = self.index.shape[-2]
+        dtype = self.values.dtype
+        t = jnp.arange(n)
+        span = (t >= n_samples) & channels[..., None]
+        # uniform cubic B-splines on `bridge - 3` intervals over the span
+        u = (t - n_samples).astype(dtype) / jnp.maximum(n - n_samples - 1, 1) * (bridge - 3)
+        offset = jnp.clip(jnp.floor(u).astype(jnp.int32), 0, bridge - 4)[:, None]
+        o = jnp.arange(4, dtype=jnp.int32)
+        values = cardinal_bspline(u[:, None] - (offset + o) + 3, 3).astype(dtype)
+        return replace(
+            self,
+            index=jnp.where(span[..., None], first + offset + o, self.index),
+            values=jnp.where(span[..., None], values, self.values),
+        )
 
     def squared(self) -> Self:
         """The basis with its values squared."""

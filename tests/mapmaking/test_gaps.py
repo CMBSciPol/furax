@@ -118,3 +118,22 @@ def test_max_gap_amplitudes_counts_as_the_splines(resolution: int, n_samples: in
     counts = GapSplines(resolution, 0).counts(jnp.asarray(good), n_samples)
     probed = max_gap_amplitudes(good[:, :n_samples], resolution, max_flagged_fraction=1.0)
     assert probed == int(counts.max())
+
+
+@pytest.mark.parametrize('bridge', [4, 8])
+def test_bridge_spans_the_padding_in_its_own_slots(bridge: int) -> None:
+    """A partition of unity over the padding, after the gap slots, on the channels with data."""
+    good, n_samples, budget = _mask(), 100, 70
+    structure = jax.ShapeDtypeStruct(good.shape, jnp.float64)
+    mask = MaskOperator.from_boolean_mask(jnp.asarray(good), in_structure=structure)
+    C = GapSplines(3, budget, bridge).basis(mask, n_samples)
+    assert C.in_structure.shape == (*good.shape[:-1], budget + bridge)
+    matrix = np.asarray(C.as_matrix()).reshape(*good.shape, *good.shape[:-1], budget + bridge)
+    without = np.asarray(GapSplines(3, budget).basis(mask, n_samples).as_matrix())
+    assert_allclose(matrix[..., :budget].reshape(without.shape), without)  # the gaps unchanged
+    for channel in range(2):
+        tail = matrix[channel, :, channel, budget:]  # (samp, bridge)
+        assert_allclose(tail[:n_samples], 0)
+        assert_allclose(tail[n_samples:].sum(axis=-1), 1, atol=1e-12)
+        assert np.linalg.matrix_rank(tail[n_samples:]) == bridge
+    assert_allclose(matrix[2], 0)  # no data, nothing to bridge

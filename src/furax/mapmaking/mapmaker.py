@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import replace
@@ -154,11 +155,32 @@ class MultiObservationMapMaker[T]:
         ]
 
     @cached_property
+    def _bridge_samples(self) -> int:
+        """The padding every observation gets after its data, for the circulant weight to wrap.
+
+        See [`CirculantBridgeConfig`][furax.mapmaking.config.CirculantBridgeConfig].
+        """
+        weighting = self.config.weighting
+        if (
+            weighting.mode != WeightingMode.LOW_RANK
+            or (bridge := weighting.low_rank.bridge) is None
+        ):
+            return 0
+        return max(math.ceil(bridge.length * self._probed_sample_rate), bridge.amplitudes)
+
+    @cached_property
     def _buffer_shapes(self) -> list[ObservationBufferShape]:
-        """The shapes the buckets and the readers size their buffers from."""
+        """The shapes the buckets and the readers size their buffers from.
+
+        These are the probed shapes, with the padding the circulant weight needs after the data.
+        """
+        shapes = [
+            shape._replace(sample_count=shape.sample_count + self._bridge_samples)
+            for shape in self._probe_shapes
+        ]
         if not self.config.fft_friendly_sample_count:
-            return self._probe_shapes
-        return [shape.fft_friendly() for shape in self._probe_shapes]
+            return shapes
+        return [shape.fft_friendly() for shape in shapes]
 
     @property
     def _minimum_buffer_samples(self) -> int:
@@ -223,7 +245,11 @@ class MultiObservationMapMaker[T]:
             logger.info(
                 f'Bucket {b}: {budget} gap amplitudes per detector, knots every {spacing} samples'
             )
-            models.append(GapSplines(spacing, budget))
+            bridge = 0
+            if self._bridge_samples:
+                assert self.config.weighting.low_rank.bridge is not None
+                bridge = self.config.weighting.low_rank.bridge.amplitudes
+            models.append(GapSplines(spacing, budget, bridge))
         return models
 
     def _knot_spacing(self, i: int, probe: ObservationProbe) -> int:

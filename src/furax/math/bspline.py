@@ -13,6 +13,28 @@ def cubic_bspline(u: Float[Array, ' samp']) -> Float[Array, ' samp']:
     return out
 
 
+def cardinal_bspline(u: Float[Array, '*s'], degree: Int[Array, '*s'] | int) -> Float[Array, '*s']:
+    r"""Cardinal B-spline of each `degree` from 0 to 3, support $[0, \text{degree} + 1)$.
+
+    $B_p(u) = \frac{1}{p!} \sum_{k=0}^{p+1} (-1)^k \binom{p+1}{k} (u - k)_+^p$, with $B_0$ the
+    indicator of $[0, 1)$. Degree 3 is [`cubic_bspline`][furax.math.bspline.cubic_bspline].
+    """
+    inside = (u >= 0) & (u < 1)
+    constant = inside.astype(u.dtype)
+    linear = jnp.clip(1 - jnp.abs(u - 1), 0, None)
+    quadratic = jnp.where(
+        u < 1,
+        u**2 / 2,
+        jnp.where(u < 2, (-2 * u**2 + 6 * u - 3) / 2, (3 - u) ** 2 / 2),
+    )
+    quadratic = jnp.where((u >= 0) & (u < 3), quadratic, 0)
+    return jnp.select(
+        [degree == 0, degree == 1, degree == 2],
+        [constant, linear, quadratic],
+        cubic_bspline(u),
+    )
+
+
 def _n_grid_knots(n_knots: int) -> int:
     """Total knots ``K`` on the grid: the requested ``n_knots`` plus 2 for boundary padding."""
     return n_knots + 2

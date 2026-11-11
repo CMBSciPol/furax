@@ -27,6 +27,7 @@ __all__ = [
     'GapTreatment',
     'GapFillingConfig',
     'NestedConfig',
+    'ExplicitGapsConfig',
     'LandscapeConfig',
     'HealpixConfig',
     'WCSConfig',
@@ -84,6 +85,10 @@ class GapTreatment(Enum):
 
     NESTED = 'nested'
     """$W = M (M N M)^{-1} M$ (unbiased and minimum-variance)."""
+
+    EXPLICIT = 'explicit'
+    """Model each gap by a spline whose amplitudes are solved for with the map (unbiased, and
+    minimum-variance with `ExplicitGapsConfig.resolution = 1`)."""
 
 
 @dataclass
@@ -870,6 +875,30 @@ class NestedConfig:
 
 
 @dataclass
+class ExplicitGapsConfig:
+    """Options of the spline model of the gaps (`GapTreatment.EXPLICIT`)."""
+
+    resolution: int = 10
+    """Knot spacing, in samples, of the spline that models each gap.
+
+    A gap is a B-spline of degree up to 3 as its length allows, on intervals of about this many
+    samples. With 1, every flagged sample is its own unknown and the map is the minimum-variance
+    one; a larger spacing takes fewer unknowns, and the map stays unbiased.
+    """
+
+    save_amplitudes: bool = False
+    """Write the amplitudes of the gaps solved for to `amplitudes.npz`, under the key `gaps`.
+
+    Debugging aid: one array `(observation, detector, amplitude)`, zero-padded where an observation
+    has fewer detectors or amplitudes than the largest.
+    """
+
+    def __post_init__(self) -> None:
+        if self.resolution < 1:
+            raise ValueError(f"'resolution' must be >= 1, got {self.resolution}")
+
+
+@dataclass
 class GapsConfig:
     """Configuration options related to the treatment of gaps.
 
@@ -892,6 +921,15 @@ class GapsConfig:
                 treatment: nested
                 nested:
                     inner_steps: 20
+
+        Gaps modelled by splines solved for with the map, dropping the detectors more than half
+        flagged
+
+            gaps:
+                treatment: explicit
+                max_flagged_fraction: 0.5
+                explicit:
+                    resolution: 10
     """
 
     treatment: GapTreatment = GapTreatment.FILL
@@ -903,19 +941,25 @@ class GapsConfig:
     nested: NestedConfig = field(default_factory=NestedConfig)
     """Inner-solver options (when `treatment` is `NESTED`)."""
 
+    explicit: ExplicitGapsConfig = field(default_factory=ExplicitGapsConfig)
+    """Spline options (when `treatment` is `EXPLICIT`)."""
+
     max_flagged_fraction: float | None = None
     """Drop the detectors with more than this fraction of their samples flagged; `None` keeps
     every detector.
 
     A detector dropped contributes nothing, under any `treatment`, and is reported in the
     `dropped` column of the detectors table. The fraction is over the samples of its observation,
-    not those padding it to the length of its bucket.
+    not those padding it to the length of its bucket. The `explicit` treatment requires it: it
+    bounds the number of amplitudes of the gaps of a detector.
     """
 
     def __post_init__(self) -> None:
         fraction = self.max_flagged_fraction
         if fraction is not None and not 0 < fraction <= 1:
             raise ValueError(f"'max_flagged_fraction' must be in (0, 1], got {fraction}")
+        if self.treatment == GapTreatment.EXPLICIT and fraction is None:
+            raise ValueError("the explicit gap treatment requires 'max_flagged_fraction'")
 
 
 @dataclass
@@ -1171,7 +1215,8 @@ class MapMakingConfig:
         if self.use_templates and not self.binned and self.gaps.treatment == GapTreatment.FILL:
             # gap filling bypasses the template path
             raise ValueError(
-                'Templates with correlated weighting require gaps.treatment=inner_mask or nested.'
+                'Templates with correlated weighting require gaps.treatment=inner_mask, nested '
+                'or explicit.'
             )
         if self.templates is not None and not self.binned:
             self._check_explicit_templates()

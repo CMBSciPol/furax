@@ -63,16 +63,18 @@ class ObservationCatalog:
             if not isinstance(self.reads.get(i), ObservationRecord)
         ]
 
-    def to_table(self, dropped: Bool[np.ndarray, 'obs det'] | None = None) -> pl.DataFrame:
+    def to_table(self, drops: dict[str, Bool[np.ndarray, 'obs det']] | None = None) -> pl.DataFrame:
         """The catalog as `MapMakingResults.observations` holds it.
 
         Args:
-            dropped: Per detector of each observation, whether it was dropped for its flags.
+            drops: Per detector of each observation, whether it was dropped, by reason: `dropped`
+                for its flags, `over_gap_budget` for its gaps.
         """
         rows = [self._row(i) for i in range(len(self.names))]
-        if dropped is not None:
-            for row, count in zip(rows, dropped.sum(axis=-1), strict=True):
-                row['dropped_detectors'] = int(count) if row['loaded'] else 0
+        columns = {'dropped': 'dropped_detectors', 'over_gap_budget': 'over_gap_budget'}
+        for reason, flags in (drops or {}).items():
+            for row, count in zip(rows, flags.sum(axis=-1), strict=True):
+                row[columns[reason]] = int(count) if row['loaded'] else 0
         return pl.DataFrame(rows, schema=_OBSERVATIONS_SCHEMA, orient='row')
 
     def _row(self, i: int) -> dict[str, Any]:
@@ -83,6 +85,7 @@ class ObservationCatalog:
             'loaded': False,
             'n_detectors': 0,
             'dropped_detectors': 0,
+            'over_gap_budget': 0,
             'n_samples': 0,
             'probed_detectors': 0,
             'probed_samples': 0,
@@ -121,7 +124,7 @@ def detector_table(
     reads: dict[int, Read],
     noise: dict[str, np.ndarray] | None = None,
     stokes: str | None = None,
-    dropped: Bool[np.ndarray, 'obs det'] | None = None,
+    drops: dict[str, Bool[np.ndarray, 'obs det']] | None = None,
 ) -> pl.DataFrame:
     """One row per detector read, in observation then detector order.
 
@@ -134,7 +137,8 @@ def detector_table(
         noise: Each noise model parameter, `(n_observations, [stream,] detector)`.
         stokes: The streams of a demodulated TOD, which suffix the noise parameters; `None`
             otherwise.
-        dropped: Per detector of each observation, whether it was dropped for its flags.
+        drops: Per detector of each observation, whether it was dropped, by reason: `dropped`
+            for its flags, `over_gap_budget` for its gaps.
     """
     records = [
         (i, r)
@@ -152,8 +156,8 @@ def detector_table(
     coordinates = _focal_plane_coordinates([r for _, r in records])
     for axis, values in zip(('xi', 'eta', 'gamma'), coordinates, strict=True):
         columns[axis] = pl.Series(axis, values).fill_nan(None)  # null where not read
-    if dropped is not None:
-        columns['dropped'] = dropped[observation, detector]
+    for reason, flags in (drops or {}).items():
+        columns[reason] = flags[observation, detector]
     for name, values in (noise or {}).items():
         if values.ndim == 2:
             columns[name] = values[observation, detector]

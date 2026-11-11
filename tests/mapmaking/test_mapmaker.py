@@ -9,14 +9,17 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from numpy.testing import assert_allclose
 
 from furax.core._base import structure_equal
 from furax.mapmaking import AbstractLazyObservation, MapMakingConfig, MultiObservationMapMaker
 from furax.mapmaking._reader import detector_tile_structure
 from furax.mapmaking.config import (
+    ExplicitGapsConfig,
     GapTreatment,
     HealpixConfig,
     LandscapeConfig,
+    NestedConfig,
     NoiseFitConfig,
     NoiseSource,
     PointingConfig,
@@ -450,6 +453,24 @@ class TestGapTreatmentMapMaker:
         assert bool(jnp.all(jnp.isfinite(results.icov)))
         assert jnp.all(results.hit_map >= 0)
         assert results.solver_stats is not None
+
+    def test_explicit_gaps_of_one_sample_give_the_nested_map(self):
+        """With an amplitude per flagged sample, both treatments give the minimum-variance map."""
+        observations = [GappyLazyGroundObservation(seed=i) for i in range(2)]
+        maps = []
+        for treatment, tile_size in [(GapTreatment.NESTED, 0), (GapTreatment.EXPLICIT, 2)]:
+            config = self._config(treatment)
+            config.solver = SolverConfig(rtol=1e-10, atol=0, max_steps=200)
+            config.detector_tile_size = tile_size
+            config.gaps.nested = NestedConfig(inner_steps=200)
+            config.gaps.explicit = ExplicitGapsConfig(resolution=1)
+            config.gaps.max_flagged_fraction = 0.5
+            results = MultiObservationMapMaker(observations, config=config).make_maps()
+            assert results.observations is not None
+            assert results.observations['over_gap_budget'].to_list() == [0, 0]
+            maps.append(results.map.data)
+        atol = 1e-8 * float(jnp.abs(maps[0]).max())
+        assert_allclose(maps[1], maps[0], rtol=1e-8, atol=atol)
 
     def test_detectors_flagged_above_the_threshold_are_dropped(self):
         """An observation whose detectors are all flagged above the threshold contributes nothing."""

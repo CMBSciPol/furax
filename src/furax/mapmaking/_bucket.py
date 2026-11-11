@@ -6,6 +6,12 @@ sky pixels, the tile's own template amplitudes and those its observation's detec
 tile's TOD, and $W'_t$ its weight (see
 [`ObservationModel.deprojected_weight`][furax.mapmaking._model.ObservationModel.deprojected_weight]).
 
+With explicit gaps, the flagged samples are modelled by the spline amplitudes of the tile's gaps,
+$C_t$: $J_t = [M_t H_t S^\top, M_t T_{e,t}, M_t T_{g,t}, C_t]$, with $M_t$ the mask of the good
+samples, under the inverse noise $N_t^{-1}$ unmasked. The map block is that of the masked weight,
+$H^\top M N^{-1} M H$; marginalizing the gap amplitudes would give the nested weight on the span of
+the splines.
+
 A bucket keeps what its tiles hold as a `BucketModel`: a stacked ensemble of its tiles, split
 over the devices, grouped in segments by observation. Each leaf is stacked per tile, per segment
 when the tiles of an observation share it (the boresight pointing, the bases and Gram inverse of
@@ -26,6 +32,7 @@ from furax.core import BlockRowOperator, Policy, StackedEnsemble, map_reduce
 from furax.obs.stokes import StokesType
 
 from ._model import ObservationModel, ObservationTemplates
+from .weight import WeightOperator
 
 
 @register_dataclass
@@ -39,6 +46,10 @@ class Tile:
     """The tile's templates, with amplitudes per detector or shared by the observation."""
     amplitude_rhs: PyTree[Array] | None
     """The right-hand side of the tile's own explicit amplitudes (None without them)."""
+    gap_rhs: Array | None = None
+    """The right-hand side of the amplitudes of the tile's explicit gaps (None without them)."""
+    gap_preconditioner: Array | None = None
+    """The inverse of the diagonal of the white-noise Gram of those amplitudes."""
 
 
 @register_dataclass
@@ -111,15 +122,22 @@ def bucket_apply(
 
 
 def joint_operator(
-    tile: Tile, selection: AbstractLinearOperator | None, own: bool, common: bool
+    tile: Tile,
+    selection: AbstractLinearOperator | None,
+    own: bool,
+    common: bool,
+    gaps: bool = False,
 ) -> AbstractLinearOperator:
-    r"""$J_t = [H_t S^\top, T_{e,t}, T_{g,t}]$ of a tile, with the amplitudes asked for.
+    r"""$J_t = [H_t S^\top, T_{e,t}, T_{g,t}, C_t]$ of a tile, with the amplitudes asked for.
+
+    With the gaps, the other blocks are masked: the gap amplitudes stand for the flagged samples.
 
     Args:
         tile: The tile.
         selection: The selection $S$ of the estimated pixels; the whole sky without it.
         own: Whether to include the tile's own explicit amplitudes.
         common: Whether to include those its observation's detectors have in common.
+        gaps: Whether to include the amplitudes of its explicit gaps.
     """
     H = tile.model.H if selection is None else tile.model.H @ selection.T
     blocks = [H]
@@ -129,12 +147,18 @@ def joint_operator(
     if common:
         assert tile.templates is not None and tile.templates.common is not None
         blocks.append(tile.templates.common.operator)
+    if gaps:
+        blocks = [tile.model.M @ block for block in blocks]
+        blocks.append(tile.model.gap_basis())
     return BlockRowOperator(blocks)
 
 
-def system_weight(tile: Tile) -> AbstractLinearOperator:
-    """$W_t$ of a tile, its implicit templates marginalized."""
+def system_weight(tile: Tile, gaps: bool = False) -> AbstractLinearOperator:
+    """$W_t$ of a tile, its implicit templates marginalized; $N_t^{-1}$ with its explicit gaps."""
     implicit = None if tile.templates is None else tile.templates.implicit
+    if gaps:
+        assert implicit is None and isinstance(tile.model.W, WeightOperator)
+        return tile.model.W.weight
     return tile.model.deprojected_weight(implicit)
 
 
@@ -155,9 +179,9 @@ def segment_ensemble(ensemble: StackedEnsemble) -> StackedEnsemble:
 class BucketNormalOperator(AbstractLinearOperator):
     r"""$\sum_t J_t^\top W'_t J_t$ over the detector tiles of a bucket.
 
-    The unknowns are a list: the map, then the tiles' own amplitudes and their observations', if
-    the bucket has such templates and `amplitudes` is set. Otherwise they are the map alone. Without
-    `selection`, the map is the whole sky.
+    The unknowns are a list: the map, then the tiles' own amplitudes, their observations', and
+    those of the tiles' explicit gaps, if the bucket has them and `amplitudes` is set. Otherwise
+    they are the map alone. Without `selection`, the map is the whole sky.
     """
 
     model: BucketModel
@@ -178,7 +202,8 @@ class BucketNormalOperator(AbstractLinearOperator):
 
         def apply(tile, m, own_t, common_o):
             J = joint_operator(tile, selection, *self._amplitudes_present)
-            inputs = [v for v in (own_t, common_o) if v is not None]
+            explicit, gaps = own_t
+            inputs = [v for v in (explicit, common_o, gaps) if v is not None]
             return self._project(tile, self._weight(tile)(J([m, *inputs])), selection)
 
         return self._join(*bucket_apply(self.model, apply, m, own, common, self.policy))
@@ -186,9 +211,13 @@ class BucketNormalOperator(AbstractLinearOperator):
     def response(self, sky: StokesType) -> Any:
         r"""$\sum_t J_t^\top W'_t H_t \, s$: the right-hand side of the TOD of a sky `sky`."""
         selection = self.selection
+        gaps = self._amplitudes_present[2]
 
         def apply(tile, sky, _own, _common):
-            return self._project(tile, self._weight(tile)(tile.model.H(sky)), selection)
+            tod = tile.model.H(sky)
+            if gaps:  # the weight is unmasked
+                tod = tile.model.M(tod)
+            return self._project(tile, self._weight(tile)(tod), selection)
 
         return self._join(*bucket_apply(self.model, apply, sky, None, None, self.policy))
 
@@ -196,36 +225,48 @@ class BucketNormalOperator(AbstractLinearOperator):
         self, tile: Tile, u: PyTree[Array], selection: AbstractLinearOperator | None
     ) -> tuple[Any, Any, Any]:
         r"""$J_t^\top u$, in parts."""
-        own, common = self._amplitudes_present
-        return _unpack(joint_operator(tile, selection, own, common).T(u), own, common)
+        present = self._amplitudes_present
+        return _unpack(joint_operator(tile, selection, *present).T(u), present)
 
     def _weight(self, tile: Tile) -> AbstractLinearOperator:
+        gaps = self._amplitudes_present[2]
         if self.weight == 'system':
-            return system_weight(tile)
+            return system_weight(tile, gaps)
         model = tile.model
         W = model.diag_W() if self.weight == 'white' else model.W
+        if gaps:
+            assert isinstance(W, WeightOperator)
+            return W.weight
         return (W @ model.F).reduce()
 
     @property
-    def _amplitudes_present(self) -> tuple[bool, bool]:
-        """Whether the unknowns have the tiles' own amplitudes, and their observations'."""
+    def _amplitudes_present(self) -> tuple[bool, bool, bool]:
+        """Whether the unknowns have the tiles' own amplitudes, their observations', their gaps'."""
+        if not self.amplitudes:
+            return False, False, False
         templates = self.model.templates
-        if not self.amplitudes or templates is None:
-            return False, False
-        return templates.explicit is not None, templates.common is not None
+        gaps = self.model.tiles.template.gap_rhs is not None
+        if templates is None:
+            return False, False, gaps
+        return templates.explicit is not None, templates.common is not None, gaps
 
     def _split(self, x: Any) -> tuple[Any, Any, Any]:
-        """The map and the amplitudes of each kind, `None` for those absent."""
-        own, common = self._amplitudes_present
-        if not own and not common:
-            return x, None, None
-        return _unpack(x, own, common)
+        """The map, the amplitudes of each tile, `(explicit, gaps)`, and of each observation.
+
+        Those absent are `None`.
+        """
+        present = self._amplitudes_present
+        if not any(present):
+            return x, (None, None), None
+        return _unpack(x, present)
 
     def _join(self, m: Any, own: Any, common: Any) -> Any:
-        present_own, present_common = self._amplitudes_present
-        if not present_own and not present_common:
+        present = self._amplitudes_present
+        if not any(present):
             return m
-        return [m, *([own] if present_own else []), *([common] if present_common else [])]
+        explicit, gaps = own
+        parts = (explicit, common, gaps)
+        return [m, *(part for part, p in zip(parts, present, strict=True) if p)]
 
 
 @symmetric
@@ -253,7 +294,14 @@ class MemberOperator(AbstractLinearOperator):
         return out
 
 
-def _unpack(parts: list[PyTree[Array]], own: bool, common: bool) -> tuple[Any, Any, Any]:
-    """The map and the amplitudes of each kind of a list of parts, `None` for those absent."""
+def _unpack(
+    parts: list[PyTree[Array]], present: tuple[bool, bool, bool]
+) -> tuple[Any, tuple[Any, Any], Any]:
+    """The map, the amplitudes of each tile, `(explicit, gaps)`, and of each observation.
+
+    `parts` lists the map, then the explicit, common and gap amplitudes `present`; those absent
+    are `None`.
+    """
     m, *rest = parts
-    return m, rest.pop(0) if own else None, rest.pop(0) if common else None
+    explicit, common, gaps = (rest.pop(0) if p else None for p in present)
+    return m, (explicit, gaps), common

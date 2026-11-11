@@ -46,6 +46,7 @@ _OBSERVATIONS_SCHEMA = {
     'loaded': pl.Boolean,
     'n_detectors': pl.Int64,
     'dropped_detectors': pl.Int64,
+    'over_gap_budget': pl.Int64,
     'n_samples': pl.Int64,
     'probed_detectors': pl.Int64,
     'probed_samples': pl.Int64,
@@ -94,8 +95,9 @@ class MapMakingResults:
 
     observations: pl.DataFrame | None = None
     """One row per observation, in the order of the observation axis of the per-observation
-    products: `name`, whether it was `loaded`, the `n_detectors` read and the `dropped_detectors`
-    among them for their flags (see `GapsConfig.max_flagged_fraction`), the `n_samples` read, the
+    products: `name`, whether it was `loaded`, the `n_detectors` read and those dropped among
+    them, the `dropped_detectors` for their flags (see `GapsConfig.max_flagged_fraction`) and those
+    `over_gap_budget` for their explicit gaps, the `n_samples` read, the
     `probed_detectors` and `probed_samples` its buffers were sized from (zero if its probe
     failed), the `valid_sample_fraction` (null if the flags were not read), `load_seconds`, and
     the `error` that stopped an observation not loaded, its probe or its load (null if there was
@@ -106,7 +108,7 @@ class MapMakingResults:
     observation and detector axes of the per-detector products, such as the amplitudes of a
     template with one set per detector. Then come its `name`, its focal-plane coordinates `xi`,
     `eta` and `gamma` in radians (null if the run did not read them), whether it was `dropped` for
-    its flags, and the parameters of its
+    its flags or `over_gap_budget` for its explicit gaps, and the parameters of its
     noise model (`sigma`, and `alpha`, `fk`, `f0` for a $1/f$ model), suffixed by the stream on a
     demodulated TOD (`sigma_q`, `sigma_u`)"""
 

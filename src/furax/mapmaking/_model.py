@@ -1,12 +1,12 @@
 import functools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, NamedTuple, Self
 
 import jax
 import jax.numpy as jnp
 from fastquat import Quaternion
 from jax.tree_util import register_dataclass
-from jaxtyping import Array, Bool, Float, PyTree
+from jaxtyping import Array, Bool, Float, Int, PyTree
 
 from furax import (
     AbstractLinearOperator,
@@ -19,6 +19,7 @@ from furax.obs import TODFormat
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
+from ._gaps import GapSplineOperator, GapSplines
 from ._observation import ReaderField, _sample_rate
 from .acquisition import build_acquisition_operator
 from .config import GapTreatment, MapMakingConfig, NoiseSource, TemplatesConfig, WeightingMode
@@ -27,6 +28,9 @@ from .templates import TemplateOperator, build_templates, required_reader_fields
 from .templates.gram import BlockGram, factor, template_gram
 from .templates.pomme import PommeProjectionOperator
 from .weight import MarginalizedWeightOperator, NestedWeightOperator, WeightOperator
+
+DROP_REASONS = ('dropped', 'over_gap_budget')
+"""The fields of [`ObservationModel`][] marking the detectors dropped, one per reason."""
 
 
 @register_dataclass
@@ -57,6 +61,16 @@ class ObservationModel:
     dropped: Bool[Array, ' det']
     """Per detector, whether it is dropped for having too many of its samples flagged"""
 
+    over_gap_budget: Bool[Array, ' det']
+    """Per detector, whether it is dropped for needing more gap amplitudes than `gaps` holds"""
+
+    n_samples: Int[Array, '']
+    """The number of samples of the observation, before those padding it to its bucket"""
+
+    gaps: GapSplines | None = field(default=None, metadata={'static': True})
+    """The spline model of the gaps, whose amplitudes are solved for with the map; `None`
+    unless the gaps are explicit"""
+
     @classmethod
     def create(
         cls,
@@ -65,6 +79,7 @@ class ObservationModel:
         config: MapMakingConfig,
         landscape: StokesLandscape,
         use: Bool[Array, ''] | bool = True,
+        gap_budget: int = 0,
     ) -> Self:
         """Build the model of an observation from the fields read for it.
 
@@ -75,12 +90,23 @@ class ObservationModel:
             landscape: The landscape of the maps.
             use: Whether the observation contributes: false for a padding tile or a failed
                 observation, whose samples are then all masked.
+            gap_budget: The amplitudes of the gaps of each detector, when they are explicit; a
+                detector needing more is dropped.
         """
         H = acquisition_operator(data, config, landscape)
         tod_format = _tod_format(H)
         mask = _sample_mask(data, config)
-        dropped = _dropped_detectors(mask, padding, config.gaps.max_flagged_fraction)
-        M = _mask_projector(mask, ~dropped[:, None], jnp.asarray(use), tod_format=tod_format)
+        n_samples = _real_sample_count(mask, padding)
+        dropped = _dropped_detectors(mask, n_samples, config.gaps.max_flagged_fraction)
+        gaps = None
+        over_gap_budget = jnp.zeros_like(dropped)
+        if config.gaps.treatment == GapTreatment.EXPLICIT and not config.binned:
+            explicit = config.gaps.explicit
+            gaps = GapSplines(explicit.resolution, gap_budget)
+            kept = mask & ~dropped[:, None] & jnp.asarray(use)
+            over_gap_budget = ~dropped & (gaps.counts(kept, n_samples) > gap_budget)
+        valid_detectors = ~(dropped | over_gap_budget)[:, None]
+        M = _mask_projector(mask, valid_detectors, jnp.asarray(use), tod_format=tod_format)
         noise_model, sample_rate = _noise_model(data, config, tod_format, padding=padding)
         Ninv = _noise_operator(
             noise_model,
@@ -98,14 +124,15 @@ class ObservationModel:
             assert isinstance(Ninv, SymmetricBandToeplitzOperator)
             W = NestedWeightOperator.create(Ninv, M, config.gaps.nested, white)
         else:
-            # Plain masked weights, only exact for diagonal W
+            # Plain masked weights, only exact for diagonal W. With explicit gaps, the normal
+            # system takes N⁻¹ unmasked from it, the gap amplitudes standing for the flagged samples
             W = WeightOperator.create(Ninv, M)
         F = (
             PommeProjectionOperator(config.pomme_tau, in_structure=tod_format.structure)
             if config.pomme_tau is not None
             else IdentityOperator(in_structure=tod_format.structure)
         )
-        return cls(H, W, F, noise_model, sample_rate, dropped)
+        return cls(H, W, F, noise_model, sample_rate, dropped, over_gap_budget, n_samples, gaps)
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
@@ -142,6 +169,11 @@ class ObservationModel:
     @property
     def M(self) -> MaskOperator:
         return self.W.mask
+
+    def gap_basis(self) -> GapSplineOperator:
+        """The basis $C$ of the explicit gaps, from the mask."""
+        assert self.gaps is not None
+        return self.gaps.basis(self.M, self.n_samples)
 
     @property
     def rhs_operator(self) -> AbstractLinearOperator:
@@ -294,18 +326,19 @@ def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
     return mask
 
 
-def _dropped_detectors(
-    mask: Bool[Array, 'det samp'], padding: Any, max_flagged_fraction: float | None
-) -> Bool[Array, ' det']:
-    """The detectors with more than `max_flagged_fraction` of their samples flagged.
+def _real_sample_count(mask: Bool[Array, 'det samp'], padding: Any) -> Int[Array, '']:
+    """The number of samples of the observation, before those padding it to its bucket."""
+    # one padding per axis of the TOD's array, the samples last
+    return mask.shape[-1] - jax.tree.leaves(padding[ReaderField.SAMPLE_DATA])[0][-1]
 
-    The samples padding the observation to the length of its bucket are left out of the fraction.
-    """
+
+def _dropped_detectors(
+    mask: Bool[Array, 'det samp'], real: Int[Array, ''], max_flagged_fraction: float | None
+) -> Bool[Array, ' det']:
+    """The detectors with more than `max_flagged_fraction` of their `real` samples flagged."""
     if max_flagged_fraction is None:
         return jnp.zeros(mask.shape[0], bool)
-    n_samples = mask.shape[-1]
-    real = n_samples - jax.tree.leaves(padding[ReaderField.SAMPLE_DATA])[0][-1]
-    flagged = jnp.sum(~mask & (jnp.arange(n_samples) < real), axis=-1)
+    flagged = jnp.sum(~mask & (jnp.arange(mask.shape[-1]) < real), axis=-1)
     return flagged > max_flagged_fraction * real
 
 

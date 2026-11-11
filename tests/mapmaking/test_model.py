@@ -8,6 +8,7 @@ from furax.mapmaking._model import (
     _dropped_detectors,
     _noise_model,
     _noise_operator,
+    _real_sample_count,
     _sample_mask,
     restrict_streams,
 )
@@ -77,7 +78,7 @@ def test_dropped_detectors(max_flagged_fraction, expected):
     mask = jnp.ones((3, n_real + n_padding), bool).at[:, n_real:].set(False)
     mask = mask.at[1, :4].set(False).at[2, :5].set(False)  # 4/8 and 5/8 flagged
     padding = {ReaderField.SAMPLE_DATA: jnp.array([0, n_padding])}
-    dropped = _dropped_detectors(mask, padding, max_flagged_fraction)
+    dropped = _dropped_detectors(mask, _real_sample_count(mask, padding), max_flagged_fraction)
     assert_array_equal(dropped, expected)
 
 

@@ -13,9 +13,10 @@ def test_observation_catalog_keeps_the_probes_and_replaces_the_reads():
     reads = {0: ObservationRecord('a0', ['d0', 'd1'], n_samples=90, load_seconds=1.5), 2: 'OSError'}
     catalog.reads = reads
     dropped = np.array([[True, False], [True, True], [True, False]])
-    table = catalog.to_table(dropped)
+    table = catalog.to_table({'dropped': dropped, 'over_gap_budget': ~dropped})
     assert table['name'].to_list() == ['a0', 'b', 'c']  # as read, or as given
     assert table['dropped_detectors'].to_list() == [1, 0, 0]  # of the observations loaded
+    assert table['over_gap_budget'].to_list() == [1, 0, 0]
     assert table['loaded'].to_list() == [True, False, False]
     assert table['n_samples'].to_list() == [90, 0, 0]
     assert table['probed_samples'].to_list() == [100, 0, 50]
@@ -46,7 +47,7 @@ def test_detector_frame_follows_the_detector_axis():
     }
     sigma = np.arange(3 * 2 * 3, dtype=float).reshape(3, 2, 3)  # (obs, stream, detector)
     dropped = np.array([[False, True, False], [True, False, False], [False, False, False]])
-    table = detector_table(reads, {'sigma': sigma}, 'QU', dropped)
+    table = detector_table(reads, {'sigma': sigma}, 'QU', {'dropped': dropped})
     assert table['observation'].to_list() == [0, 0, 1]
     assert table['dropped'].to_list() == [False, True, True]
     assert table['detector'].to_list() == [0, 1, 0]

@@ -20,13 +20,14 @@ from furax.core import (
     AdditionOperator,
     BlockDiagonalOperator,
     BlockSelectOperator,
+    DiagonalOperator,
     StackedEnsemble,
     lift,
 )
 from furax.obs.stokes import StokesType
 
 from ._bucket import BucketModel, BucketNormalOperator, MemberOperator, Tile, segment_ensemble
-from ._model import FACTORED_KINDS, TemplateBundle
+from ._model import DROP_REASONS, FACTORED_KINDS, TemplateBundle
 from ._solve import MapMakingSystem
 from .layout import TilePlacement
 from .preconditioner import BJPreconditioner
@@ -80,7 +81,8 @@ class AccumulatedModel:
 
         Returns:
             The system to solve. Its unknowns are the selected sky pixels, then the amplitudes
-            of each kind of explicit template present, if any, one block per bucket.
+            of each kind of explicit template present, and of the explicit gaps, if any, one block
+            per bucket.
         """
         # Restrict BJ preconditioner to selected pixels
         M = (S @ BJ.I @ S.T).reduce()
@@ -90,6 +92,8 @@ class AccumulatedModel:
         kinds = []
         if templates is not None:
             kinds = [kind for kind in FACTORED_KINDS if getattr(templates, kind) is not None]
+        if self._has_gaps:
+            kinds.append(_GAPS)
 
         if not kinds:
             terms = [
@@ -127,6 +131,14 @@ class AccumulatedModel:
         ridges: dict[str, list[AbstractLinearOperator | None]] = {kind: [] for kind in kinds}
         for b, bm in enumerate(self.buckets):
             for kind in kinds:
+                if kind == _GAPS:
+                    # the inverse of the diagonal of the white-noise Gram of the gap amplitudes
+                    jacobi = bm.tiles.stacked.gap_preconditioner
+                    inverses[kind].append(
+                        DiagonalOperator(jacobi, in_structure=structures[kind][b])
+                    )
+                    ridges[kind].append(None)
+                    continue
                 inverse, ridge = _gram_inverse(bm, kind, structures[kind][b])
                 inverses[kind].append(inverse)
                 ridges[kind].append(ridge)
@@ -146,7 +158,9 @@ class AccumulatedModel:
                 # declared stacked over the tiles, the right-hand sides of each tile's own
                 # amplitudes are wholly per tile
                 [
-                    bm.tiles.stacked.amplitude_rhs
+                    bm.tiles.stacked.gap_rhs
+                    if kind == _GAPS
+                    else bm.tiles.stacked.amplitude_rhs
                     if FACTORED_KINDS[kind] == 'stack'
                     else bm.common_rhs
                     for bm in self.buckets
@@ -162,9 +176,14 @@ class AccumulatedModel:
         return MapMakingSystem(A, rhs, M, has_amplitudes=True, injected_b=response)
 
     def template_amplitudes(
-        self, blocks: list[list[PyTree[Array]]], placement: TilePlacement
+        self,
+        blocks: list[list[PyTree[Array]]],
+        placement: TilePlacement,
+        save_gaps: bool = False,
     ) -> dict[str, np.ndarray]:
         """The explicit-template amplitudes solved for, per observation, from their CG blocks.
+
+        With `save_gaps`, those of the explicit gaps are reported too, under the key `gaps`.
 
         Every device holds the same replicated copy after the gather, so the host array is
         complete on every process; then back to observation order.
@@ -173,6 +192,12 @@ class AccumulatedModel:
         templates = self.buckets[0].templates
         explicit = None if templates is None else templates.explicit
         amplitudes = {}
+        if self._has_gaps:
+            *blocks, gaps = blocks  # the amplitudes of the gaps come last
+            if save_gaps:
+                amplitudes['gaps'] = placement.layout.to_observation_order(
+                    placement.gather(gaps), detector_axis=1
+                )
         if explicit is not None:
             own, *blocks = blocks
             per_bucket = [placement.gather(a) for a in own]
@@ -190,20 +215,30 @@ class AccumulatedModel:
             )
         return amplitudes
 
-    def dropped_detectors(self, placement: TilePlacement) -> np.ndarray:
-        """Per detector, whether it was dropped for its flags, in observation order.
+    @property
+    def _has_gaps(self) -> bool:
+        """Whether the unknowns include the amplitudes of explicit gaps."""
+        return self.buckets[0].tiles.template.gap_rhs is not None
 
-        The array is `(n_observations, detector)`, its detector axis padded with `False`.
+    def detector_drops(self, placement: TilePlacement) -> dict[str, np.ndarray]:
+        """Per detector, whether it was dropped, and why, in observation order.
+
+        `dropped` marks the detectors flagged above `GapsConfig.max_flagged_fraction`,
+        `over_gap_budget` those needing more amplitudes for their explicit gaps than the budget.
+        Each array is `(n_observations, detector)`, its detector axis padded with `False`.
         """
-        per_bucket = []
-        for bm in self.buckets:
-            dropped = lift(lambda tile: tile.model.dropped, bm.tiles)
-            assert isinstance(dropped, StackedEnsemble)
-            values = placement.gather(dropped.stacked)
-            if dropped.strides[0] is None:  # the same in every tile, as without a threshold
-                values = np.broadcast_to(values, (bm.tiles.size, *values.shape))
-            per_bucket.append(values)
-        return placement.layout.to_observation_order(per_bucket, detector_axis=-1)
+        drops = {}
+        for name in DROP_REASONS:
+            per_bucket = []
+            for bm in self.buckets:
+                flags = lift(lambda tile, name=name: getattr(tile.model, name), bm.tiles)
+                assert isinstance(flags, StackedEnsemble)
+                values = placement.gather(flags.stacked)
+                if flags.strides[0] is None:  # the same in every tile, as when none is dropped
+                    values = np.broadcast_to(values, (bm.tiles.size, *values.shape))
+                per_bucket.append(values)
+            drops[name] = placement.layout.to_observation_order(per_bucket, detector_axis=-1)
+        return drops
 
     def noise_parameters(self, placement: TilePlacement) -> dict[str, np.ndarray]:
         """The noise model parameters of every detector, in observation order.
@@ -231,11 +266,20 @@ class AccumulatedModel:
         }
 
 
-def _amplitude_structure(bm: BucketModel, kind: str) -> dict[str, jax.ShapeDtypeStruct]:
+_GAPS = 'gaps'
+"""The kind of the amplitudes of the explicit gaps, one block per tile after those of the
+templates."""
+
+
+def _amplitude_structure(bm: BucketModel, kind: str) -> PyTree[jax.ShapeDtypeStruct]:
     """The amplitudes of a kind of a bucket.
 
     Those of each tile alone are `(tile, ...)`, those of each observation `(segment, ...)`.
     """
+    if kind == _GAPS:
+        return jax.tree.map(
+            lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype), bm.tiles.stacked.gap_rhs
+        )
     assert bm.templates is not None
     bundle = getattr(bm.templates, kind)
     assert bundle is not None

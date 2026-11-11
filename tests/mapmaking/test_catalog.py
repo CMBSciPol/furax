@@ -2,11 +2,12 @@ import numpy as np
 
 from furax.mapmaking import ObservationBufferShape as Shape
 from furax.mapmaking._catalog import ObservationCatalog, detector_table, gather_rows
+from furax.mapmaking._catalog import ProbeRecord as Probe
 from furax.mapmaking._reader import ObservationRecord
 
 
 def test_observation_catalog_keeps_the_probes_and_replaces_the_reads():
-    probes = {0: Shape(2, 100), 1: 'RuntimeError: no file', 2: Shape(3, 50)}
+    probes = {0: Probe(Shape(2, 100)), 1: 'RuntimeError: no file', 2: Probe(Shape(3, 50))}
     catalog = ObservationCatalog(['a', 'b', 'c'], probes)
     assert catalog.probe_failed.tolist() == [False, True, False]
 

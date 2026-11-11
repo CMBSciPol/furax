@@ -5,8 +5,9 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from furax import MaskOperator
-from furax.mapmaking._gaps import GapSplines, gap_budget
+from furax.mapmaking._gaps import GapSplines, gap_budget, knot_spacing, max_gap_amplitudes
 from furax.obs.stokes import StokesQU
+from tests.mapmaking.helpers import ranges
 
 # the start and length of each gap of the channels with good samples
 GAPS = [(5, 2), (15, 4), (25, 5), (40, 6), (70, 20)]
@@ -110,3 +111,32 @@ def test_gap_budget_fits_every_mask(spacing: int, layout: str) -> None:
         good[n_read - n_flagged : n_read] = False
     count = int(GapSplines(spacing, budget).counts(jnp.asarray(good), n_read))
     assert count <= budget
+
+
+def test_max_gap_amplitudes_leaves_out_the_detectors_dropped() -> None:
+    good = np.ones((2, 100), bool)
+    good[0, ::2] = False  # half flagged, one amplitude each
+    good[1, :10] = False
+    assert max_gap_amplitudes(ranges(good), 1, max_flagged_fraction=0.5) == 50
+    assert max_gap_amplitudes(ranges(good), 1, max_flagged_fraction=0.4) == 10
+    assert max_gap_amplitudes(ranges(np.ones((2, 100), bool)), 1, max_flagged_fraction=0.4) == 0
+
+
+@pytest.mark.parametrize('spacing', [1, 3])
+@pytest.mark.parametrize('n_samples', [120, 100])
+def test_max_gap_amplitudes_counts_as_the_splines(spacing: int, n_samples: int) -> None:
+    """The count from the observation's own samples is that of the splines of its padded mask."""
+    good = _mask()
+    counts = GapSplines(spacing, 0).counts(jnp.asarray(good), n_samples)
+    probed = max_gap_amplitudes(ranges(good[:, :n_samples]), spacing, max_flagged_fraction=1.0)
+    assert probed == int(counts.max())
+
+
+@pytest.mark.parametrize(
+    ('resolution', 'sample_rate', 'expected'),
+    [(1.25, 8.0, 10), (0.04, 100.0, 4), (0.05, 8.0, 1), (0.0, 8.0, 1)],
+)
+def test_knot_spacing_rounds_to_whole_samples(
+    resolution: float, sample_rate: float, expected: int
+) -> None:
+    assert knot_spacing(resolution, sample_rate) == expected

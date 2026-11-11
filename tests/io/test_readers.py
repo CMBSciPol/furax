@@ -60,7 +60,7 @@ def test_read(reader: FakeFileReader) -> None:
 class OverProbeReader(AbstractReader):
     """Reader whose probe (structure) shape may exceed the actual loaded shape.
 
-    Mirrors an upper-bound ``probe_shape``: ``out_structure`` is sized from the (larger) probe,
+    Mirrors an upper-bound shape probe: ``out_structure`` is sized from the (larger) probe,
     while each load returns fewer samples and must be padded from its actual shape at read time.
     """
 

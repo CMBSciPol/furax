@@ -205,7 +205,7 @@ class ObservationReader[T](AbstractReader):
                 when it was recorded in float32.
             shapes: Per-observation buffer shapes, in the order of `observations`. When given,
                 no observation is opened to size the buffers (the caller has already probed them,
-                see [`AbstractLazyObservation.probe_shape`][]); otherwise every observation is
+                see [`AbstractLazyObservation.probe`][]); otherwise every observation is
                 opened once here.
             known_failures: Positions in `observations` known to be unreadable (their probe
                 failed); read as filler, never loaded.
@@ -336,7 +336,7 @@ class ObservationReader[T](AbstractReader):
         shape: tuple[int, ...],
         fields: Collection[str] | None = None,
     ) -> PyTree[jax.ShapeDtypeStruct]:
-        """Build the padded-buffer structures for one observation from its `probe_shape()`.
+        """Build the padded-buffer structures for one observation from its probed shape.
 
         Restricted to `fields` when given, else returns every supported field.
         """
@@ -487,7 +487,7 @@ class ObservationReader[T](AbstractReader):
         self, observation: AbstractLazyObservation[T], data_field_names: Collection[str], item: int
     ) -> PyTree[jax.ShapeDtypeStruct]:
         return self._get_data_field_structures_for(
-            observation.probe_shape(intervals=ReaderField.SCANNING_INTERVALS in data_field_names),
+            observation.probe(intervals=ReaderField.SCANNING_INTERVALS in data_field_names).shape,
             data_field_names,
         )
 

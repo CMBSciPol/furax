@@ -6,6 +6,7 @@ from ._observation import (
     FileBackedLazyObservation,
     HashedObservationMetadata,
     ObservationBufferShape,
+    ObservationProbe,
     ReaderField,
 )
 from ._reader import ObservationReader
@@ -31,4 +32,5 @@ __all__ = [
     'MapMakingResults',
     'MultiObservationMapMaker',
     'ObservationBufferShape',
+    'ObservationProbe',
 ]

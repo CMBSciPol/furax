@@ -88,7 +88,7 @@ class GapTreatment(Enum):
 
     EXPLICIT = 'explicit'
     """Model each gap by a spline whose amplitudes are solved for with the map (unbiased, and
-    minimum-variance with `ExplicitGapsConfig.resolution = 1`)."""
+    minimum-variance with `ExplicitGapsConfig.resolution = 0`)."""
 
 
 @dataclass
@@ -878,12 +878,22 @@ class NestedConfig:
 class ExplicitGapsConfig:
     """Options of the spline model of the gaps (`GapTreatment.EXPLICIT`)."""
 
-    resolution: int = 10
-    """Knot spacing, in samples, of the spline that models each gap.
+    resolution: float = 1.0
+    """Knot spacing, in seconds, of the spline that models each gap.
 
-    A gap is a B-spline of degree up to 3 as its length allows, on intervals of about this many
-    samples. With 1, every flagged sample is its own unknown and the map is the minimum-variance
-    one; a larger spacing takes fewer unknowns, and the map stays unbiased.
+    A gap is a B-spline of degree up to 3 as its length allows, on intervals of about this
+    duration, rounded to whole samples at the sample rate of the TOD as read (8 samples at 8 Hz).
+    At or below one sample period, every flagged sample is its own unknown and the map is the
+    minimum-variance one; a larger spacing takes fewer unknowns, and the map stays unbiased.
+    """
+
+    probe: bool = True
+    """Size the amplitudes of the gaps from the flags the observations report before they are
+    read, when every observation of a bucket does (see
+    [`ObservationProbe.gap_amplitudes`][furax.mapmaking.ObservationProbe]).
+
+    Otherwise, they are sized for any flags within `GapsConfig.max_flagged_fraction`: about that
+    fraction of the samples of each detector.
     """
 
     save_amplitudes: bool = False
@@ -894,8 +904,8 @@ class ExplicitGapsConfig:
     """
 
     def __post_init__(self) -> None:
-        if self.resolution < 1:
-            raise ValueError(f"'resolution' must be >= 1, got {self.resolution}")
+        if self.resolution < 0:
+            raise ValueError(f"'resolution' must be >= 0, got {self.resolution}")
 
 
 @dataclass
@@ -929,7 +939,7 @@ class GapsConfig:
                 treatment: explicit
                 max_flagged_fraction: 0.5
                 explicit:
-                    resolution: 10
+                    resolution: 1.0
     """
 
     treatment: GapTreatment = GapTreatment.FILL

@@ -21,8 +21,10 @@ from furax.mapmaking import (
     AbstractObservation,
     MultiObservationMapMaker,
     ObservationBufferShape,
+    ObservationProbe,
 )
 from furax.mapmaking._accumulated import AccumulatedModel
+from furax.mapmaking._gaps import knot_spacing, max_gap_amplitudes
 from furax.mapmaking._model import FACTORED_KINDS
 from furax.mapmaking.config import HealpixConfig, LandscapeConfig, MapMakingConfig, PointingConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
@@ -199,11 +201,11 @@ class FailingLazyObservation(FakeLazyObservation):
     def name(self) -> str:
         return 'failing_obs'
 
-    def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
+    def probe(self, intervals=False, gap_resolution=None, max_flagged_fraction=1.0):
         # get_data raises, so build the shape directly. Non-ground obs -> no scanning intervals.
-        del intervals
+        del intervals, gap_resolution, max_flagged_fraction
         obs = FakeObservation(**self._kwargs)
-        return ObservationBufferShape(obs.n_detectors, obs.n_samples, 0)
+        return ObservationProbe(ObservationBufferShape(obs.n_detectors, obs.n_samples, 0))
 
     def get_data(self, requested_fields=None) -> FakeObservation:
         raise RuntimeError('simulated preprocessing failure')
@@ -216,8 +218,8 @@ class ProbeFailingLazyObservation(FakeLazyObservation):
     def name(self) -> str:
         return 'probe_failing_obs'
 
-    def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
-        del intervals
+    def probe(self, intervals=False, gap_resolution=None, max_flagged_fraction=1.0):
+        del intervals, gap_resolution, max_flagged_fraction
         raise RuntimeError('simulated shape-probe failure')
 
 
@@ -283,6 +285,35 @@ class GappyLazyGroundObservation(FakeLazyObservation):
 
     def get_data(self, requested_fields=None) -> GappyGroundObservation:
         return GappyGroundObservation(**self._kwargs)
+
+
+class GapProbingLazyGroundObservation(FakeLazyObservation):
+    """Ground observation, gappy or not, that probes the amplitudes of its gaps from its mask.
+
+    With `claimed`, the probe returns that count instead.
+    """
+
+    interface_class = GappyGroundObservation
+
+    def __init__(self, gappy: bool = True, claimed: int | None = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._gappy = gappy
+        self._claimed = claimed
+
+    def get_data(self, requested_fields=None) -> FakeGroundObservation:
+        kind = GappyGroundObservation if self._gappy else FakeGroundObservation
+        return kind(**self._kwargs)
+
+    def probe(self, intervals=False, gap_resolution=None, max_flagged_fraction=1.0):
+        probe = super().probe(intervals)
+        if gap_resolution is None:
+            return probe
+        count = self._claimed
+        if count is None:
+            good = self.get_data().get_sample_mask()
+            spacing = knot_spacing(gap_resolution, self.get_data().sample_rate)
+            count = max_gap_amplitudes(good, spacing, max_flagged_fraction)
+        return probe._replace(gap_amplitudes=count)
 
 
 def healpix_config(

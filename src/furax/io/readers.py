@@ -169,7 +169,7 @@ class AbstractReader(ABC):
 
         Computed at read time inside the io_callback, since the loaded shape may be smaller than
         the (upper-bound) probe shape used to size ``out_structure``. Raises if any loaded leaf
-        exceeds ``out_structure``: that means a ``probe_shape`` under-estimated, which would force a
+        exceeds ``out_structure``: that means a shape probe under-estimated, which would force a
         negative pad and silently corrupt the buffers.
         """
 
@@ -178,7 +178,7 @@ class AbstractReader(ABC):
             if any(p < 0 for p in padding):
                 raise ValueError(
                     f'loaded shape {leaf.shape} exceeds buffer shape {common_leaf.shape}: '
-                    'probe_shape under-estimated the observation size'
+                    'the shape probe under-estimated the observation size'
                 )
             return padding
 
@@ -223,7 +223,7 @@ class AbstractReader(ABC):
             )
             return self.read_filler_host()
         # Pad from the actual loaded shape (not the precomputed, probe-based padding): the result
-        # must match ``out_structure`` exactly, and ``probe_shape`` is only an upper bound, so the
+        # must match ``out_structure`` exactly, and a shape probe is only an upper bound, so the
         # load may be smaller than probed.
         actual_padding = self._actual_padding(data)
         result = (

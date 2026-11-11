@@ -21,7 +21,7 @@ from sotodlib.coords.helpers import get_deflected_sightline
 from sotodlib.core import AxisManager
 from sotodlib.core.flagman import has_any_cuts
 from sotodlib.core.metadata.loader import LoaderError
-from sotodlib.mapmaking.utils import downsample_obs
+from sotodlib.mapmaking.utils import downsample_cut, downsample_obs
 from sotodlib.preprocess.pcore import Pipeline
 
 from furax.mapmaking import (
@@ -29,8 +29,10 @@ from furax.mapmaking import (
     AbstractLazyObservation,
     FileBackedLazyObservation,
     ObservationBufferShape,
+    ObservationProbe,
     ReaderField,
 )
+from furax.mapmaking._gaps import knot_spacing, max_gap_amplitudes
 from furax.mapmaking.config import SotodlibConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.landscapes import (
@@ -714,31 +716,46 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
         data = _join_groups(self.observation_id, parts)
         return SOTODLibObservation(data, self._sotodlib_config, processed=True)
 
-    def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
-        """Returns an upper bound on the variable padded-buffer dimensions for ``fields``.
+    def probe(
+        self,
+        intervals: bool = False,
+        gap_resolution: float | None = None,
+        max_flagged_fraction: float = 1.0,
+    ) -> ObservationProbe:
+        """What the mapmaker needs to know of the observation, from the preprocessing metadata.
 
-        All values are read from the preprocessing metadata: no TOD is read and no pipeline is
-        run. A load larger than this shape fails, a smaller one is padded.
+        No TOD is read and no pipeline is run, and each group's metadata is loaded once.
 
-        - ``n_detectors`` is the number of detectors that the cuts of the process pipeline keep.
-          It is selected from the stored cut flags the way the loaders do, so it is expected to
-          equal the number loaded, but it follows their logic rather than their result. It is at
-          least 1: an observation with every detector cut probes one detector and fails to load.
-        - ``n_samples`` is ``ceil(meta.samps.count / downsample)``. The process pipeline only trims
-          samples (e.g. edge cuts) before downsampling, so this bounds the actual samps count
-          without matching it.
-
-        With ``join_groups``, the detectors are summed over the groups that have a preprocessing
-        record, as loaded by ``from_preproc_groups``.
-
-        The bound does not depend on `cache_dir`, so that a cached observation is padded as an
-        uncached one.
+        - The detector count is the number of detectors that the cuts of the process pipeline
+          keep. It is selected from the stored cut flags the way the loaders do, so it is expected
+          to equal the number loaded, but it follows their logic rather than their result. It is
+          at least 1: an observation with every detector cut probes one detector and fails to load.
+          With `join_groups`, it is summed over the groups that have a preprocessing record, as
+          loaded by `from_preproc_groups`.
+        - The sample count is `ceil(meta.samps.count / downsample)`. The process pipeline only
+          trims samples (e.g. edge cuts) before downsampling, so this bounds the actual count
+          without matching it. The bound does not depend on `cache_dir`, so that a cached
+          observation is padded as an uncached one.
+        - The sample rate is that of the observation's record in the obsdb, `n_samples` over
+          `duration`, divided by `downsample`; `None` if the record lacks them.
+        - The gap amplitudes are counted over the flags the loaders mask, `flags.glitch_flags`,
+          which the `combine_flags` or `union_flags` steps of the process pipeline assemble from
+          the flags the archive stores: the steps are run on the metadata, on the detectors left
+          by the cuts, with the samples the pipeline trims (`trim_samps`) trimmed, and the flags
+          are then downsampled as `downsample_obs` does. The samples trimmed off the end of the
+          buffer are flagged. They are not counted (`None`) when the flags cannot be followed
+          this way: with a `proc_config`, whose pipeline may compute flags from the TOD, or when
+          no step assembles them. The turnarounds `MapMakingConfig.scanning_mask` adds to the
+          mask are not counted beyond the flags.
         """
         _enable_preproc_context_cache()
         # call get_preprocess_context through the module so the cached get_preprocess_context is used
         # (str, not Path: sotodlib and the cache key expect a posix string)
-        _, context = pu.get_preprocess_context(self.init_config.as_posix())
+        configs, context = pu.get_preprocess_context(self.init_config.as_posix())
+        downsample = self._sotodlib_config.downsample
         n_detectors, n_samps, n_intervals = 0, 0, 0
+        sample_rate = None
+        goods: list[NDArray[np.bool_] | None] = []  # the good samples of each group, if known
         found = False
         for selection in self._selections:
             try:
@@ -754,14 +771,40 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
             found = True
             n_samps = max(n_samps, meta.samps.count)
             n_intervals = max(n_intervals, meta.subscans.count) if intervals else 0
+            sample_rate = _record_sample_rate(meta.obs_info, downsample)
+            if gap_resolution is not None:
+                goods.append(self._good_samples(meta, configs))
         if not found:
             raise RuntimeError(f'no preprocessing records for {self.observation_id}')
-        downsample = self._sotodlib_config.downsample
-        return ObservationBufferShape(
+        shape = ObservationBufferShape(
             max(n_detectors, 1),
             -(-n_samps // downsample),  # ceil, matches downsample_obs
             n_intervals,
         )
+        count = None
+        known = [good for good in goods if good is not None]
+        if gap_resolution is not None and sample_rate is not None and len(known) == len(goods):
+            spacing = knot_spacing(gap_resolution, sample_rate)
+            count = 0
+            for good in known:
+                count = max(count, max_gap_amplitudes(good, spacing, max_flagged_fraction))
+        return ObservationProbe(shape, sample_rate, count)
+
+    def _good_samples(self, meta: AxisManager, configs: dict[str, Any]) -> NDArray[np.bool_] | None:
+        """The good samples of the detectors left by the cuts, as loaded, from their metadata.
+
+        `None` when the flags cannot be followed from the metadata (see [`probe`][]). Restricts
+        `meta` to the detectors left.
+        """
+        if self.proc_config is not None:
+            return None
+        meta.restrict('dets', _survivors(meta, configs))
+        flags = _glitch_flags(meta, configs)
+        if flags is None:
+            return None
+        if (downsample := self._sotodlib_config.downsample) > 1:
+            flags = downsample_cut(flags, downsample)
+        return ~flags.mask()
 
     def _detectors_after_cuts(self, meta: AxisManager, selection: dict[str, Any]) -> int:
         """Number of detectors of a group that the loaders keep, from its metadata `meta`.
@@ -820,7 +863,7 @@ class LazyPreprocSOTODLibObservation(AbstractLazyObservation[AxisManager]):
     def _preprocess_group(self, selection: dict[str, Any]) -> SOTODLibObservation | None:
         """The group of a detector selection, preprocessed; `None` if there is nothing to load."""
         # A preproc load cannot be field-subset: the full group is always returned, which
-        # satisfies any requested fields. The cheap shape path lives in probe_shape.
+        # satisfies any requested fields. The cheap shape path lives in probe.
         try:
             return SOTODLibObservation.from_preproc_group(
                 self.observation_id,
@@ -858,6 +901,39 @@ def _survivors(meta: AxisManager, configs: dict[str, Any]) -> NDArray[Any]:
         if isinstance(selected, np.ndarray):
             keep &= selected
     return meta.dets.vals[keep]
+
+
+def _record_sample_rate(obs_info: AxisManager, downsample: int) -> float | None:
+    """The sample rate of the TOD as loaded, from the obsdb record of its observation."""
+    n_samples = getattr(obs_info, 'n_samples', None)
+    duration = getattr(obs_info, 'duration', None)
+    if n_samples is None or not duration:
+        return None
+    # the obsdb duration spans the first to the last sample, as the timestamps do
+    return (n_samples - 1) / duration / downsample
+
+
+def _glitch_flags(meta: AxisManager, configs: dict[str, Any]) -> so3g.proj.RangesMatrix | None:
+    """`flags.glitch_flags` as the process pipeline assembles it, from the metadata `meta`.
+
+    Only the steps combining the stored flags into it, and those trimming samples, are followed;
+    `None` if no step assembles it.
+    """
+    proc = meta.preprocess
+    aman = AxisManager(meta.dets, meta.samps)
+    built = False
+    for process in Pipeline(configs['process_pipe'])[:]:
+        cfgs = process.process_cfgs if isinstance(process.process_cfgs, dict) else {}
+        if process.name in ('combine_flags', 'union_flags'):
+            if cfgs.get('total_flags_label') == 'glitch_flags':
+                process.process(aman, proc)
+                built = True
+        elif trim := cfgs.get('trim_samps'):
+            for am in (aman, proc):
+                am.restrict(
+                    'samps', (am.samps.offset + trim, am.samps.offset + am.samps.count - trim)
+                )
+    return aman.flags.glitch_flags if built else None
 
 
 def _join_groups(observation_id: str, parts: list[SOTODLibObservation]) -> AxisManager:

@@ -5,7 +5,7 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from furax import MaskOperator
-from furax.mapmaking._gaps import GapSplines, gap_budget
+from furax.mapmaking._gaps import GapSplines, gap_budget, max_gap_amplitudes
 from furax.obs.stokes import StokesQU
 
 # at resolution 3: one per sample, then linear, quadratic and cubic splines
@@ -100,3 +100,21 @@ def test_gap_budget_fits_every_mask(resolution: int, layout: str) -> None:
         good[n_read - n_flagged : n_read] = False
     count = int(GapSplines(resolution, budget).counts(jnp.asarray(good), n_read))
     assert count <= budget
+
+
+def test_max_gap_amplitudes_leaves_out_the_detectors_dropped() -> None:
+    good = np.ones((2, 100), bool)
+    good[0, ::2] = False  # half flagged, one amplitude each
+    good[1, :10] = False
+    assert max_gap_amplitudes(good, 1, max_flagged_fraction=0.5) == 50
+    assert max_gap_amplitudes(good, 1, max_flagged_fraction=0.4) == 10
+
+
+@pytest.mark.parametrize('resolution', [1, 3])
+@pytest.mark.parametrize('n_samples', [120, 100])
+def test_max_gap_amplitudes_counts_as_the_splines(resolution: int, n_samples: int) -> None:
+    """The probe of the observation alone counts as the splines of its padded mask."""
+    good = _mask()
+    counts = GapSplines(resolution, 0).counts(jnp.asarray(good), n_samples)
+    probed = max_gap_amplitudes(good[:, :n_samples], resolution, max_flagged_fraction=1.0)
+    assert probed == int(counts.max())

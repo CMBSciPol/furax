@@ -20,6 +20,7 @@ from furax.mapmaking import (
     ObservationReader,
     ReaderField,
 )
+from furax.mapmaking._gaps import max_gap_amplitudes
 from furax.mapmaking.config import HealpixConfig, LandscapeConfig, PointingConfig, SotodlibConfig
 from furax.obs.stokes import Stokes
 from furax.tree import as_structure
@@ -132,12 +133,12 @@ def test_reader_all_fields(observations) -> None:
         assert np.sum(intervals[:, 1] > intervals[:, 0]) == nint
 
 
-def test_probe_shape(observations) -> None:
+def test_probe(observations) -> None:
     """The lazy observation sizes its buffers without (necessarily) a full load."""
     for i, obs in enumerate(observations):
         # n_intervals stays 0 unless scanning_intervals is requested
-        assert obs.probe_shape() == (OBS_NDET[i], OBS_NSAMPLE[i], 0)
-        assert obs.probe_shape(intervals=True) == (
+        assert obs.probe().shape == (OBS_NDET[i], OBS_NSAMPLE[i], 0)
+        assert obs.probe(intervals=True).shape == (
             OBS_NDET[i],
             OBS_NSAMPLE[i],
             OBS_NINTERVAL[i],
@@ -156,11 +157,11 @@ def test_lazy_preproc_observation(tmp_path) -> None:
     assert data.n_samples == OBS_NSAMPLE[0]
     assert data.get_tods().shape == (OBS_NDET[0], OBS_NSAMPLE[0])
 
-    # probe_shape reads an upper bound straight from the archive metadata (no pipeline run);
+    # the probe reads an upper bound straight from the archive metadata (no pipeline run);
     # here the no-op pipeline neither cuts nor trims, so the bound matches the load exactly.
     # n_intervals is only populated (via a load) when scanning_intervals is requested.
-    assert lazy.probe_shape() == (OBS_NDET[0], OBS_NSAMPLE[0], 0)
-    assert lazy.probe_shape(intervals=True) == (
+    assert lazy.probe().shape == (OBS_NDET[0], OBS_NSAMPLE[0], 0)
+    assert lazy.probe(intervals=True).shape == (
         OBS_NDET[0],
         OBS_NSAMPLE[0],
         OBS_NINTERVAL[0],
@@ -175,7 +176,7 @@ def test_downsample(demodulated: bool) -> None:
 
     # ceil(1000 / 3) == 334
     expected_nsamp = -(-OBS_NSAMPLE[0] // 3)
-    assert lazy.probe_shape() == (OBS_NDET[0], expected_nsamp, 0)
+    assert lazy.probe().shape == (OBS_NDET[0], expected_nsamp, 0)
     obs = lazy.get_data()
     assert obs.n_samples == expected_nsamp
     if demodulated:
@@ -185,7 +186,7 @@ def test_downsample(demodulated: bool) -> None:
 
 
 def test_lazy_preproc_probe_shape_downsample(tmp_path) -> None:
-    """probe_shape ceils the sample bound by the downsample factor, matching downsample_obs."""
+    """The probe ceils the sample bound by the downsample factor, matching downsample_obs."""
     config = build_preproc_db(tmp_path, [FOLDER / FILES[0]])
     lazy = LazyPreprocSOTODLibObservation(
         OBS_IDS[0], config, sotodlib_config=SotodlibConfig(downsample=3)
@@ -193,7 +194,7 @@ def test_lazy_preproc_probe_shape_downsample(tmp_path) -> None:
 
     # ceil(1000 / 3) == 334, the same count downsample_obs produces in the real load
     expected_nsamp = -(-OBS_NSAMPLE[0] // 3)
-    assert lazy.probe_shape() == (OBS_NDET[0], expected_nsamp, 0)
+    assert lazy.probe().shape == (OBS_NDET[0], expected_nsamp, 0)
     assert lazy.get_data().n_samples == expected_nsamp
 
 
@@ -207,7 +208,7 @@ def test_lazy_preproc_join_groups(tmp_path, downsample: int) -> None:
         OBS_IDS[1], config, sotodlib_config=sotodlib_config, join_groups=True
     )
 
-    assert joined.probe_shape() == whole.probe_shape()
+    assert joined.probe().shape == whole.probe().shape
     expected, actual = whole.get_data(), joined.get_data()
     assert actual.n_samples == expected.n_samples == -(-OBS_NSAMPLE[1] // downsample)
     assert_array_equal(actual.detectors, expected.detectors)
@@ -224,7 +225,7 @@ def test_lazy_preproc_join_selected_groups(tmp_path) -> None:
         OBS_IDS[1], config, detector_selection={'detset': 'detset0_1'}, join_groups=True
     )
 
-    assert lazy.probe_shape() == (OBS_NDET[1] // 2, OBS_NSAMPLE[1], 0)
+    assert lazy.probe().shape == (OBS_NDET[1] // 2, OBS_NSAMPLE[1], 0)
     assert lazy.get_data().n_detectors == OBS_NDET[1] // 2
 
 
@@ -241,7 +242,7 @@ def test_lazy_preproc_probe_shape_counts_the_detectors_left_by_the_cuts(
     )
     lazy = LazyPreprocSOTODLibObservation(OBS_IDS[1], config, join_groups=join_groups)
 
-    assert lazy.probe_shape().detector_count == n_uncut
+    assert lazy.probe().shape.detector_count == n_uncut
     assert lazy.get_data().n_detectors == n_uncut
 
 
@@ -250,9 +251,40 @@ def test_lazy_preproc_probe_shape_of_an_observation_cut_entirely(tmp_path) -> No
     config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_uncut={OBS_IDS[1]: 0})
     lazy = LazyPreprocSOTODLibObservation(OBS_IDS[1], config)
 
-    assert lazy.probe_shape().detector_count == 1
+    assert lazy.probe().shape.detector_count == 1
     with pytest.raises(NoDetectorsLeftError):
         lazy.get_data()
+
+
+@pytest.mark.parametrize('spacing', [1, 4])
+@pytest.mark.parametrize(('downsample', 'join_groups'), [(1, False), (3, False), (1, True)])
+def test_lazy_preproc_probe_gap_amplitudes(
+    tmp_path, spacing: int, downsample: int, join_groups: bool
+) -> None:
+    """The probe reads the sample rate, and counts the amplitudes of the gaps of the sample mask
+    that the loaders give, at the knot spacing it sets."""
+    config = build_preproc_db(
+        tmp_path, [FOLDER / FILES[1]], n_detsets=2 if join_groups else 1, glitches=True
+    )
+    lazy = LazyPreprocSOTODLibObservation(
+        OBS_IDS[1],
+        config,
+        sotodlib_config=SotodlibConfig(downsample=downsample),
+        join_groups=join_groups,
+    )
+    data = lazy.get_data()
+    resolution = spacing / data.sample_rate
+    expected = max_gap_amplitudes(data.get_sample_mask(), spacing, max_flagged_fraction=0.5)
+    assert expected > 0
+    probe = lazy.probe(gap_resolution=resolution, max_flagged_fraction=0.5)
+    assert probe.sample_rate == pytest.approx(data.sample_rate, rel=1e-9)
+    assert probe.gap_amplitudes == expected
+
+
+def test_lazy_preproc_probe_gap_amplitudes_without_a_step_assembling_the_flags(tmp_path) -> None:
+    config = build_preproc_db(tmp_path, [FOLDER / FILES[1]])
+    lazy = LazyPreprocSOTODLibObservation(OBS_IDS[1], config)
+    assert lazy.probe(gap_resolution=0.1, max_flagged_fraction=0.5).gap_amplitudes is None
 
 
 @pytest.fixture
@@ -267,7 +299,7 @@ def test_lazy_preproc_join_groups_skips_a_group_without_record(tmp_path, caplog)
     config = build_preproc_db(tmp_path, [FOLDER / FILES[1]], n_detsets=2)
     lazy = LazyPreprocSOTODLibObservation(OBS_IDS[1], config, join_groups=True)
 
-    assert lazy.probe_shape() == (OBS_NDET[1] // 2, OBS_NSAMPLE[1], 0)
+    assert lazy.probe().shape == (OBS_NDET[1] // 2, OBS_NSAMPLE[1], 0)
     assert lazy.get_data().n_detectors == OBS_NDET[1] // 2
     # the group is reported in plain Python values, not as numpy scalars
     assert "No preprocessing record for {'detset': 'detset0_1'}" in caplog.text
@@ -282,7 +314,7 @@ def test_lazy_preproc_a_missing_group_still_fails_alone(tmp_path) -> None:
     )
 
     with pytest.raises(LoaderError):
-        lazy.probe_shape()
+        lazy.probe()
 
 
 def test_lazy_preproc_join_groups_without_any_record_fails(tmp_path, monkeypatch) -> None:
@@ -293,7 +325,7 @@ def test_lazy_preproc_join_groups_without_any_record_fails(tmp_path, monkeypatch
     lazy = LazyPreprocSOTODLibObservation(OBS_IDS[1], config, join_groups=True)
 
     with pytest.raises(RuntimeError, match='no preprocessing records'):
-        lazy.probe_shape()
+        lazy.probe()
     with pytest.raises(RuntimeError, match='no detectors left'):
         lazy.get_data()
 
@@ -671,8 +703,8 @@ def test_preproc_context_cache(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(Context, '__init__', counting_init)
 
     lazy = LazyPreprocSOTODLibObservation(OBS_IDS[0], config)
-    lazy.probe_shape()
-    lazy.probe_shape()
+    lazy.probe()
+    lazy.probe()
     lazy.get_data()
     # three loads on this thread, but the Context (and its obsdb/obsfiledb opens) is built once
     assert n_builds == 1

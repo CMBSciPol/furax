@@ -23,7 +23,7 @@ from furax.profiling import format_bytes
 from ._accumulated import AccumulatedModel
 from ._bucket import BucketModel, Tile
 from ._catalog import ObservationCatalog, Read, detector_table, gather_rows
-from ._gaps import gap_budget
+from ._gaps import GapSplines, gap_budget, knot_spacing
 from ._injection import inject, load_sky, unpadded
 from ._landscape import build_landscape
 from ._model import (
@@ -33,7 +33,12 @@ from ._model import (
     acquisition_operator,
     restrict_streams,
 )
-from ._observation import AbstractLazyObservation, ObservationBufferShape, ReaderField
+from ._observation import (
+    AbstractLazyObservation,
+    ObservationBufferShape,
+    ObservationProbe,
+    ReaderField,
+)
 from ._provenance import provenance
 from ._reader import ObservationReader, TileReader, detector_tile_structure
 from .config import GapTreatment, InjectionMode, MapMakingConfig, NoiseSource, WeightingMode
@@ -102,10 +107,15 @@ class MultiObservationMapMaker[T]:
         """
         n_proc = jax.process_count()
         need_intervals = ReaderField.SCANNING_INTERVALS in self.reader_fields
-        local: dict[int, ObservationBufferShape | str] = {}
+        gaps = self.config.gaps
+        # the gap amplitudes are counted only to size them (`ExplicitGapsConfig.probe`)
+        count_gaps = self._explicit_gaps and gaps.explicit.probe
+        resolution = gaps.explicit.resolution if count_gaps else None
+        fraction = gaps.max_flagged_fraction or 1.0
+        local: dict[int, ObservationProbe | str] = {}
         for i in range(jax.process_index(), self.n_observations, n_proc):
             try:
-                local[i] = self.observations[i].probe_shape(need_intervals)
+                local[i] = self.observations[i].probe(need_intervals, resolution, fraction)
             except Exception as error:
                 logger.exception('Probe of observation %d failed', i)
                 local[i] = f'{type(error).__name__}: {error}'
@@ -161,24 +171,59 @@ class MultiObservationMapMaker[T]:
             detector_tile_size=self.config.detector_tile_size,
         )
 
-    @cached_property
-    def _gap_budgets(self) -> list[int]:
-        """The number of amplitudes of the explicit gaps of each detector, per bucket; 0 without.
+    @property
+    def _explicit_gaps(self) -> bool:
+        """Whether the gaps are explicit, their amplitudes solved for with the map."""
+        return self.config.gaps.treatment == GapTreatment.EXPLICIT and not self.config.binned
 
-        The budget of a bucket fits every observation in it (see
+    @cached_property
+    def _gap_splines(self) -> list[GapSplines | None]:
+        """The spline model of the explicit gaps of each bucket; `None` without.
+
+        The knot spacing of a bucket, in samples, is `ExplicitGapsConfig.resolution` at the sample
+        rates its observations probed, the finest if they differ. Its budget of amplitudes fits
+        every observation in it: from the counts its observations probed, when they all did at
+        that spacing, or from the bound that holds for any flags (see
         [`gap_budget`][furax.mapmaking._gaps.gap_budget]).
         """
+        if not self._explicit_gaps:
+            return [None] * len(self.layout.buckets)
         gaps = self.config.gaps
-        if gaps.treatment != GapTreatment.EXPLICIT or self.config.binned:
-            return [0] * len(self.layout.buckets)
         assert gaps.max_flagged_fraction is not None  # required by GapsConfig
-        return [
-            max(
-                gap_budget(self._probe_shapes[i].sample_count, gaps.max_flagged_fraction)
-                for i in bucket.observations
+        probes = self._catalog.probes
+        shapes = self._probe_shapes
+        models: list[GapSplines | None] = []
+        for b, bucket in enumerate(self.layout.buckets):
+            # an observation whose probe failed is not read
+            read = {
+                i: p for i in bucket.observations if isinstance(p := probes[i], ObservationProbe)
+            }
+            spacings = {i: self._knot_spacing(i, p) for i, p in read.items()}
+            spacing = min(spacings.values(), default=1)
+            counts = {i: p.gap_amplitudes for i, p in read.items()}
+            if read and None not in counts.values() and set(spacings.values()) == {spacing}:
+                budget = max(count for count in counts.values() if count is not None)
+            else:
+                budget = max(
+                    gap_budget(shapes[i].sample_count, gaps.max_flagged_fraction)
+                    for i in bucket.observations
+                )
+            budget = max(budget, 1)  # the basis indexes its slots: an empty budget has none
+            logger.info(
+                f'Bucket {b}: {budget} gap amplitudes per detector, knots every {spacing} samples'
             )
-            for bucket in self.layout.buckets
-        ]
+            models.append(GapSplines(spacing, budget))
+        return models
+
+    def _knot_spacing(self, i: int, probe: ObservationProbe) -> int:
+        """The knot spacing of the explicit gaps of observation `i`, in samples."""
+        if probe.sample_rate is None:
+            msg = (
+                f'Observation {self._catalog.names[i]}: explicit gaps need its sample rate, '
+                'which its probe does not report'
+            )
+            raise ValueError(msg)
+        return knot_spacing(self.config.gaps.explicit.resolution, probe.sample_rate)
 
     @cached_property
     def placement(self) -> TilePlacement:
@@ -496,7 +541,7 @@ class MultiObservationMapMaker[T]:
             },
         }
         spec['gaps'] = 1
-        kernel = self._tile_kernel(self._gap_budgets[bucket_index])
+        kernel = self._tile_kernel(self._gap_splines[bucket_index])
         out, resolved = map_reduce(kernel, ensemble, spec, sky)
         return out['hits'], out['map'], self._bucket_model(bucket, out, resolved)
 
@@ -575,14 +620,13 @@ class MultiObservationMapMaker[T]:
         return self.placement.local_devices[0].platform != 'cpu'
 
     def _tile_kernel(
-        self, gap_budget: int = 0
+        self, gaps: GapSplines | None = None
     ) -> Callable[[tuple[Any, Any, Array], StokesType | None], dict[str, Any]]:
         """Accumulate one detector tile: its hit map, RHS and model.
 
         The member is one tile's read, the triple `(observation, padding, valid)` restricted to
         the tile's detectors; the sky to inject, if any, is a shared input that every member
-        receives whole. `gap_budget` is the number of amplitudes of the explicit gaps of each
-        detector of the bucket.
+        receives whole. `gaps` is the spline model of the explicit gaps of the bucket, if any.
         """
         config = self.fit_config
         landscape = self.landscape
@@ -647,7 +691,7 @@ class MultiObservationMapMaker[T]:
                 temperature = data[ReaderField.SAMPLE_DATA].i
                 data, tod = restrict_streams(data, tod, landscape.stokes)
             # Padding/failed observations contribute nothing
-            obs = ObservationModel.create(data, padding, config, landscape, use, gap_budget)
+            obs = ObservationModel.create(data, padding, config, landscape, use, gaps)
 
             # Hit map = nearest-neighbour coverage of the sample mask
             hit_pointing = PointingOperator.create(

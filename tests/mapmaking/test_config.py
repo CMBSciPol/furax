@@ -177,7 +177,7 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
         (lambda: NestedConfig(inner_steps=-1), 'inner_steps'),
         (lambda: GapsConfig(max_flagged_fraction=0.0), 'max_flagged_fraction'),
         (lambda: GapsConfig(treatment=GapTreatment.EXPLICIT), 'max_flagged_fraction'),
-        (lambda: ExplicitGapsConfig(resolution=0), 'resolution'),
+        (lambda: ExplicitGapsConfig(resolution=-1.0), 'resolution'),
     ],
     ids=[
         'max_buckets',

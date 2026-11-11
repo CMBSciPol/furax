@@ -19,6 +19,7 @@ from typing import Any, NamedTuple, Self
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jaxtyping import Array, Bool, Int, PyTree
 
 from furax import AbstractLinearOperator, MaskOperator
@@ -58,6 +59,18 @@ class GapSplines:
         )
 
 
+def knot_spacing(resolution: float, sample_rate: float) -> int:
+    """The knot spacing in samples of the gap splines, from `resolution` in seconds; at least 1.
+
+    Examples:
+        >>> knot_spacing(1.25, 8.0)
+        10
+        >>> knot_spacing(0.0, 8.0)
+        1
+    """
+    return max(1, round(resolution * sample_rate))
+
+
 def gap_budget(n_samples: int, max_flagged_fraction: float) -> int:
     """A budget of amplitudes per channel that fits any mask of an observation.
 
@@ -65,6 +78,29 @@ def gap_budget(n_samples: int, max_flagged_fraction: float) -> int:
     flagged. A gap has no more amplitudes than samples.
     """
     return math.ceil(max_flagged_fraction * n_samples)
+
+
+def max_gap_amplitudes(
+    good: Bool[np.ndarray, 'det samp'],
+    resolution: int,
+    max_flagged_fraction: float,
+) -> int:
+    """The most amplitudes the explicit gaps of a detector kept need, from the masks of all.
+
+    This is the `gap_amplitudes` of an [`ObservationProbe`][furax.mapmaking.ObservationProbe],
+    for an interface that knows the masks, at a knot spacing of `resolution` samples. The
+    detectors with more than `max_flagged_fraction` of their samples flagged are left out.
+    """
+    kept = good[np.mean(~good, axis=-1) <= max_flagged_fraction]
+    flagged = ~kept & kept.any(axis=-1, keepdims=True)
+    edges = np.diff(np.pad(flagged, [(0, 0), (1, 1)]).astype(np.int8), axis=-1)
+    rows, starts = np.nonzero(edges == 1)
+    _, ends = np.nonzero(edges == -1)  # row-major: paired with the starts
+    length = ends - starts
+    intervals = -(-length // resolution)
+    amplitudes = np.minimum(length, intervals + np.minimum(3, intervals - 1))
+    counts = np.bincount(rows, weights=amplitudes, minlength=len(kept))
+    return int(counts.max(initial=0))
 
 
 class GapSplineOperator(AbstractLinearOperator):

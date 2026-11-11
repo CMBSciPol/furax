@@ -18,7 +18,7 @@ from jaxtyping import Bool, Float64, Int64
 
 from furax.math.coords import XiEtaAngles
 
-from ._observation import ObservationBufferShape
+from ._observation import ObservationProbe
 from ._reader import ObservationRecord
 from .results import _OBSERVATIONS_SCHEMA
 
@@ -35,8 +35,8 @@ class ObservationCatalog:
 
     names: list[str]
     """The names of the observations, as given, in observation order."""
-    probes: dict[int, ObservationBufferShape | str]
-    """The shape probed of each observation, or the exception its probe raised."""
+    probes: dict[int, ObservationProbe | str]
+    """The probe of each observation, or the exception it raised."""
     reads: dict[int, Read] = field(default_factory=dict)
     """What the last pass read of each observation, or the exception that stopped its load; an
     observation not loaded, such as one whose probe failed, is absent."""
@@ -47,7 +47,7 @@ class ObservationCatalog:
         probed = np.zeros((len(self.names), 3), np.int64)
         for i, probe in self.probes.items():
             if not isinstance(probe, str):
-                probed[i] = probe
+                probed[i] = probe.shape
         return probed
 
     @property
@@ -93,8 +93,9 @@ class ObservationCatalog:
             'load_seconds': None,
             'error': None,
         }
-        if isinstance(probe, ObservationBufferShape):
-            row |= {'probed_detectors': probe.detector_count, 'probed_samples': probe.sample_count}
+        if isinstance(probe, ObservationProbe):
+            shape = probe.shape
+            row |= {'probed_detectors': shape.detector_count, 'probed_samples': shape.sample_count}
         if isinstance(read, ObservationRecord):
             row |= {
                 'name': read.name,

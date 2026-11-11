@@ -35,8 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Stencil.voided`: the stencil reading no pixel for the given samples (#425)
 - Ensemble members can be grouped in segments of varying length through an `owner` index: `StackedEnsemble` leaves of stride `'segment'` hold one entry per segment, and `map_reduce` keeps outputs per segment with `'segment'` and `'segment_sum'` (#445)
 - `GapsConfig.max_flagged_fraction` drops the detectors with more of their samples flagged, counted in the `dropped_detectors` column of the observations table and marked in the `dropped` column of the detectors table (#479)
-- `GapTreatment.EXPLICIT` models each gap by a B-spline of degree up to 3 on intervals of `ExplicitGapsConfig.resolution` samples, whose amplitudes are solved for with the map; a detector needing more amplitudes than its bucket's budget is dropped and counted in the `over_gap_budget` columns (#480)
+- `GapTreatment.EXPLICIT` models each gap by a B-spline of degree up to 3 on intervals of `ExplicitGapsConfig.resolution` seconds, whose amplitudes are solved for with the map; a detector needing more amplitudes than its bucket's budget is dropped and counted in the `over_gap_budget` columns (#480)
 - `furax.math.bspline.cardinal_bspline` evaluates the cardinal B-splines of degree 0 to 3 (#480)
+- `ObservationProbe.gap_amplitudes` reports the amplitudes the explicit gaps of a detector need before the observation is read, which sizes them under `ExplicitGapsConfig.probe`; `LazyPreprocSOTODLibObservation` reads them from the preprocessing metadata (#481)
 
 ### Changed
 
@@ -72,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `MapMakingConfig.detector_batch_size` is renamed `detector_tile_size` (#447)
 - **Breaking:** `furax.mapmaking.layout` replaces `Bucket`, `SlotLayout`, `SlotPlacement`, `partition_padded`, `padded_volume` and `unpadded_volume` with `TileBucket`, `TileLayout`, `TilePlacement` and `partition_tiles` (#447)
 - `LazyPreprocSOTODLibObservation.probe_shape` counts the detectors left by the cuts, from the preprocessing metadata, instead of those before them (#474)
+- **Breaking:** `AbstractLazyObservation.probe_shape` is replaced by `probe`, which returns an `ObservationProbe`: the buffer shape, the sample rate and, on request, the gap amplitudes, from one probe (#481)
 - **Breaking:** the nested gap weight applies its inner inverse by Chebyshev iteration, linear at any step count, instead of CG, and never falls back to the inner mask: `NestedConfig` loses `max_flag_fraction`, `rtol` and `atol` (#475)
   - `NestedConfig.precondition` is removed: the solve is preconditioned by the white-noise level
 

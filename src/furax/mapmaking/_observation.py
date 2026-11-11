@@ -517,6 +517,26 @@ class ObservationBufferShape(NamedTuple):
         return self._replace(sample_count=next_fast_len(self.sample_count, real=True))
 
 
+class ObservationProbe(NamedTuple):
+    """What a probe of an observation tells before it is read.
+
+    Attributes:
+        shape: The sizes of the buffers the observation is read into, an upper bound.
+        sample_rate: The sample rate of the TOD as read, in Hz; `None` if the probe cannot tell.
+        gap_amplitudes: The most amplitudes the explicit gaps of one of its detectors need, at the
+            requested knot spacing; `None` if not requested or unknown. The count is that of
+            [`GapTreatment.EXPLICIT`][furax.mapmaking.config.GapTreatment] over the flags the
+            mapmaker masks, in a buffer of `shape.sample_count` samples whose samples past those
+            the observation loads, if it loads fewer, are flagged. It sizes the gap amplitudes:
+            a detector needing more is dropped, so an underestimate costs detectors, reported, not
+            correctness. `None` leaves the bound that holds for any flags.
+    """
+
+    shape: ObservationBufferShape
+    sample_rate: float | None = None
+    gap_amplitudes: int | None = None
+
+
 class AbstractLazyObservation[T](ABC):
     """Deferred handle to an observation: opens its backing store only when read.
 
@@ -542,22 +562,38 @@ class AbstractLazyObservation[T](ABC):
         """Human-readable identifier, used e.g. to report observations that failed to load."""
         return type(self).__name__
 
-    def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
-        """Returns the buffer dimensions for this observation.
+    def probe(
+        self,
+        intervals: bool = False,
+        gap_resolution: float | None = None,
+        max_flagged_fraction: float = 1.0,
+    ) -> ObservationProbe:
+        """What the mapmaker needs to know of the observation before it is read.
 
-        The default opens the observation with a minimal field set request; subclasses may
-        override with a cheaper query (e.g., metadata only).
+        The default opens the observation with a minimal field request and reports no gap
+        amplitudes; subclasses may override it with a cheaper query (e.g. metadata only), and
+        count the gap amplitudes when they know the flags without reading the TOD.
+
+        Args:
+            intervals: Whether to count the scanning intervals.
+            gap_resolution: The knot spacing, in seconds, of the explicit gaps whose amplitudes
+                to count (see [`ExplicitGapsConfig.resolution`][furax.mapmaking.config.ExplicitGapsConfig.resolution]);
+                `None` not to count them.
+            max_flagged_fraction: The detectors with more of their samples flagged are left out
+                of the count of the gap amplitudes, as the mapmaker drops them.
         """
+        available = self.interface_class.AVAILABLE_READER_FIELDS
+        # an interface may derive its sample rate from the timestamps
+        fields = [ReaderField.TIMESTAMPS] if ReaderField.TIMESTAMPS in available else []
         if intervals:
-            if ReaderField.SCANNING_INTERVALS not in self.interface_class.AVAILABLE_READER_FIELDS:
+            if ReaderField.SCANNING_INTERVALS not in available:
                 msg = 'observation does not support reading scanning intervals'
                 raise RuntimeError(msg)
-            data = self.get_data([ReaderField.SCANNING_INTERVALS])
-            n_intervals = data.get_scanning_intervals().shape[0]  # ty: ignore[unresolved-attribute]
-        else:
-            data = self.get_data([])
-            n_intervals = 0
-        return ObservationBufferShape(data.n_detectors, data.n_samples, n_intervals)
+            fields.append(ReaderField.SCANNING_INTERVALS)
+        data = self.get_data(fields)
+        n_intervals = data.get_scanning_intervals().shape[0] if intervals else 0  # ty: ignore[unresolved-attribute]
+        shape = ObservationBufferShape(data.n_detectors, data.n_samples, n_intervals)
+        return ObservationProbe(shape, data.sample_rate)
 
 
 class FileBackedLazyObservation[T](AbstractLazyObservation[T]):

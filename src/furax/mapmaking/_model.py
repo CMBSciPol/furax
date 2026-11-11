@@ -79,7 +79,7 @@ class ObservationModel:
         config: MapMakingConfig,
         landscape: StokesLandscape,
         use: Bool[Array, ''] | bool = True,
-        gap_budget: int = 0,
+        gaps: GapSplines | None = None,
     ) -> Self:
         """Build the model of an observation from the fields read for it.
 
@@ -90,21 +90,18 @@ class ObservationModel:
             landscape: The landscape of the maps.
             use: Whether the observation contributes: false for a padding tile or a failed
                 observation, whose samples are then all masked.
-            gap_budget: The amplitudes of the gaps of each detector, when they are explicit; a
-                detector needing more is dropped.
+            gaps: The spline model of the gaps, when they are explicit; a detector needing more
+                amplitudes than its budget is dropped.
         """
         H = acquisition_operator(data, config, landscape)
         tod_format = _tod_format(H)
         mask = _sample_mask(data, config)
         n_samples = _real_sample_count(mask, padding)
         dropped = _dropped_detectors(mask, n_samples, config.gaps.max_flagged_fraction)
-        gaps = None
         over_gap_budget = jnp.zeros_like(dropped)
-        if config.gaps.treatment == GapTreatment.EXPLICIT and not config.binned:
-            explicit = config.gaps.explicit
-            gaps = GapSplines(explicit.resolution, gap_budget)
+        if gaps is not None:
             kept = mask & ~dropped[:, None] & jnp.asarray(use)
-            over_gap_budget = ~dropped & (gaps.counts(kept, n_samples) > gap_budget)
+            over_gap_budget = ~dropped & (gaps.counts(kept, n_samples) > gaps.budget)
         valid_detectors = ~(dropped | over_gap_budget)[:, None]
         M = _mask_projector(mask, valid_detectors, jnp.asarray(use), tod_format=tod_format)
         noise_model, sample_rate = _noise_model(data, config, tod_format, padding=padding)

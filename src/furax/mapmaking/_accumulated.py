@@ -190,6 +190,21 @@ class AccumulatedModel:
             )
         return amplitudes
 
+    def dropped_detectors(self, placement: TilePlacement) -> np.ndarray:
+        """Per detector, whether it was dropped for its flags, in observation order.
+
+        The array is `(n_observations, detector)`, its detector axis padded with `False`.
+        """
+        per_bucket = []
+        for bm in self.buckets:
+            dropped = lift(lambda tile: tile.model.dropped, bm.tiles)
+            assert isinstance(dropped, StackedEnsemble)
+            values = placement.gather(dropped.stacked)
+            if dropped.strides[0] is None:  # the same in every tile, as without a threshold
+                values = np.broadcast_to(values, (bm.tiles.size, *values.shape))
+            per_bucket.append(values)
+        return placement.layout.to_observation_order(per_bucket, detector_axis=-1)
+
     def noise_parameters(self, placement: TilePlacement) -> dict[str, np.ndarray]:
         """The noise model parameters of every detector, in observation order.
 

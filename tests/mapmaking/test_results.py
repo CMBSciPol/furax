@@ -159,6 +159,7 @@ def test_extras_roundtrip(tmp_path):
                 'name': ['obs0', 'obs1'],
                 'loaded': [True, False],
                 'n_detectors': [2, 0],
+                'dropped_detectors': [1, 0],
                 'n_samples': [100, 0],
                 'probed_detectors': [2, 0],
                 'probed_samples': [100, 0],

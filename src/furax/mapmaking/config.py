@@ -903,6 +903,20 @@ class GapsConfig:
     nested: NestedConfig = field(default_factory=NestedConfig)
     """Inner-solver options (when `treatment` is `NESTED`)."""
 
+    max_flagged_fraction: float | None = None
+    """Drop the detectors with more than this fraction of their samples flagged; `None` keeps
+    every detector.
+
+    A detector dropped contributes nothing, under any `treatment`, and is reported in the
+    `dropped` column of the detectors table. The fraction is over the samples of its observation,
+    not those padding it to the length of its bucket.
+    """
+
+    def __post_init__(self) -> None:
+        fraction = self.max_flagged_fraction
+        if fraction is not None and not 0 < fraction <= 1:
+            raise ValueError(f"'max_flagged_fraction' must be in (0, 1], got {fraction}")
+
 
 @dataclass
 class PointingConfig:

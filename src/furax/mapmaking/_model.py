@@ -54,6 +54,9 @@ class ObservationModel:
     sample_rate: Array
     """Data sampling rate"""
 
+    dropped: Bool[Array, ' det']
+    """Per detector, whether it is dropped for having too many of its samples flagged"""
+
     @classmethod
     def create(
         cls,
@@ -75,7 +78,9 @@ class ObservationModel:
         """
         H = acquisition_operator(data, config, landscape)
         tod_format = _tod_format(H)
-        M = _mask_projector(_sample_mask(data, config), jnp.asarray(use), tod_format=tod_format)
+        mask = _sample_mask(data, config)
+        dropped = _dropped_detectors(mask, padding, config.gaps.max_flagged_fraction)
+        M = _mask_projector(mask, ~dropped[:, None], jnp.asarray(use), tod_format=tod_format)
         noise_model, sample_rate = _noise_model(data, config, tod_format, padding=padding)
         Ninv = _noise_operator(
             noise_model,
@@ -100,7 +105,7 @@ class ObservationModel:
             if config.pomme_tau is not None
             else IdentityOperator(in_structure=tod_format.structure)
         )
-        return cls(H, W, F, noise_model, sample_rate)
+        return cls(H, W, F, noise_model, sample_rate, dropped)
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
@@ -287,6 +292,21 @@ def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
         # in both cases the logical and eliminates the tail
 
     return mask
+
+
+def _dropped_detectors(
+    mask: Bool[Array, 'det samp'], padding: Any, max_flagged_fraction: float | None
+) -> Bool[Array, ' det']:
+    """The detectors with more than `max_flagged_fraction` of their samples flagged.
+
+    The samples padding the observation to the length of its bucket are left out of the fraction.
+    """
+    if max_flagged_fraction is None:
+        return jnp.zeros(mask.shape[0], bool)
+    n_samples = mask.shape[-1]
+    real = n_samples - jax.tree.leaves(padding[ReaderField.SAMPLE_DATA])[0][-1]
+    flagged = jnp.sum(~mask & (jnp.arange(n_samples) < real), axis=-1)
+    return flagged > max_flagged_fraction * real
 
 
 def _noise_operator(

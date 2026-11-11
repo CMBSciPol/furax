@@ -12,8 +12,10 @@ def test_observation_catalog_keeps_the_probes_and_replaces_the_reads():
 
     reads = {0: ObservationRecord('a0', ['d0', 'd1'], n_samples=90, load_seconds=1.5), 2: 'OSError'}
     catalog.reads = reads
-    table = catalog.to_table()
+    dropped = np.array([[True, False], [True, True], [True, False]])
+    table = catalog.to_table(dropped)
     assert table['name'].to_list() == ['a0', 'b', 'c']  # as read, or as given
+    assert table['dropped_detectors'].to_list() == [1, 0, 0]  # of the observations loaded
     assert table['loaded'].to_list() == [True, False, False]
     assert table['n_samples'].to_list() == [90, 0, 0]
     assert table['probed_samples'].to_list() == [100, 0, 50]
@@ -43,8 +45,10 @@ def test_detector_frame_follows_the_detector_axis():
         2: 'OSError',
     }
     sigma = np.arange(3 * 2 * 3, dtype=float).reshape(3, 2, 3)  # (obs, stream, detector)
-    table = detector_table(reads, {'sigma': sigma}, 'QU')
+    dropped = np.array([[False, True, False], [True, False, False], [False, False, False]])
+    table = detector_table(reads, {'sigma': sigma}, 'QU', dropped)
     assert table['observation'].to_list() == [0, 0, 1]
+    assert table['dropped'].to_list() == [False, True, True]
     assert table['detector'].to_list() == [0, 1, 0]
     assert table['name'].to_list() == ['d0', 'd1', 'd2']
     assert table['sigma_q'].to_list() == [sigma[0, 0, 0], sigma[0, 0, 1], sigma[1, 0, 0]]

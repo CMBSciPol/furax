@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 from fastquat import Quaternion
 from jax.tree_util import register_dataclass
-from jaxtyping import Array, Bool, Float, PyTree
+from jaxtyping import Array, Bool, Float, Int, PyTree
 
 from furax import (
     AbstractLinearOperator,
@@ -19,7 +19,7 @@ from furax.obs import TODFormat
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
-from ._observation import ReaderField, _sample_rate
+from ._observation import ReaderField, _sample_rate, real_extent
 from .acquisition import build_acquisition_operator
 from .config import GapTreatment, MapMakingConfig, NoiseSource, TemplatesConfig, WeightingMode
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
@@ -27,6 +27,10 @@ from .templates import TemplateOperator, build_templates, required_reader_fields
 from .templates.gram import BlockGram, factor, template_gram
 from .templates.pomme import PommeProjectionOperator
 from .weight import MarginalizedWeightOperator, NestedWeightOperator, WeightOperator
+
+DROP_REASONS = ('over_flagged',)
+"""Why a detector is dropped: each names the field of [`ObservationModel`][] marking the detectors
+dropped for it, and the columns that report them in `MapMakingResults`."""
 
 
 @register_dataclass
@@ -54,6 +58,9 @@ class ObservationModel:
     sample_rate: Array
     """Data sampling rate"""
 
+    over_flagged: Bool[Array, ' det']
+    """Per detector, whether it is dropped for having too many of its samples flagged"""
+
     @classmethod
     def create(
         cls,
@@ -71,12 +78,18 @@ class ObservationModel:
             config: The mapmaking configuration.
             landscape: The landscape of the maps.
             use: Whether the observation contributes: false for a padding tile or a failed
-                observation, whose samples are then all masked.
+                observation, whose samples are then all masked, and none of its detectors
+                reported dropped.
         """
         H = acquisition_operator(data, config, landscape)
         tod_format = _tod_format(H)
-        M = _mask_projector(_sample_mask(data, config), jnp.asarray(use), tod_format=tod_format)
-        noise_model, sample_rate = _noise_model(data, config, tod_format, padding=padding)
+        mask = _sample_mask(data, config) & jnp.asarray(use)
+        n_detectors, n_samples = real_extent(padding, mask.shape)
+        # a padding tile or a failed observation has no detectors to drop
+        n_detectors = jnp.where(use, n_detectors, 0)
+        over_flagged = _over_flagged(mask, n_detectors, n_samples, config.gaps.max_flagged_fraction)
+        M = _mask_projector(mask, ~over_flagged[:, None], tod_format=tod_format)
+        noise_model, sample_rate = _noise_model(data, config, tod_format, n_samples)
         Ninv = _noise_operator(
             noise_model,
             tod_format,
@@ -100,7 +113,7 @@ class ObservationModel:
             if config.pomme_tau is not None
             else IdentityOperator(in_structure=tod_format.structure)
         )
-        return cls(H, W, F, noise_model, sample_rate)
+        return cls(H, W, F, noise_model, sample_rate, over_flagged)
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
@@ -218,9 +231,12 @@ def _noise_model(
     data: Any,
     config: MapMakingConfig,
     tod_format: TODFormat,
-    padding: Any | None = None,
+    n_samples: Int[Array, ''] | int | None = None,
 ) -> tuple[PyTree[NoiseModel], Array]:
-    """Compute the noise model and sample rate for a single observation block."""
+    """Compute the noise model and sample rate for a single observation block.
+
+    The samples past the first `n_samples`, padding, are left out of a fit; all count without it.
+    """
     fs = _sample_rate(data[ReaderField.TIMESTAMPS])
     nsamp = tod_format.n_samples
 
@@ -239,9 +255,7 @@ def _noise_model(
         fhwp = _hwp_frequency(data[ReaderField.TIMESTAMPS], data[ReaderField.HWP_ANGLES])
 
         samples = tod_format.as_array(data[ReaderField.SAMPLE_DATA]).reshape(-1, nsamp)
-        sample_padding = 0
-        if padding is not None:  # one padding per axis of the TOD's array, the samples last
-            sample_padding = jax.tree.leaves(padding[ReaderField.SAMPLE_DATA])[0][-1]
+        sample_padding = 0 if n_samples is None else nsamp - n_samples
         # the segments that hold a flagged sample are left out of the estimate, for every stream
         valid = jnp.broadcast_to(_sample_mask(data, config), (*lead, nsamp)).reshape(-1, nsamp)
         f, Pxx = padding_aware_welch(
@@ -287,6 +301,22 @@ def _sample_mask(data: Any, config: MapMakingConfig) -> Array:
         # in both cases the logical and eliminates the tail
 
     return mask
+
+
+def _over_flagged(
+    mask: Bool[Array, 'det samp'],
+    n_detectors: Int[Array, ''] | int,
+    n_samples: Int[Array, ''] | int,
+    max_flagged_fraction: float | None,
+) -> Bool[Array, ' det']:
+    """The detectors with more than `max_flagged_fraction` of their samples flagged.
+
+    Only the first `n_detectors` and `n_samples` are the observation's, those after them padding.
+    """
+    if max_flagged_fraction is None:
+        return jnp.zeros(mask.shape[0], bool)
+    flagged = jnp.sum(~mask & (jnp.arange(mask.shape[-1]) < n_samples), axis=-1)
+    return (jnp.arange(mask.shape[0]) < n_detectors) & (flagged > max_flagged_fraction * n_samples)
 
 
 def _noise_operator(

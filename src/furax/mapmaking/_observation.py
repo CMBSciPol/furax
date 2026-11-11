@@ -14,7 +14,7 @@ import numpy as np
 from astropy.wcs import WCS
 from fastquat import Quaternion
 from jax.tree_util import register_dataclass
-from jaxtyping import Array, Bool, Float, Key, UInt32
+from jaxtyping import Array, Bool, Float, Int, Key, UInt32
 from numpy.typing import NDArray
 from scipy.fft import next_fast_len
 
@@ -574,6 +574,24 @@ class FileBackedLazyObservation[T](AbstractLazyObservation[T]):
 
     def get_data(self, requested_fields: Collection[str] | None = None) -> AbstractObservation[T]:
         return self.interface_class.from_file(self.file, requested_fields)
+
+
+def real_extent(
+    padding: dict[str, Any], shape: tuple[int, ...]
+) -> tuple[Int[Array, ''], Int[Array, '']]:
+    """The detectors and samples of an observation's sample data before its padding.
+
+    A read pads the sample data at the end of its detector and sample axes, to the buffer of the
+    observation's bucket and to whole detector tiles.
+
+    Args:
+        padding: The padding widths read for the observation, one per axis of each field.
+        shape: The shape of its sample data, `(..., dets, samples)`.
+    """
+    # the widths follow the structure of the sample data: an array, or the single leaf of a Stokes
+    # container on a demodulated TOD
+    widths = jax.tree.leaves(padding[ReaderField.SAMPLE_DATA])[0]
+    return shape[-2] - widths[-2], shape[-1] - widths[-1]
 
 
 def _sample_rate(timestamps: Float[Array, ...]) -> Float[Array, '']:

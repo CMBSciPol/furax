@@ -4,7 +4,14 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking import ReaderField
-from furax.mapmaking._model import _noise_model, _noise_operator, _sample_mask, restrict_streams
+from furax.mapmaking._model import (
+    _noise_model,
+    _noise_operator,
+    _over_flagged,
+    _sample_mask,
+    restrict_streams,
+)
+from furax.mapmaking._observation import real_extent
 from furax.mapmaking.config import (
     HealpixConfig,
     LandscapeConfig,
@@ -59,6 +66,28 @@ class TestSampleMask:
         data = {'valid_sample_masks': sample_mask, 'valid_scanning_masks': scanning}
         result = _sample_mask(data, MapMakingConfig())
         assert_array_equal(result, sample_mask.at[:, 1].set(False))
+
+
+@pytest.mark.parametrize(
+    ('max_flagged_fraction', 'expected'),
+    [
+        (None, [False, False, False, False]),
+        (0.5, [False, False, True, False]),
+        (1.0, [False, False, False, False]),
+    ],
+)
+def test_over_flagged(max_flagged_fraction, expected):
+    """A detector is dropped above the threshold, not at it; the padding does not count.
+
+    The last detector pads the observation: none of its samples is good, but it is not dropped.
+    """
+    n_real, n_padding = 8, 4
+    mask = jnp.ones((4, n_real + n_padding), bool).at[:, n_real:].set(False).at[3].set(False)
+    mask = mask.at[1, :4].set(False).at[2, :5].set(False)  # 4/8 and 5/8 flagged
+    padding = {ReaderField.SAMPLE_DATA: jnp.array([1, n_padding])}
+    n_detectors, n_samples = real_extent(padding, mask.shape)
+    dropped = _over_flagged(mask, n_detectors, n_samples, max_flagged_fraction)
+    assert_array_equal(dropped, expected)
 
 
 class TestIdentityNoise:

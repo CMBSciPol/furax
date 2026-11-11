@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LowRankFourierOperator`: a diagonal plus low-rank matrix across channels in each frequency bin, with its inverse from the Woodbury identity (#465)
 - `Stencil.voided`: the stencil reading no pixel for the given samples (#425)
 - Ensemble members can be grouped in segments of varying length through an `owner` index: `StackedEnsemble` leaves of stride `'segment'` hold one entry per segment, and `map_reduce` keeps outputs per segment with `'segment'` and `'segment_sum'` (#445)
+- `GapsConfig.max_flagged_fraction` drops the detectors with more of their samples flagged, counted and marked in the `over_flagged` columns of the observations and detectors tables (#479)
 
 ### Changed
 

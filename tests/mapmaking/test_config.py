@@ -174,6 +174,7 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
             'exactly one',
         ),
         (lambda: NestedConfig(inner_steps=-1), 'inner_steps'),
+        (lambda: GapsConfig(max_flagged_fraction=0.0), 'max_flagged_fraction'),
     ],
     ids=[
         'max_buckets',
@@ -189,6 +190,7 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
         'azimuth-no-alternative',
         'azimuth-two-alternatives',
         'inner_steps',
+        'max_flagged_fraction',
     ],
 )
 def test_rejects_out_of_range_values(make, match):

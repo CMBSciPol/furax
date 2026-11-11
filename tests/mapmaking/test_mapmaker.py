@@ -33,6 +33,7 @@ from furax.obs.landscapes import ProjectionType
 from furax.obs.stokes import ValidStokesLiteral
 from tests.mapmaking.helpers import (
     FailingLazyObservation,
+    FakeLazyGroundObservation,
     FakeLazyObservation,
     GappyLazyGroundObservation,
     ProbeFailingLazyObservation,
@@ -449,6 +450,21 @@ class TestGapTreatmentMapMaker:
         assert bool(jnp.all(jnp.isfinite(results.icov)))
         assert jnp.all(results.hit_map >= 0)
         assert results.solver_stats is not None
+
+    def test_detectors_flagged_above_the_threshold_are_dropped(self):
+        """An observation whose detectors are all flagged above the threshold contributes nothing."""
+        config = self._config(GapTreatment.NESTED)
+        config.gaps.max_flagged_fraction = 0.1  # the gappy observation flags 15% of its samples
+        mixed = [GappyLazyGroundObservation(seed=0), FakeLazyGroundObservation(seed=1)]
+        results = MultiObservationMapMaker(mixed, config=config).make_maps()
+        assert results.observations is not None and results.detectors is not None
+        n_gappy = results.observations['n_detectors'][0]
+        assert results.observations['over_flagged'].to_list() == [n_gappy, 0]
+        assert results.detectors['over_flagged'].sum() == n_gappy
+
+        expected = MultiObservationMapMaker([mixed[1]], config=config).make_maps()
+        assert eqx.tree_equal(results.hit_map, expected.hit_map)
+        assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
 
     def test_gap_fill_skips_failed_observation(self):
         """The ``real & valid`` gate: a failed load is read as filler and never gap-filled."""

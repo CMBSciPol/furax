@@ -63,18 +63,29 @@ class ObservationCatalog:
             if not isinstance(self.reads.get(i), ObservationRecord)
         ]
 
-    def to_table(self, drops: dict[str, Bool[np.ndarray, 'obs det']] | None = None) -> pl.DataFrame:
+    def to_table(
+        self,
+        drops: dict[str, Bool[np.ndarray, 'obs det']] | None = None,
+        statistics: dict[str, np.ndarray] | None = None,
+    ) -> pl.DataFrame:
         """The catalog as `MapMakingResults.observations` holds it.
 
         Args:
             drops: Per detector of each observation, whether it was dropped, by reason: `dropped`
                 for its flags, `over_gap_budget` for its gaps.
+            statistics: The residual `chi2` and number of `good` samples of each detector,
+                `(obs, stream, det)`, whose ratio over the observation is its `chi2` column.
         """
         rows = [self._row(i) for i in range(len(self.names))]
         columns = {'dropped': 'dropped_detectors', 'over_gap_budget': 'over_gap_budget'}
         for reason, flags in (drops or {}).items():
             for row, count in zip(rows, flags.sum(axis=-1), strict=True):
                 row[columns[reason]] = int(count) if row['loaded'] else 0
+        if statistics is not None and 'chi2' in statistics:
+            chi2 = statistics['chi2'].sum(axis=(1, 2))
+            good = statistics['good'].sum(axis=(1, 2))
+            for row, c, g in zip(rows, chi2, good, strict=True):
+                row['chi2'] = float(c / g) if row['loaded'] and g > 0 else None
         return pl.DataFrame(rows, schema=_OBSERVATIONS_SCHEMA, orient='row')
 
     def _row(self, i: int) -> dict[str, Any]:
@@ -92,6 +103,7 @@ class ObservationCatalog:
             'valid_sample_fraction': None,
             'load_seconds': None,
             'error': None,
+            'chi2': None,
         }
         if isinstance(probe, ObservationProbe):
             shape = probe.shape
@@ -126,6 +138,7 @@ def detector_table(
     noise: dict[str, np.ndarray] | None = None,
     stokes: str | None = None,
     drops: dict[str, Bool[np.ndarray, 'obs det']] | None = None,
+    statistics: dict[str, np.ndarray] | None = None,
 ) -> pl.DataFrame:
     """One row per detector read, in observation then detector order.
 
@@ -140,6 +153,8 @@ def detector_table(
             otherwise.
         drops: Per detector of each observation, whether it was dropped, by reason: `dropped`
             for its flags, `over_gap_budget` for its gaps.
+        statistics: The residual statistics of each detector, `(n_observations, stream,
+            detector)`, suffixed by the stream as the noise parameters.
     """
     records = [
         (i, r)
@@ -159,7 +174,9 @@ def detector_table(
         columns[axis] = pl.Series(axis, values).fill_nan(None)  # null where not read
     for reason, flags in (drops or {}).items():
         columns[reason] = flags[observation, detector]
-    for name, values in (noise or {}).items():
+    for name, values in {**(noise or {}), **(statistics or {})}.items():
+        if values.ndim == 3 and stokes is None:  # the single stream of a plain TOD
+            values = values[:, 0]
         if values.ndim == 2:
             columns[name] = values[observation, detector]
             continue

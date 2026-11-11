@@ -23,6 +23,7 @@ from furax.profiling import format_bytes
 from ._accumulated import AccumulatedModel
 from ._bucket import BucketModel, Tile
 from ._catalog import ObservationCatalog, Read, detector_table, gather_rows
+from ._diagnostics import tile_statistics
 from ._gaps import GapSplines, gap_budget, knot_spacing
 from ._injection import inject, load_sky, unpadded
 from ._landscape import build_landscape
@@ -41,7 +42,14 @@ from ._observation import (
 )
 from ._provenance import provenance
 from ._reader import ObservationReader, TileReader, detector_tile_structure
-from .config import GapTreatment, InjectionMode, MapMakingConfig, NoiseSource, WeightingMode
+from .config import (
+    DiagnosticsConfig,
+    GapTreatment,
+    InjectionMode,
+    MapMakingConfig,
+    NoiseSource,
+    WeightingMode,
+)
 from .gap_filling import gap_fill
 from .layout import TileBucket, TileLayout, TilePlacement
 from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
@@ -453,12 +461,27 @@ class MultiObservationMapMaker[T]:
                 None if checkpoint_dir is None else Path(checkpoint_dir),
                 resume,
             )
-            sky, amplitudes = solved.x, None
+            sky, amplitudes, blocks = solved.x, None, []
             if system.has_amplitudes:
                 sky, *blocks = solved.x
                 amplitudes = acc.template_amplitudes(
                     blocks, self.placement, self.config.gaps.explicit.save_amplitudes
                 )
+
+            statistics = residual_map = None
+            if (diagnostics := self.config.diagnostics_config) is not None:
+                start = time.perf_counter()
+                statistics, residual_rhs = self._residual_statistics(
+                    acc, S.T(sky), blocks, diagnostics
+                )
+                if residual_rhs is not None:
+                    # binned under the white weight, the system of the block-Jacobi preconditioner
+                    residual_map = S.T((S @ BJ.I @ S.T).reduce()(S(residual_rhs)))
+                message = f'Residual pass in {time.perf_counter() - start:.0f} s'
+                if 'chi2' in statistics:
+                    chi2, good = statistics['chi2'].sum(), statistics['good'].sum()
+                    message += f': chi2/sample={chi2 / max(good, 1):.4f} over {int(good)} samples'
+                logger.info(message)
 
         # Built only now, so that their copies are not held through the solve
         return MapMakingResults(
@@ -469,13 +492,15 @@ class MultiObservationMapMaker[T]:
             landscape=self.landscape,
             template_amplitudes=amplitudes,
             injected_map=None if solved.injected_sky is None else S.T(solved.injected_sky),
-            observations=self._catalog.to_table(drops),
+            residual_map=residual_map,
+            observations=self._catalog.to_table(drops, statistics),
             # the noise model covers the streams of the model's TOD, not all those read
             detectors=detector_table(
                 self._catalog.reads,
                 noise_parameters,
                 acc.buckets[0].tiles.template.model.tod_format.stokes,
                 drops,
+                None if diagnostics is None else _detector_statistics(statistics, diagnostics),
             ),
         )
 
@@ -529,22 +554,8 @@ class MultiObservationMapMaker[T]:
         in step until the device sum at the end. The stacked outputs land sharded over the tiles
         and the segments, which is the layout `BucketModel` holds.
         """
-        reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         bucket = self.layout.buckets[bucket_index]
-        # the reader reads the observations of the bucket in the order of their indices
-        position = {int(o): k for k, o in enumerate(bucket.observations)}
-        tile_counts = [0] * bucket.n_observations
-        for segment, o in enumerate(bucket.segment_observations):
-            if o >= 0:
-                tile_counts[position[int(o)]] = len(bucket.tiles_of(segment))
-        tile_reader = TileReader(reader, bucket.tile_size, tile_counts)
-
-        def read_tile(tile: int) -> tuple[Any, Any, np.ndarray]:
-            if not bucket.valid[tile]:
-                return tile_reader.filler
-            observation = position[int(bucket.segment_observations[bucket.owner[tile]])]
-            return tile_reader.read(observation, int(bucket.tile_starts[tile]))
-
+        tile_reader, read_tile = self._tile_reader(bucket, reader)
         ensemble = HostEnsemble(
             bucket.n_tiles,
             read_tile,
@@ -577,6 +588,119 @@ class MultiObservationMapMaker[T]:
         kernel = self._tile_kernel(self._gap_splines[bucket_index])
         out, resolved = map_reduce(kernel, ensemble, spec, sky)
         return out['hits'], out['map'], self._bucket_model(bucket, out, resolved)
+
+    def _tile_reader(
+        self, bucket: TileBucket, reader: ObservationReader[T]
+    ) -> tuple[TileReader, Callable[[int], tuple[Any, Any, np.ndarray]]]:
+        """A fresh pass of `reader` over the tiles of `bucket`.
+
+        Returns the tile reader, and the read of each tile, filler for the padding tiles.
+        """
+        reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
+        # the reader reads the observations of the bucket in the order of their indices
+        position = {int(o): k for k, o in enumerate(bucket.observations)}
+        tile_counts = [0] * bucket.n_observations
+        for segment, o in enumerate(bucket.segment_observations):
+            if o >= 0:
+                tile_counts[position[int(o)]] = len(bucket.tiles_of(segment))
+        tile_reader = TileReader(reader, bucket.tile_size, tile_counts)
+
+        def read_tile(tile: int) -> tuple[Any, Any, np.ndarray]:
+            if not bucket.valid[tile]:
+                return tile_reader.filler
+            observation = position[int(bucket.segment_observations[bucket.owner[tile]])]
+            return tile_reader.read(observation, int(bucket.tile_starts[tile]))
+
+        return tile_reader, read_tile
+
+    def _residual_statistics(
+        self,
+        acc: AccumulatedModel,
+        sky: StokesType,
+        blocks: list[list[PyTree[Array]]],
+        diagnostics: DiagnosticsConfig,
+    ) -> tuple[dict[str, np.ndarray], StokesType | None]:
+        """One more pass over the data: the residual statistics of every tile, and its binned map.
+
+        Args:
+            acc: The accumulated system.
+            sky: The map solved for, on the whole sky.
+            blocks: The amplitudes solved for, as the system orders them (see
+                [`AccumulatedModel.build_system`][]); empty without.
+            diagnostics: The statistics to compute.
+
+        Returns:
+            The `good` samples of each detector and those of its `chi2` and reduced band `bands`
+            turned on, per observation in observation order, `([band,] obs, stream, det)`,
+            zero-padded; and the residual binned on the whole sky, before its normalization, if
+            turned on.
+        """
+        templates = acc.buckets[0].templates
+        kinds = [] if templates is None else [k for k in FACTORED_KINDS if getattr(templates, k)]
+        if acc.buckets[0].tiles.template.gap_rhs is not None:
+            kinds.append('gaps')
+        solved = dict(zip(kinds, blocks, strict=True))
+        layout = self.placement.layout
+        shared_sky = None
+        if (scanned := self._scanned_sky) is not None:
+            shared_sky = self.placement.broadcast(scanned)
+        solution = self.placement.broadcast(sky)
+        names = ['good', *(n for n in ('chi2', 'bands') if getattr(diagnostics, n))]
+        per_bucket: dict[str, list[np.ndarray]] = {name: [] for name in names}
+        residual_map = self.landscape.zeros() if diagnostics.residual_map else None
+        for b, reader in enumerate(self.readers):
+            bucket = self.layout.buckets[b]
+            tile_reader, read_tile = self._tile_reader(bucket, reader)
+            # an empty tuple for the kinds absent: the strides of the engine count None as a leaf
+            amplitudes = {
+                kind: () if kind not in solved else self.placement.gather(solved[kind][b])
+                for kind in ('explicit', 'gaps', 'common')
+            }
+
+            def read(tile: int, amplitudes=amplitudes, read_tile=read_tile, bucket=bucket) -> Any:
+                segment = bucket.owner[tile]
+
+                def at(index):
+                    return lambda a: a[index]
+
+                return (
+                    read_tile(tile),
+                    jax.tree.map(at(tile), amplitudes['explicit']),
+                    jax.tree.map(at(tile), amplitudes['gaps']),
+                    jax.tree.map(at(segment), amplitudes['common']),
+                )
+
+            structures = tuple(
+                jax.tree.map(lambda a: jax.ShapeDtypeStruct(a.shape[1:], a.dtype), amplitudes[k])
+                for k in ('explicit', 'gaps', 'common')
+            )
+            ensemble = HostEnsemble(
+                bucket.n_tiles,
+                read,
+                (tile_reader.structure, *structures),
+                policy=Policy(axis=self.placement.axis),
+                prefetch=self._prefetches_reads,
+                strides=(tile_reader.strides, *(jax.tree.map(lambda _: 1, s) for s in structures)),
+                owner=bucket.owner,
+                segments=bucket.n_segments,
+            )
+            kernel = self._residual_kernel(self._gap_splines[b])
+            spec: dict[str, Any] = dict.fromkeys(names, 1)
+            if residual_map is not None:
+                spec['map'] = 'sum'
+            out, _ = map_reduce(kernel, ensemble, spec, shared_sky, solution)
+            if residual_map is not None:
+                residual_map = furax.tree.add(residual_map, out['map'])
+            for name, arrays in per_bucket.items():
+                arrays.append(self.placement.gather(out[name]))
+        # each tile is (stream, det), after the band axis, if any
+        statistics = {
+            name: layout.to_observation_order(arrays, detector_axis=3 if name == 'bands' else 2)
+            for name, arrays in per_bucket.items()
+        }
+        if 'bands' in statistics:
+            statistics['bands'] = np.moveaxis(statistics['bands'], 1, 0)
+        return statistics, residual_map
 
     def _bucket_model(
         self, bucket: TileBucket, out: dict[str, Any], resolved: dict[str, Any]
@@ -661,6 +785,23 @@ class MultiObservationMapMaker[T]:
         the tile's detectors; the sky to inject, if any, is a shared input that every member
         receives whole. `gaps` is the spline model of the explicit gaps of the bucket, if any.
         """
+        return self._tile_kernels(gaps)[0]
+
+    def _residual_kernel(
+        self, gaps: GapSplines | None = None
+    ) -> Callable[[tuple[Any, ...], StokesType | None, StokesType], dict[str, Any]]:
+        """The residual statistics of one detector tile (see [`tile_statistics`][]).
+
+        The member is one tile's read, then its own explicit and gap amplitudes and its
+        observation's shared ones, any of them `None`; the sky to inject, if any, and the map
+        solved for, on the whole sky, are shared inputs.
+        """
+        return self._tile_kernels(gaps)[1]
+
+    def _tile_kernels(
+        self, gaps: GapSplines | None
+    ) -> tuple[Callable[..., Any], Callable[..., Any]]:
+        """The kernels of the pass that accumulates the system, and of the residual pass."""
         config = self.fit_config
         noise_sample_rate = None
         if config.weighting.mode == WeightingMode.LOW_RANK:
@@ -671,6 +812,7 @@ class MultiObservationMapMaker[T]:
         sky_landscape = landscape.with_stokes(config.read_stokes)
         replaces = config.injection is not None and config.injection.mode == InjectionMode.REPLACE
         factored = self._factor
+        diagnostics = config.diagnostics_config or DiagnosticsConfig()
 
         def cast(tod):
             # The TOD is read in float32, whatever the pipeline's dtype
@@ -679,15 +821,19 @@ class MultiObservationMapMaker[T]:
         def cast_tod(data):
             return {**data, ReaderField.SAMPLE_DATA: cast(data[ReaderField.SAMPLE_DATA])}
 
-        def kernel(member, sky):
-            # Gap filling needs whole observations, so it only runs with one tile per observation
-            # (see `MapMakingConfig`).
-            data, padding, use = member
+        def prepare(data, padding, sky):
             data = cast_tod(data)
             if sky is not None:  # the samples to inject into, per detector
                 shape = jax.tree.leaves(data[ReaderField.SAMPLE_DATA])[0].shape
                 H = acquisition_operator(data, config, sky_landscape)
                 data = inject(H, sky, data, unpadded(padding, shape), replaces)
+            return data
+
+        def kernel(member, sky):
+            # Gap filling needs whole observations, so it only runs with one tile per observation
+            # (see `MapMakingConfig`).
+            data, padding, use = member
+            data = prepare(data, padding, sky)
             tod = raw = data[ReaderField.SAMPLE_DATA]
             if fill_gaps:
                 # The RHS uses the filled TOD; the models are still built from the raw one.
@@ -722,7 +868,20 @@ class MultiObservationMapMaker[T]:
                 metadata=data[ReaderField.METADATA],
             )
 
-        def accumulate(data, tod, padding, use):
+        def residual_kernel(member, sky, solution):
+            (data, padding, use), *amplitudes = member
+            explicit, gap_amplitudes, common = (
+                None if not jax.tree.leaves(a) else a for a in amplitudes
+            )
+            data = prepare(data, padding, sky)
+            data, tod, obs, built = build(data, data[ReaderField.SAMPLE_DATA], padding, use)
+            return tile_statistics(
+                obs, built, tod, solution, explicit, common, gap_amplitudes, diagnostics
+            )
+
+        def build(data, tod, padding, use):
+            # the tile's data and TOD restricted to the streams of the map, its model, and its
+            # templates, if any
             temperature = None
             if config.read_stokes != landscape.stokes:
                 # The extra streams read, the I one for the T2P template, stay out of the model
@@ -739,6 +898,13 @@ class MultiObservationMapMaker[T]:
                 noise_sample_rate=noise_sample_rate,
                 temperature=temperature,
             )
+            built = None
+            if build_templates:  # templates are rejected with gap filling (see `MapMakingConfig`)
+                built = ObservationTemplates.assemble(data, config, obs, tod, temperature)
+            return data, tod, obs, built
+
+        def accumulate(data, tod, padding, use):
+            data, tod, obs, built = build(data, tod, padding, use)
 
             # Hit map = nearest-neighbour coverage of the sample mask
             hit_pointing = PointingOperator.create(
@@ -752,8 +918,7 @@ class MultiObservationMapMaker[T]:
             masked = masked_tod.data if isinstance(masked_tod, Stokes) else masked_tod
             hits_i = jnp.int64(hit_pointing.T(StokesI(masked)).i)
 
-            if build_templates:  # templates are rejected with gap filling (see `MapMakingConfig`)
-                built = ObservationTemplates.assemble(data, config, obs, tod, temperature)
+            if built is not None:
                 wd = built.weighted_tod
                 rhs_i, implicit = obs.H.T(wd), built.implicit
                 operators, grams = built.operators, built.grams
@@ -796,7 +961,7 @@ class MultiObservationMapMaker[T]:
             usable = diagonal > 0  # the slots past the amplitudes of a detector are unused
             return rhs, jnp.where(usable, 1 / jnp.where(usable, diagonal, 1), 1)
 
-        return kernel
+        return kernel, residual_kernel
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -814,6 +979,24 @@ class MultiObservationMapMaker[T]:
             )
 
         return valid
+
+
+def _detector_statistics(
+    statistics: dict[str, np.ndarray] | None, diagnostics: DiagnosticsConfig
+) -> dict[str, np.ndarray] | None:
+    r"""The reduced $\chi^2$ of each detector, overall and per band, `(obs, stream, det)`."""
+    if statistics is None or len(statistics) == 1:  # the good samples alone
+        return None
+    good = statistics['good']
+    usable = good > 0
+    columns = {}
+    if 'chi2' in statistics:
+        columns['chi2'] = np.where(usable, statistics['chi2'] / np.where(usable, good, 1), np.nan)
+    edges = [0.0, *diagnostics.bands] if 'bands' in statistics else []
+    for k, low in enumerate(edges):
+        high = f'{edges[k + 1]:g}' if k + 1 < len(edges) else 'nyquist'
+        columns[f'chi2_{low:g}_{high}hz'] = np.where(usable, statistics['bands'][k], np.nan)
+    return columns
 
 
 def _excluded_message(failures: list[tuple[str, str]], limit: int = 5) -> str:

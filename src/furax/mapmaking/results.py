@@ -34,7 +34,7 @@ _AMPLITUDES_FILE = 'amplitudes.npz'
 _DETECTORS_FILE = 'detectors.parquet'
 _OBSERVATIONS_FILE = 'observations.csv'
 _SOLVER_STATS_FILE = 'solver_stats.json'
-_MAPS = ('map', 'hit_map', 'icov', 'injected_map')
+_MAPS = ('map', 'hit_map', 'icov', 'injected_map', 'residual_map')
 CONFIG_FILE = 'mapmaking_config.yaml'
 """Name of the file holding the mapmaking configuration of a run."""
 PROVENANCE_FILE = 'provenance.json'
@@ -53,6 +53,7 @@ _OBSERVATIONS_SCHEMA = {
     'valid_sample_fraction': pl.Float64,
     'load_seconds': pl.Float64,
     'error': pl.String,
+    'chi2': pl.Float64,
 }
 
 
@@ -65,6 +66,7 @@ class MapMakingResults:
         map / hit_map / icov     one file each, named after the field
                                  FITS for HEALPix or WCS, .npy otherwise
         injected_map             injected_map, as the map
+        residual_map             residual_map, as the map
         template_amplitudes      amplitudes.npz, one array per template
         observations             observations.csv
         detectors                detectors.parquet
@@ -93,15 +95,19 @@ class MapMakingResults:
     injected_map: StokesType | None = None
     """The map of the simulated sky through the run (`injection.mode=response`)"""
 
+    residual_map: StokesType | None = None
+    """The residual of the solution, binned under the white-noise weight (with `diagnostics`)"""
+
     observations: pl.DataFrame | None = None
     """One row per observation, in the order of the observation axis of the per-observation
     products: `name`, whether it was `loaded`, the `n_detectors` read and those dropped among
     them, the `dropped_detectors` for their flags (see `GapsConfig.max_flagged_fraction`) and those
     `over_gap_budget` for their explicit gaps, the `n_samples` read, the
     `probed_detectors` and `probed_samples` its buffers were sized from (zero if its probe
-    failed), the `valid_sample_fraction` (null if the flags were not read), `load_seconds`, and
-    the `error` that stopped an observation not loaded, its probe or its load (null if there was
-    none)"""
+    failed), the `valid_sample_fraction` (null if the flags were not read), `load_seconds`, the
+    `error` that stopped an observation not loaded, its probe or its load (null if there was
+    none), and the residual `chi2` per good sample of its detectors (null without
+    `diagnostics`)"""
 
     detectors: pl.DataFrame | None = None
     r"""One row per detector read. `observation` and `detector` are its indices along the
@@ -110,7 +116,9 @@ class MapMakingResults:
     `eta` and `gamma` in radians (null if the run did not read them), whether it was `dropped` for
     its flags or `over_gap_budget` for its explicit gaps, and the parameters of its
     noise model (`sigma`, and `alpha`, `fk`, `f0` for a $1/f$ model), suffixed by the stream on a
-    demodulated TOD (`sigma_q`, `sigma_u`)"""
+    demodulated TOD (`sigma_q`, `sigma_u`). With `diagnostics`, the residual `chi2` per good sample,
+    and the same in each frequency band, `chi2_<low>_<high>hz`, normalized by the share of the
+    band in the samples, suffixed the same way"""
 
     @property
     def failed_observations(self) -> list[str] | None:
@@ -132,6 +140,8 @@ class MapMakingResults:
 
         if self.injected_map is not None:
             self._save_array(np.array(self.injected_map.data), 'injected_map', out_dir)
+        if self.residual_map is not None:
+            self._save_array(np.array(self.residual_map.data), 'residual_map', out_dir)
         if self.template_amplitudes:
             entries = {name: np.array(a) for name, a in self.template_amplitudes.items()}
             np.savez(out_dir / _AMPLITUDES_FILE, **entries)  # ty: ignore[invalid-argument-type]
@@ -164,7 +174,8 @@ class MapMakingResults:
             landscape=landscape,
             hit_map=cls._load_hit_map(out_dir, landscape),
             icov=cls._load_icov(out_dir, landscape),
-            injected_map=cls._load_injected_map(out_dir, landscape),
+            injected_map=cls._load_optional_map(out_dir, landscape, 'injected_map'),
+            residual_map=cls._load_optional_map(out_dir, landscape, 'residual_map'),
             solver_stats=cls._load_json(out_dir / _SOLVER_STATS_FILE),
             template_amplitudes=cls._load_amplitudes(out_dir),
             observations=_read_if_present(
@@ -239,9 +250,11 @@ class MapMakingResults:
         return stokes_cls(*[jnp.array(arr[i]) for i in range(ns)])
 
     @staticmethod
-    def _load_injected_map(out_dir: Path, landscape: StokesLandscape) -> StokesType | None:
+    def _load_optional_map(
+        out_dir: Path, landscape: StokesLandscape, name: str
+    ) -> StokesType | None:
         try:
-            return MapMakingResults._load_map(out_dir, landscape, 'injected_map')
+            return MapMakingResults._load_map(out_dir, landscape, name)
         except FileNotFoundError:
             return None
 

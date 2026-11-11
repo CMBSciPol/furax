@@ -10,6 +10,7 @@ from furax.mapmaking.config import (
     AzimuthSynchronousConfig,
     BinsConfig,
     CommonModeConfig,
+    DiagnosticsConfig,
     ExplicitGapsConfig,
     GapsConfig,
     GapTreatment,
@@ -421,3 +422,17 @@ class TestSplineDrift:
         templates = TemplatesConfig(spline_drift=SplineDriftConfig(samples_per_knot={'qu': 500}))
         with pytest.raises(ValueError, match='per stream requires demodulated=True'):
             MapMakingConfig(templates=templates)
+
+
+@pytest.mark.parametrize(
+    ('value', 'expected'),
+    [
+        (True, DiagnosticsConfig()),
+        (False, None),
+        ({'residual_map': False}, DiagnosticsConfig(residual_map=False)),
+        ({'chi2': False, 'bands': [], 'residual_map': False}, None),
+    ],
+)
+def test_diagnostics_load_from_a_bool_or_options(value, expected):
+    config = MapMakingConfig.load_dict({'diagnostics': value})
+    assert config.diagnostics_config == expected

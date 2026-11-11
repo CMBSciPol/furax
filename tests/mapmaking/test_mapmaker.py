@@ -8,6 +8,7 @@ import healpy as hp
 import jax
 import jax.numpy as jnp
 import numpy as np
+import polars as pl
 import pytest
 from numpy.testing import assert_allclose
 
@@ -15,6 +16,7 @@ from furax.core._base import structure_equal
 from furax.mapmaking import AbstractLazyObservation, MapMakingConfig, MultiObservationMapMaker
 from furax.mapmaking._reader import detector_tile_structure
 from furax.mapmaking.config import (
+    DiagnosticsConfig,
     ExplicitGapsConfig,
     GapTreatment,
     HealpixConfig,
@@ -495,6 +497,34 @@ class TestGapTreatmentMapMaker:
         assert maps[1].observations is not None
         assert maps[1].observations['over_gap_budget'].to_list() == [0, 0]
         assert eqx.tree_equal(maps[1].map, maps[0].map, rtol=1e-8, atol=1e-8)
+
+    @pytest.mark.parametrize('treatment', [GapTreatment.INNER_MASK, GapTreatment.EXPLICIT])
+    def test_diagnostics_report_the_residual_chi2(self, treatment):
+        observations = [GapProbingLazyGroundObservation(seed=i) for i in range(2)]
+        if treatment == GapTreatment.EXPLICIT:
+            config = self._explicit_config(probe=True)
+        else:
+            config = self._config(treatment)
+        config.diagnostics = DiagnosticsConfig(bands=(1.0,))
+        results = MultiObservationMapMaker(observations, config=config).make_maps()
+        assert results.observations is not None and results.detectors is not None
+        chi2 = results.observations['chi2'].to_numpy()
+        assert np.all(np.isfinite(chi2)) and np.all(chi2 > 0)
+        kept = results.detectors.filter(~pl.col('dropped') & ~pl.col('over_gap_budget'))
+        for column in ('chi2', 'chi2_0_1hz', 'chi2_1_nyquisthz'):
+            assert kept[column].is_finite().all()
+        assert results.residual_map is not None
+        assert all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(results.residual_map))
+
+    def test_diagnostics_turn_on_and_off_independently(self):
+        observations = [GapProbingLazyGroundObservation(seed=i) for i in range(2)]
+        config = self._config(GapTreatment.INNER_MASK)
+        config.diagnostics = DiagnosticsConfig(chi2=False, bands=(), residual_map=True)
+        results = MultiObservationMapMaker(observations, config=config).make_maps()
+        assert results.residual_map is not None
+        assert results.observations is not None and results.detectors is not None
+        assert results.observations['chi2'].is_null().all()
+        assert not any(c.startswith('chi2') for c in results.detectors.columns)
 
     def test_explicit_gaps_need_the_probed_sample_rate(self):
         class RatelessObservation(GapProbingLazyGroundObservation):

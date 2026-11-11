@@ -23,6 +23,7 @@ __all__ = [
     'NoiseFitConfig',
     'LowRankNoiseFitConfig',
     'SolverConfig',
+    'DiagnosticsConfig',
     'TwoLevelConfig',
     'GapsConfig',
     'GapTreatment',
@@ -147,6 +148,50 @@ class TwoLevelConfig:
     def __post_init__(self) -> None:
         if self.rank < 1:
             raise ValueError(f'rank must be >= 1, got {self.rank}')
+
+
+@dataclass
+class DiagnosticsConfig:
+    r"""Goodness-of-fit statistics of the solution, from one more pass over the data.
+
+    The residual $r = d - J \hat x$ of each detector tile, against every unknown solved for (the
+    map, the template and the gap amplitudes), gives the $\chi^2 = r^\top W' r$ of each detector
+    under the weight of the system, reported per good sample. Under a correct noise model and the
+    exact inverse noise weight it is close to 1; a weight that is not exactly $N^{-1}$ on the good
+    samples (inner masking, a truncated band, coarse gap splines) or a noise model fitted on the
+    same data moves it, so compare detectors and observations rather than read it absolutely.
+
+    `diagnostics: true` turns every diagnostic on; each can be turned off on its own.
+
+    Examples:
+        The $\chi^2$ in bands of a demodulated SAT TOD at 8 Hz, without the residual map
+
+            diagnostics:
+                bands: [0.01, 0.1, 1.0]
+                residual_map: false
+    """
+
+    chi2: bool = True
+    r"""The $\chi^2$ of each detector and observation."""
+
+    bands: tuple[float, ...] = (0.01, 0.1, 1.0)
+    r"""Interior edges, in Hz, of the frequency bands the $\chi^2$ of each detector is split into,
+    each normalized by the share of the band in the samples: the first band starts at 0, the last
+    ends at the Nyquist frequency. Empty for no split."""
+
+    residual_map: bool = True
+    """The residual binned under the white-noise weight, where sky- or ground-fixed signal the
+    model missed shows up."""
+
+    def __post_init__(self) -> None:
+        self.bands = tuple(float(b) for b in self.bands)
+        if list(self.bands) != sorted(set(self.bands)) or any(b <= 0 for b in self.bands):
+            raise ValueError(f"'bands' must be positive and increasing, got {self.bands}")
+
+    @property
+    def enabled(self) -> bool:
+        """Whether any diagnostic is on, which takes the pass over the data."""
+        return self.chi2 or bool(self.bands) or self.residual_map
 
 
 @dataclass
@@ -1230,6 +1275,10 @@ class MapMakingConfig:
     injection: InjectionConfig | None = None
     """A simulated sky to add to the data, or to replace them with. `None` for none."""
 
+    diagnostics: DiagnosticsConfig | bool = False
+    """Goodness-of-fit statistics of the solution, at the cost of one more pass over the data:
+    `true` for all of them, `false` for none (see [`DiagnosticsConfig`][])."""
+
     def __post_init__(self) -> None:
         """Validate cross-field constraints that hold regardless of which mapmaker runs."""
         if self.max_buckets < 1:
@@ -1271,6 +1320,16 @@ class MapMakingConfig:
                 )
         if self.pomme_tau is not None:
             self._check_pomme()
+        if isinstance(self.diagnostics, bool):
+            self.diagnostics = DiagnosticsConfig() if self.diagnostics else False
+        if (
+            self.diagnostics_config is not None
+            and self.gaps.treatment == GapTreatment.FILL
+            and not self.binned
+        ):
+            raise ValueError(
+                'diagnostics need the data of the system: gap filling replaces the flagged ones.'
+            )
         if self.use_templates and not self.binned and self.gaps.treatment == GapTreatment.FILL:
             # gap filling bypasses the template path
             raise ValueError(
@@ -1383,6 +1442,14 @@ class MapMakingConfig:
         """Serialize the config to a YAML string."""
         data = serialize(self)
         return yaml.dump(data, indent=2)
+
+    @property
+    def diagnostics_config(self) -> DiagnosticsConfig | None:
+        """The diagnostics to compute, if any is on."""
+        diagnostics = self.diagnostics
+        if isinstance(diagnostics, DiagnosticsConfig) and diagnostics.enabled:
+            return diagnostics
+        return None
 
     @property
     def binned(self) -> bool:

@@ -13,9 +13,10 @@ def test_observation_catalog_keeps_the_probes_and_replaces_the_reads():
     reads = {0: ObservationRecord('a0', ['d0', 'd1'], n_samples=90, load_seconds=1.5), 2: 'OSError'}
     catalog.reads = reads
     dropped = np.array([[True, True], [False, False], [False, False]])
-    table = catalog.to_table({'over_flagged': dropped})
+    table = catalog.to_table({'over_flagged': dropped, 'over_gap_budget': ~dropped})
     assert table['name'].to_list() == ['a0', 'b', 'c']  # as read, or as given
     assert table['over_flagged'].to_list() == [2, 0, 0]
+    assert table['over_gap_budget'].to_list() == [0, 2, 2]
     assert table['loaded'].to_list() == [True, False, False]
     assert table['n_samples'].to_list() == [90, 0, 0]
     assert table['probed_samples'].to_list() == [100, 0, 50]

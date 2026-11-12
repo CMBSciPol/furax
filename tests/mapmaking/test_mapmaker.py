@@ -9,20 +9,25 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from numpy.testing import assert_allclose
 
 from furax.core._base import structure_equal
 from furax.mapmaking import AbstractLazyObservation, MapMakingConfig, MultiObservationMapMaker
 from furax.mapmaking._reader import detector_tile_structure
 from furax.mapmaking.config import (
+    ExplicitGapsConfig,
     GapTreatment,
     HealpixConfig,
+    HWPSynchronousConfig,
     LandscapeConfig,
+    NestedConfig,
     NoiseFitConfig,
     NoiseSource,
     PointingConfig,
     SkyPatch,
     SolverConfig,
     SotodlibConfig,
+    TemplatesConfig,
     TwoLevelConfig,
     WCSConfig,
     WeightingConfig,
@@ -441,15 +446,45 @@ class TestGapTreatmentMapMaker:
         cfg.gaps.treatment = treatment
         return cfg
 
-    @pytest.mark.parametrize('treatment', [GapTreatment.FILL, GapTreatment.NESTED])
-    def test_ml_mapmaker_with_gaps(self, treatment):
+    def test_ml_mapmaker_with_gap_filling(self):
         """The full solve completes and yields a finite map over gappy observations."""
         observations = [GappyLazyGroundObservation(seed=i) for i in range(2)]
-        results = MultiObservationMapMaker(observations, config=self._config(treatment)).make_maps()
+        config = self._config(GapTreatment.FILL)
+        results = MultiObservationMapMaker(observations, config=config).make_maps()
         assert all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(results.map))
         assert bool(jnp.all(jnp.isfinite(results.icov)))
         assert jnp.all(results.hit_map >= 0)
         assert results.solver_stats is not None
+
+    @pytest.mark.parametrize('case', ['plain', 'templates', 'demodulated'])
+    def test_explicit_gaps_of_one_sample_give_the_nested_map(self, case):
+        """With an amplitude per flagged sample, both treatments give the minimum-variance map.
+
+        With explicit templates, their blocks of the system are masked as the map's; on a
+        demodulated TOD, each stream has gap amplitudes of its own. The 3 detectors of an
+        observation make two tiles of 2, one of them padded.
+        """
+        observations = [GappyLazyGroundObservation(seed=i, n_dets=3) for i in range(2)]
+        maps = []
+        for treatment, tile_size in [(GapTreatment.NESTED, 0), (GapTreatment.EXPLICIT, 2)]:
+            config = self._config(treatment)
+            if case == 'templates':
+                config.templates = TemplatesConfig(
+                    hwp_synchronous=HWPSynchronousConfig(2, explicit=True)
+                )
+            if case == 'demodulated':
+                config.sotodlib = SotodlibConfig(demodulated=True)
+            config.solver = SolverConfig(rtol=1e-10, atol=0, max_steps=200)
+            config.detector_tile_size = tile_size
+            config.gaps.nested = NestedConfig(inner_steps=200)
+            config.gaps.explicit = ExplicitGapsConfig(resolution=1)
+            config.gaps.max_flagged_fraction = 0.5
+            results = MultiObservationMapMaker(observations, config=config).make_maps()
+            assert results.observations is not None
+            assert results.observations['over_gap_budget'].to_list() == [0, 0]
+            maps.append(results.map.data)
+        atol = 1e-8 * float(jnp.abs(maps[0]).max())
+        assert_allclose(maps[1], maps[0], rtol=1e-8, atol=atol)
 
     def test_detectors_flagged_above_the_threshold_are_dropped(self):
         """An observation whose detectors are all flagged above the threshold contributes nothing."""

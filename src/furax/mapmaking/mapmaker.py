@@ -23,6 +23,7 @@ from furax.profiling import format_bytes
 from ._accumulated import AccumulatedModel
 from ._bucket import BucketModel, Tile
 from ._catalog import ObservationCatalog, Read, detector_table, gather_rows
+from ._gaps import gap_budget
 from ._injection import inject, load_sky, unpadded
 from ._landscape import build_landscape
 from ._model import (
@@ -159,6 +160,25 @@ class MultiObservationMapMaker[T]:
             max_buckets=self.config.max_buckets,
             detector_tile_size=self.config.detector_tile_size,
         )
+
+    @cached_property
+    def _gap_budgets(self) -> list[int]:
+        """The number of amplitudes of the explicit gaps of each detector, per bucket; 0 without.
+
+        The budget of a bucket fits every observation in it (see
+        [`gap_budget`][furax.mapmaking._gaps.gap_budget]).
+        """
+        gaps = self.config.gaps
+        if gaps.treatment != GapTreatment.EXPLICIT or self.config.binned:
+            return [0] * len(self.layout.buckets)
+        assert gaps.max_flagged_fraction is not None  # required by GapsConfig
+        return [
+            max(
+                gap_budget(self._probe_shapes[i].sample_count, gaps.max_flagged_fraction)
+                for i in bucket.observations
+            )
+            for bucket in self.layout.buckets
+        ]
 
     @cached_property
     def placement(self) -> TilePlacement:
@@ -320,6 +340,12 @@ class MultiObservationMapMaker[T]:
                     f'{self.config.gaps.max_flagged_fraction:.0%} '
                     f'in {int(drops["over_flagged"].any(axis=-1).sum())} observations'
                 )
+            if n_over := int(drops['over_gap_budget'].sum()):
+                # the budget is meant to fit every detector kept: this one did not
+                logger.warning(
+                    f'Dropped {n_over} detectors needing more gap amplitudes than the budget '
+                    f'in {int(drops["over_gap_budget"].any(axis=-1).sum())} observations'
+                )
             noise_parameters = None
             if self.config.weighting.mode != WeightingMode.IDENTITY:
                 noise_parameters = acc.noise_parameters(self.placement)
@@ -466,8 +492,10 @@ class MultiObservationMapMaker[T]:
             'rhs': {
                 kind: 'segment_sum' if held == 'sum' else 1 for kind, held in FACTORED_KINDS.items()
             },
+            'gaps': 1,
         }
-        out, resolved = map_reduce(self._tile_kernel(), ensemble, spec, sky)
+        kernel = self._tile_kernel(self._gap_budgets[bucket_index])
+        out, resolved = map_reduce(kernel, ensemble, spec, sky)
         return out['hits'], out['map'], self._bucket_model(bucket, out, resolved)
 
     def _bucket_model(
@@ -484,8 +512,10 @@ class MultiObservationMapMaker[T]:
             template_strides = ObservationTemplates.from_inverses(
                 strides['implicit'], strides['operators'], strides['inverses'] | inverse_strides
             )
-        tile = Tile(out['model'], templates, out['rhs']['explicit'])
-        tile_strides = Tile(strides['model'], template_strides, strides['rhs']['explicit'])
+        tile = Tile(out['model'], templates, out['rhs']['explicit'], **out['gaps'])
+        tile_strides = Tile(
+            strides['model'], template_strides, strides['rhs']['explicit'], **strides['gaps']
+        )
         tiles = StackedEnsemble(
             bucket.n_tiles,
             tile,
@@ -543,13 +573,14 @@ class MultiObservationMapMaker[T]:
         return self.placement.local_devices[0].platform != 'cpu'
 
     def _tile_kernel(
-        self,
+        self, gap_budget: int = 0
     ) -> Callable[[tuple[Any, Any, Array], StokesType | None], dict[str, Any]]:
         """Accumulate one detector tile: its hit map, RHS and model.
 
         The member is one tile's read, the triple `(observation, padding, valid)` restricted to
         the tile's detectors; the sky to inject, if any, is a shared input that every member
-        receives whole.
+        receives whole. `gap_budget` is the number of amplitudes of the explicit gaps of each
+        detector of the bucket.
         """
         config = self.fit_config
         landscape = self.landscape
@@ -614,7 +645,7 @@ class MultiObservationMapMaker[T]:
                 temperature = data[ReaderField.SAMPLE_DATA].i
                 data, tod = restrict_streams(data, tod, landscape.stokes)
             # Padding/failed observations contribute nothing
-            obs = ObservationModel.create(data, padding, config, landscape, use)
+            obs = ObservationModel.create(data, padding, config, landscape, use, gap_budget)
 
             # Hit map = nearest-neighbour coverage of the sample mask
             hit_pointing = PointingOperator.create(
@@ -641,6 +672,7 @@ class MultiObservationMapMaker[T]:
             return {
                 'hits': hits_i,
                 'map': rhs_i,
+                'gaps': {} if obs.gaps is None else gap_system(obs, tod),
                 'model': obs,
                 'implicit': implicit,
                 'operators': operators,
@@ -658,6 +690,18 @@ class MultiObservationMapMaker[T]:
                 },
                 # the tile's share of the right-hand side of each kind of amplitudes
                 'rhs': {kind: None if op is None else op.T(wd) for kind, op in operators.items()},
+            }
+
+        def gap_system(obs, tod):
+            # the right-hand side Cᵀ N⁻¹ M d of the gap amplitudes, and the inverse of the diagonal
+            # of their white-noise Gram Cᵀ D C, which preconditions them
+            assert isinstance(obs.W, WeightOperator) and obs.gaps is not None
+            C = obs.gap_basis()
+            diagonal = C.squared().T(obs.diag_W().weight(obs.tod_format.ones()))
+            usable = diagonal > 0  # the slots past the amplitudes of a detector are unused
+            return {
+                'gap_rhs': C.T(obs.W.weight(obs.M(tod))),
+                'gap_preconditioner': jnp.where(usable, 1 / jnp.where(usable, diagonal, 1), 1),
             }
 
         return kernel

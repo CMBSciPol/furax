@@ -1,5 +1,5 @@
 import functools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, NamedTuple, Self
 
 import jax
@@ -19,6 +19,7 @@ from furax.obs import TODFormat
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
+from ._gaps import GapSplineOperator, GapSplines
 from ._observation import ReaderField, _sample_rate, real_extent
 from .acquisition import build_acquisition_operator
 from .config import GapTreatment, MapMakingConfig, NoiseSource, TemplatesConfig, WeightingMode
@@ -28,7 +29,7 @@ from .templates.gram import BlockGram, factor, template_gram
 from .templates.pomme import PommeProjectionOperator
 from .weight import MarginalizedWeightOperator, NestedWeightOperator, WeightOperator
 
-DROP_REASONS = ('over_flagged',)
+DROP_REASONS = ('over_flagged', 'over_gap_budget')
 """Why a detector is dropped: each names the field of [`ObservationModel`][] marking the detectors
 dropped for it, and the columns that report them in `MapMakingResults`."""
 
@@ -61,6 +62,16 @@ class ObservationModel:
     over_flagged: Bool[Array, ' det']
     """Per detector, whether it is dropped for having too many of its samples flagged"""
 
+    over_gap_budget: Bool[Array, ' det']
+    """Per detector, whether it is dropped for needing more gap amplitudes than `gaps` holds"""
+
+    n_samples: Int[Array, '']
+    """The number of samples of the observation, before those padding it to its bucket"""
+
+    gaps: GapSplines | None = field(default=None, metadata={'static': True})
+    """The spline model of the gaps, whose amplitudes are solved for with the map; `None`
+    unless the gaps are explicit"""
+
     @classmethod
     def create(
         cls,
@@ -69,6 +80,7 @@ class ObservationModel:
         config: MapMakingConfig,
         landscape: StokesLandscape,
         use: Bool[Array, ''] | bool = True,
+        gap_budget: int = 0,
     ) -> Self:
         """Build the model of an observation from the fields read for it.
 
@@ -80,6 +92,8 @@ class ObservationModel:
             use: Whether the observation contributes: false for a padding tile or a failed
                 observation, whose samples are then all masked, and none of its detectors
                 reported dropped.
+            gap_budget: The amplitudes of the gaps of each detector, when they are explicit; a
+                detector needing more is dropped.
         """
         H = acquisition_operator(data, config, landscape)
         tod_format = _tod_format(H)
@@ -88,7 +102,15 @@ class ObservationModel:
         # a padding tile or a failed observation has no detectors to drop
         n_detectors = jnp.where(use, n_detectors, 0)
         over_flagged = _over_flagged(mask, n_detectors, n_samples, config.gaps.max_flagged_fraction)
-        M = _mask_projector(mask, ~over_flagged[:, None], tod_format=tod_format)
+        gaps = None
+        over_gap_budget = jnp.zeros_like(over_flagged)
+        if config.gaps.treatment == GapTreatment.EXPLICIT and not config.binned:
+            explicit = config.gaps.explicit
+            gaps = GapSplines(explicit.resolution, gap_budget)
+            kept = mask & ~over_flagged[:, None]
+            over_gap_budget = ~over_flagged & (gaps.counts(kept, n_samples) > gap_budget)
+        valid_detectors = ~(over_flagged | over_gap_budget)[:, None]
+        M = _mask_projector(mask, valid_detectors, tod_format=tod_format)
         noise_model, sample_rate = _noise_model(data, config, tod_format, n_samples)
         Ninv = _noise_operator(
             noise_model,
@@ -106,14 +128,17 @@ class ObservationModel:
             assert isinstance(Ninv, SymmetricBandToeplitzOperator)
             W = NestedWeightOperator.create(Ninv, M, config.gaps.nested, white)
         else:
-            # Plain masked weights, only exact for diagonal W
+            # Plain masked weights, only exact for diagonal W. With explicit gaps, the normal
+            # system takes N⁻¹ unmasked from it, the gap amplitudes standing for the flagged samples
             W = WeightOperator.create(Ninv, M)
         F = (
             PommeProjectionOperator(config.pomme_tau, in_structure=tod_format.structure)
             if config.pomme_tau is not None
             else IdentityOperator(in_structure=tod_format.structure)
         )
-        return cls(H, W, F, noise_model, sample_rate, over_flagged)
+        return cls(
+            H, W, F, noise_model, sample_rate, over_flagged, over_gap_budget, n_samples, gaps
+        )
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
@@ -150,6 +175,11 @@ class ObservationModel:
     @property
     def M(self) -> MaskOperator:
         return self.W.mask
+
+    def gap_basis(self) -> GapSplineOperator:
+        """The basis $C$ of the explicit gaps, from the mask."""
+        assert self.gaps is not None
+        return self.gaps.basis(self.M, self.n_samples)
 
     @property
     def rhs_operator(self) -> AbstractLinearOperator:

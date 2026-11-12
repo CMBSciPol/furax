@@ -88,14 +88,7 @@ class AccumulatedModel:
         # Restrict BJ preconditioner to selected pixels
         M = (S @ BJ.I @ S.T).reduce()
 
-        # Explicit templates are configured for the run, so every bucket carries them or none.
-        templates = self.buckets[0].templates
-        kinds = []
-        if templates is not None:
-            kinds = [kind for kind in FACTORED_KINDS if getattr(templates, kind) is not None]
-        if self._has_gaps:
-            kinds.append(_GAPS)
-
+        kinds = self.amplitude_kinds
         if not kinds:
             terms = [
                 BucketNormalOperator(bm, S, in_structure=S.out_structure) for bm in self.buckets
@@ -104,7 +97,11 @@ class AccumulatedModel:
             response = None
             if sky is not None:
                 response = reduce(furax.tree.add, [op.response(sky) for op in terms])
-            return MapMakingSystem(A, S(self.map_rhs), M, has_amplitudes=False, injected_b=response)
+            rhs = S(self.map_rhs)
+            for op, bm in zip(terms, self.buckets, strict=True):
+                if bm.modes_data is not None:
+                    rhs = furax.tree.sub(rhs, op.correction(bm.modes_data))
+            return MapMakingSystem(A, rhs, M, has_amplitudes=False, injected_b=response)
 
         # The unknowns are the selected sky pixels, then, per kind of amplitudes present, one block
         # per bucket: those of each detector tile alone, `(tile, ...)`, and those the detectors of
@@ -116,7 +113,7 @@ class AccumulatedModel:
 
         # Joint system. Each bucket's system sees the selected pixels and its own amplitudes,
         # picked out of the lists and embedded back by `E`.
-        terms, responses = [], []
+        terms, responses, corrections = [], [], []
         for b, bm in enumerate(self.buckets):
             in_structure = [S.out_structure, *(structures[kind][b] for kind in kinds)]
             normal = BucketNormalOperator(bm, S, in_structure=in_structure)
@@ -125,6 +122,8 @@ class AccumulatedModel:
             terms.append((E.T @ normal @ E).reduce())
             if sky is not None:
                 responses.append(E.T(normal.response(sky)))
+            if bm.modes_data is not None:
+                corrections.append(E.T(normal.correction(bm.modes_data)))
 
         # The Gram inverses of the amplitudes of each detector tile alone are per tile, those of
         # the common amplitudes per observation.
@@ -169,6 +168,8 @@ class AccumulatedModel:
                 for kind in kinds
             ),
         ]
+        for correction in corrections:
+            rhs = furax.tree.sub(rhs, correction)
         M = BlockDiagonalOperator([M, *(inverses[kind] for kind in kinds)])
         A = AdditionOperator(terms, sequential=True)
         response = None
@@ -215,6 +216,18 @@ class AccumulatedModel:
                 *[placement.gather(a) for a in common],
             )
         return amplitudes
+
+    @property
+    def amplitude_kinds(self) -> list[str]:
+        """The kinds of amplitudes among the unknowns, in their order after the map."""
+        # Explicit templates are configured for the run, so every bucket carries them or none.
+        templates = self.buckets[0].templates
+        kinds = []
+        if templates is not None:
+            kinds = [kind for kind in FACTORED_KINDS if getattr(templates, kind) is not None]
+        if self._has_gaps:
+            kinds.append(_GAPS)
+        return kinds
 
     @property
     def _has_gaps(self) -> bool:

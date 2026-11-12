@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from furax.mapmaking.config import LowRankNoiseFitConfig
-from furax.mapmaking.lowrank import fit_low_rank_noise
+from furax.mapmaking.lowrank import LowRankNoiseModel, fit_low_rank_noise
 
 SAMPLE_RATE = 8.0
 N_CHANNELS = 24
@@ -96,3 +96,71 @@ def test_white_model_is_the_zero_lag_of_the_weight():
 def test_invalid_config(config):
     with pytest.raises(ValueError):
         fit_low_rank_noise(jnp.zeros((4, 4096)), SAMPLE_RATE, config=config)
+
+
+def _toy_model(n_channels: int = 3, coupled: int = 2) -> LowRankNoiseModel:
+    """Three bins, the first `coupled` ones coupled by complex modes, one of them padded."""
+    rng = np.random.default_rng(0)
+    modes = rng.standard_normal((coupled, n_channels, 2)) + 1j * rng.standard_normal(
+        (coupled, n_channels, 2)
+    )
+    modes[1, :, 1] = 0
+    core = np.array([[[2.0, 0.5], [0.5, 1.0]], [[1.5, 0.0], [0.0, 0.0]], [[1.0, 0.2], [0.2, 0.5]]])
+    diagonal = 1 + rng.random((3, n_channels))
+    return LowRankNoiseModel(
+        jnp.asarray(diagonal),
+        jnp.asarray(modes),
+        jnp.asarray(core[:coupled]),
+        edges=(1.0, 2.0),
+        sample_rate=8.0,
+        lead=(n_channels,),
+    )
+
+
+def _dense(model: LowRankNoiseModel, n_samples: int) -> tuple[np.ndarray, np.ndarray]:
+    """T and D⁻¹ as dense matrices, on TODs of `n_samples`."""
+    structure = jax.ShapeDtypeStruct((model.diagonal.shape[1], n_samples), jnp.float64)
+    T = np.asarray(model.modes_operator(structure).as_matrix())
+    D_inv = np.asarray(model.diagonal_inverse_operator(structure).as_matrix())
+    return T, D_inv
+
+
+@pytest.mark.parametrize('coupled', [2, 3])
+@pytest.mark.parametrize('n_samples', [32, 33])
+def test_modes_core_is_the_inverse_of_the_gram_of_the_modes(coupled, n_samples):
+    """K = (1 + Tᵀ D⁻¹ T)⁻¹, zero and Nyquist frequencies included."""
+    model = _toy_model(coupled=coupled)
+    T, D_inv = _dense(model, n_samples)
+    expected = np.linalg.inv(np.eye(T.shape[1]) + T.T @ D_inv @ T)
+    core = model.modes_core(n_samples)
+    structure = jax.ShapeDtypeStruct(
+        model.modes_operator(jax.ShapeDtypeStruct((3, n_samples), jnp.float64)).in_structure.shape,
+        jnp.float64,
+    )
+    basis = np.eye(T.shape[1]).reshape(T.shape[1], *structure.shape)
+    actual = np.stack(
+        [
+            np.asarray(
+                core.apply(jnp.asarray(e), model.edges, model.sample_rate, n_samples)
+            ).ravel()
+            for e in basis
+        ],
+        axis=1,
+    )
+    np.testing.assert_allclose(actual, expected, atol=1e-12)
+
+
+@pytest.mark.parametrize('coupled', [2, 3])
+@pytest.mark.parametrize('n_samples', [32, 33])
+def test_marginalized_modes_give_the_low_rank_weight(coupled, n_samples):
+    """D⁻¹ - D⁻¹ T K Tᵀ D⁻¹ = N⁻¹: the modes with their prior are the Woodbury term."""
+    model = _toy_model(coupled=coupled)
+    T, D_inv = _dense(model, n_samples)
+    structure = jax.ShapeDtypeStruct((3, n_samples), jnp.float64)
+    expected = np.asarray(model.inverse_operator(structure).as_matrix())
+    weight = D_inv - D_inv @ T @ np.linalg.solve(np.eye(T.shape[1]) + T.T @ D_inv @ T, T.T @ D_inv)
+    # the complex modes of the Woodbury inverse are exact off the zero and Nyquist frequencies only
+    covariance = np.asarray(model.operator(structure).as_matrix())
+    np.testing.assert_allclose(np.linalg.inv(weight), covariance, atol=1e-10)
+    if np.isrealobj(np.asarray(model.modes)):
+        np.testing.assert_allclose(weight, expected, atol=1e-12)

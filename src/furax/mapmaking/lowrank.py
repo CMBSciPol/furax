@@ -10,12 +10,16 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Bool, Float, Inexact, PyTree
 
+from furax import AbstractLinearOperator
 from furax.core import LowRankFourierOperator
+from furax.tree import unravel
 
 from .config import LowRankNoiseFitConfig
 from .noise import NoiseModel, WhiteNoiseModel
 
 __all__ = [
+    'ModesCore',
+    'LowRankModesOperator',
     'LowRankNoiseModel',
     'fit_low_rank_noise',
 ]
@@ -98,6 +102,53 @@ class LowRankNoiseModel(NoiseModel):
         """The weight $N^{-1}$, as an operator on TODs of structure `in_structure`."""
         return self.operator(in_structure).inverse()
 
+    def diagonal_inverse_operator(
+        self, in_structure: PyTree[jax.ShapeDtypeStruct]
+    ) -> LowRankFourierOperator:
+        """The weight $D^{-1}$ of the diagonal alone, which couples no channels."""
+        n_coupled, n_channels = self.modes.shape[:2]
+        return LowRankFourierOperator(
+            1 / self.diagonal,
+            jnp.zeros((n_coupled, n_channels, 1), self.diagonal.dtype),  # an inert mode
+            jnp.zeros((n_coupled, 1, 1), self.diagonal.dtype),
+            edges=self.edges,
+            sample_rate=self.sample_rate,
+            in_structure=in_structure,
+        )
+
+    def modes_operator(self, in_structure: PyTree[jax.ShapeDtypeStruct]) -> 'LowRankModesOperator':
+        """The correlated modes $T$, onto TODs of structure `in_structure`.
+
+        See [`LowRankModesOperator`][].
+        """
+        return LowRankModesOperator.create(self, in_structure)
+
+    def modes_core(self, n_samples: int) -> 'ModesCore':
+        r"""$K = (1 + T^\top D^{-1} T)^{-1}$ on the amplitudes of the modes of a TOD of `n_samples`.
+
+        With it, $N^{-1} = D^{-1} - D^{-1} T K T^\top D^{-1}$ (see [`LowRankModesOperator`][]). It is
+        a $k \times k$ matrix per coupled bin, the same at each of its frequencies, but at the zero
+        and Nyquist frequencies, where only the real parts of the coefficients enter.
+        """
+        factors = _mode_factors(self.modes, self.core)
+        n_coupled = factors.shape[0]
+        inverse_diagonal = 1 / self.diagonal[:n_coupled]
+        gram = jnp.conj(factors).mT @ (inverse_diagonal[..., None] * factors)
+        generic = jnp.linalg.inv(jnp.eye(gram.shape[-1], dtype=gram.dtype) + gram)
+
+        def real(b: int) -> Array:
+            # the real parts of the coefficients, from the real and imaginary parts of the amplitudes
+            basis = jnp.concatenate([factors[b].real, -factors[b].imag], axis=-1)
+            gram = basis.T @ (inverse_diagonal[b][:, None] * basis)
+            inverse = jnp.linalg.inv(jnp.eye(gram.shape[-1], dtype=gram.dtype) + gram)
+            return (inverse + inverse.T) / 2
+
+        bounds = _bin_bounds(self.edges, self.sample_rate, n_samples)
+        nyquist = None
+        if n_samples % 2 == 0 and bounds[n_coupled] == n_samples // 2 + 1:
+            nyquist = real(n_coupled - 1)
+        return ModesCore((generic + jnp.conj(generic).mT) / 2, real(0), nyquist)
+
     def detector_parameters(self) -> WhiteNoiseModel:
         """The white noise level of each detector: the correlated modes have no per-detector form."""
         return self.to_white_noise_model()
@@ -116,6 +167,133 @@ class LowRankNoiseModel(NoiseModel):
         fractions = jnp.asarray(np.diff(bounds) / (self.sample_rate / 2), diagonal.dtype)
         inverse_variance = fractions @ diagonal
         return WhiteNoiseModel(sigma=(1 / jnp.sqrt(inverse_variance)).reshape(self.lead))
+
+
+class LowRankModesOperator(AbstractLinearOperator):
+    r"""The correlated modes of a low-rank noise model, from amplitudes of unit variance to a TOD.
+
+    In each coupled bin $b$, with $G_b = L_b L_b^\dagger$ and $A_b = V_b L_b$, the amplitudes
+    $\zeta_f$ of each frequency $f$ of the bin, complex, make the Fourier coefficients
+    $\sqrt{n / w_f} \, A_b \zeta_f$ of the TOD of $n$ samples, $w_f$ being 1 at the zero and
+    Nyquist frequencies and 2 elsewhere. With standard normal real and imaginary parts, the TOD has
+    the covariance $V_b G_b V_b^\dagger$ of the modes, as
+    [`LowRankFourierOperator`][furax.core.LowRankFourierOperator] defines it: weighting by the
+    diagonal $D^{-1}$ and solving for the amplitudes under their prior marginalizes them into the
+    weight $N^{-1} = (D + V G V^\dagger)^{-1}$.
+
+    The amplitudes are `(frequency, mode, 2)`, the real and imaginary parts last, over the
+    frequencies of the coupled bins.
+    """
+
+    factors: Inexact[Array, 'coupled channel mode']
+    """$A_b$ of each coupled bin."""
+    edges: tuple[float, ...] = field(metadata={'static': True})
+    sample_rate: float = field(metadata={'static': True})
+    tod_treedef: Any = field(metadata={'static': True})
+    """The pytree structure of the TOD."""
+    tod_leaves: tuple[jax.ShapeDtypeStruct, ...] = field(metadata={'static': True})
+    """The structure of each leaf of the TOD, its channels first and its samples last."""
+
+    @classmethod
+    def create(
+        cls, model: LowRankNoiseModel, tod_structure: PyTree[jax.ShapeDtypeStruct]
+    ) -> 'LowRankModesOperator':
+        """The modes of `model`, onto TODs of structure `tod_structure`."""
+        leaves, treedef = jax.tree.flatten(tod_structure)
+        factors = _mode_factors(model.modes, model.core)
+        n_samples = leaves[0].shape[-1]
+        bounds = _bin_bounds(model.edges, model.sample_rate, n_samples)
+        n_low = bounds[factors.shape[0]]
+        dtype = jnp.promote_types(leaves[0].dtype, jnp.float32)
+        structure = jax.ShapeDtypeStruct((n_low, factors.shape[-1], 2), dtype)
+        return cls(
+            factors,
+            model.edges,
+            model.sample_rate,
+            treedef,
+            tuple(leaves),
+            in_structure=structure,
+        )
+
+    def mv(self, x: Float[Array, 'frequency mode 2']) -> PyTree[Array]:
+        n = self.tod_leaves[0].shape[-1]
+        bounds = _bin_bounds(self.edges, self.sample_rate, n)
+        zeta = x[..., 0] + 1j * x[..., 1]
+        pieces = [
+            self.factors[b].astype(zeta.dtype) @ zeta[start:stop].T
+            for b, (start, stop) in enumerate(itertools.pairwise(bounds[: len(self.factors) + 1]))
+        ]
+        coefficients = jnp.concatenate(pieces, axis=-1) * _amplitude_scale(n, zeta.shape[0])
+        coefficients = jnp.pad(coefficients, [(0, 0), (0, n // 2 + 1 - zeta.shape[0])])
+        channels = jnp.fft.irfft(coefficients, n=n).astype(self.tod_leaves[0].dtype)
+        structure = jax.tree.unflatten(self.tod_treedef, list(self.tod_leaves))
+        return unravel(structure, channels, trailing_ndim=1)
+
+
+@jax.tree_util.register_dataclass
+@dataclass
+class ModesCore:
+    """$K$ of [`LowRankNoiseModel.modes_core`][], on the amplitudes of the modes of a TOD."""
+
+    generic: Inexact[Array, 'coupled mode mode']
+    """The complex $k \times k$ matrix of each coupled bin."""
+    zero: Float[Array, 'amplitude amplitude']
+    """The real $2k \times 2k$ matrix of the zero frequency, on its real then imaginary parts."""
+    nyquist: Float[Array, 'amplitude amplitude'] | None
+    """That of the Nyquist frequency, when it is coupled."""
+
+    def apply(
+        self,
+        x: Float[Array, 'frequency mode 2'],
+        edges: tuple[float, ...],
+        sample_rate: float,
+        n_samples: int,
+    ) -> Float[Array, 'frequency mode 2']:
+        """$K x$, on the amplitudes `x` of the modes of a TOD of `n_samples`."""
+        bounds = _bin_bounds(edges, sample_rate, n_samples)
+        zeta = x[..., 0] + 1j * x[..., 1]
+        pieces = [
+            zeta[start:stop] @ self.generic[b].astype(zeta.dtype).T
+            for b, (start, stop) in enumerate(itertools.pairwise(bounds[: len(self.generic) + 1]))
+        ]
+        out = jnp.concatenate(pieces)
+        out = jnp.stack([out.real, out.imag], axis=-1).astype(x.dtype)
+        out = out.at[0].set(_apply_real(self.zero, x[0]))
+        if self.nyquist is not None:
+            out = out.at[-1].set(_apply_real(self.nyquist, x[-1]))
+        return out
+
+
+def _apply_real(matrix: Float[Array, 'a a'], x: Float[Array, 'mode 2']) -> Float[Array, 'mode 2']:
+    """A real matrix on the real then imaginary parts of the amplitudes of one frequency."""
+    return (matrix @ x.T.reshape(-1)).reshape(2, -1).T
+
+
+def _amplitude_scale(n: int, n_frequencies: int) -> Array:
+    r"""$\sqrt{n / w_f}$ over the first frequencies of `n` samples."""
+    weights = np.full(n_frequencies, 2.0)
+    weights[0] = 1.0
+    if n % 2 == 0 and n_frequencies == n // 2 + 1:
+        weights[-1] = 1.0
+    return jnp.asarray(np.sqrt(n / weights))
+
+
+def _mode_factors(
+    modes: Inexact[Array, 'coupled channel mode'], core: Inexact[Array, 'coupled mode mode']
+) -> Inexact[Array, 'coupled channel mode']:
+    r"""$A_b = V_b L_b$, with $G_b = L_b L_b^\dagger$ from its eigendecomposition."""
+    eigenvalues, vectors = jnp.linalg.eigh(core)
+    return modes @ (vectors * jnp.sqrt(jnp.clip(eigenvalues, 0))[..., None, :])
+
+
+def _bin_bounds(edges: tuple[float, ...], sample_rate: float, n_samples: int) -> list[int]:
+    """The first rfft frequency of each bin of `n_samples`, then the number of frequencies.
+
+    The bins are placed as [`LowRankFourierOperator`][furax.core.LowRankFourierOperator] does.
+    """
+    n_frequencies = n_samples // 2 + 1
+    inner = [int(np.ceil(edge * n_samples / sample_rate)) for edge in edges]
+    return [0, *(min(max(i, 0), n_frequencies) for i in inner), n_frequencies]
 
 
 def fit_low_rank_noise(

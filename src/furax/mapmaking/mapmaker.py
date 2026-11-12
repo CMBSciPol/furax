@@ -22,9 +22,9 @@ from furax.obs.stokes import Stokes, StokesI, StokesType
 from furax.profiling import format_bytes
 
 from ._accumulated import AccumulatedModel
-from ._bucket import BucketModel, Tile
+from ._bucket import BucketModel, Tile, bucket_apply
 from ._catalog import ObservationCatalog, Read, detector_table, gather_rows
-from ._diagnostics import tile_statistics
+from ._diagnostics import modes_correction, tile_statistics
 from ._gaps import GapSplines, gap_budget, knot_spacing
 from ._injection import inject, load_sky, unpadded
 from ._landscape import build_landscape
@@ -53,6 +53,7 @@ from .config import (
 )
 from .gap_filling import gap_fill
 from .layout import TileBucket, TileLayout, TilePlacement
+from .lowrank import LowRankNoiseModel
 from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
 from .templates.gram import factor
 from .weight import WeightOperator
@@ -611,6 +612,9 @@ class MultiObservationMapMaker[T]:
             },
         }
         spec['gaps'] = 1
+        # Tᵀ D⁻¹ P of the data under a low-rank noise model, summed over the tiles of each
+        # observation, and K of the observation, from its noise model
+        spec['modes'] = ('segment_sum', 'segment')
         kernel = self._tile_kernel(self._gap_splines[bucket_index])
         out, resolved = map_reduce(kernel, ensemble, spec, sky)
         return out['hits'], out['map'], self._bucket_model(bucket, out, resolved)
@@ -646,7 +650,7 @@ class MultiObservationMapMaker[T]:
         blocks: list[list[PyTree[Array]]],
         diagnostics: DiagnosticsConfig,
     ) -> tuple[dict[str, np.ndarray], StokesType | None]:
-        """One more pass over the data: the residual statistics of every tile, and its binned map.
+        r"""One more pass over the data: the residual statistics of every tile, and its binned map.
 
         Args:
             acc: The accumulated system.
@@ -656,22 +660,22 @@ class MultiObservationMapMaker[T]:
             diagnostics: The statistics to compute.
 
         Returns:
-            The `good` samples of each detector and those of its `chi2` and reduced band `bands`
-            turned on, per observation in observation order, `([band,] obs, stream, det)`,
-            zero-padded; and the residual binned on the whole sky, before its normalization, if
-            turned on.
+            The `good` samples of each detector and those of its `chi2` and band `bands`, with their
+            expected `band_samples`, turned on, per observation in observation order, `([band,]
+            obs, stream, det)`, zero-padded; and the residual binned on the whole sky, before its
+            normalization, if turned on. Under a low-rank noise model, the correlated modes are
+            marginalized from the $\chi^2$ once the tiles of each observation are summed.
         """
-        templates = acc.buckets[0].templates
-        kinds = [] if templates is None else [k for k in FACTORED_KINDS if getattr(templates, k)]
-        if acc.buckets[0].tiles.template.gap_rhs is not None:
-            kinds.append('gaps')
-        solved = dict(zip(kinds, blocks, strict=True))
+        solved = dict(zip(acc.amplitude_kinds, blocks, strict=True))
         layout = self.placement.layout
         shared_sky = None
         if (scanned := self._scanned_sky) is not None:
             shared_sky = self.placement.broadcast(scanned)
         solution = self.placement.broadcast(sky)
         names = ['good', *(n for n in ('chi2', 'bands') if getattr(diagnostics, n))]
+        if diagnostics.bands:
+            names.append('band_samples')
+        statistics_on = diagnostics.chi2 or bool(diagnostics.bands)
         per_bucket: dict[str, list[np.ndarray]] = {name: [] for name in names}
         residual_map = self.landscape.zeros() if diagnostics.residual_map else None
         for b, reader in enumerate(self.readers):
@@ -711,22 +715,53 @@ class MultiObservationMapMaker[T]:
                 segments=bucket.n_segments,
             )
             kernel = self._residual_kernel(self._gap_splines[b])
+            bm = acc.buckets[b]
+            modes = statistics_on and bm.modes_core is not None
             spec: dict[str, Any] = dict.fromkeys(names, 1)
             if residual_map is not None:
                 spec['map'] = 'sum'
+            if modes:
+                spec |= {'modes': 'segment_sum', 'low': 1}
             out, _ = map_reduce(kernel, ensemble, spec, shared_sky, solution)
             if residual_map is not None:
                 residual_map = furax.tree.add(residual_map, out['map'])
+            if modes:
+                out = self._marginalize_modes(bm, out, diagnostics)
             for name, arrays in per_bucket.items():
                 arrays.append(self.placement.gather(out[name]))
         # each tile is (stream, det), after the band axis, if any
         statistics = {
-            name: layout.to_observation_order(arrays, detector_axis=3 if name == 'bands' else 2)
+            name: layout.to_observation_order(
+                arrays, detector_axis=3 if name in ('bands', 'band_samples') else 2
+            )
             for name, arrays in per_bucket.items()
         }
-        if 'bands' in statistics:
-            statistics['bands'] = np.moveaxis(statistics['bands'], 1, 0)
+        for name in ('bands', 'band_samples'):
+            if name in statistics:
+                statistics[name] = np.moveaxis(statistics[name], 1, 0)
         return statistics, residual_map
+
+    def _marginalize_modes(
+        self, bm: BucketModel, out: dict[str, Any], diagnostics: DiagnosticsConfig
+    ) -> dict[str, Any]:
+        """The statistics of a bucket under a low-rank noise model, its modes marginalized.
+
+        `out` holds those under the diagonal weight, and the sums and low-frequency coefficients
+        of the residual that give their correction (see [`modes_correction`][]).
+        """
+        template = bm.tiles.template.model
+        noise = template.noise_model
+        assert isinstance(noise, LowRankNoiseModel) and bm.modes_core is not None
+        n_samples = template.tod_format.n_samples
+        z = jax.vmap(lambda core, u: core.apply(u, noise.edges, noise.sample_rate, n_samples))(
+            bm.modes_core, out['modes']
+        )
+
+        def apply(tile, _whole, low, z_o):
+            return None, modes_correction(tile.model, low, z_o, diagnostics), None
+
+        _, correction, _ = bucket_apply(bm, apply, None, out['low'], z)
+        return out | {name: out[name] - value for name, value in correction.items()}
 
     def _bucket_model(
         self, bucket: TileBucket, out: dict[str, Any], resolved: dict[str, Any]
@@ -754,7 +789,8 @@ class MultiObservationMapMaker[T]:
             owner=self.placement.shard(bucket.owner),
             segments=bucket.n_segments,
         )
-        return BucketModel(tiles, out['rhs']['common'])
+        modes_data, modes_core = out['modes']
+        return BucketModel(tiles, out['rhs']['common'], modes_data, modes_core)
 
     def _factor_common_grams(
         self, grams: dict[str, tuple[Any, Any]]
@@ -974,7 +1010,18 @@ class MultiObservationMapMaker[T]:
                 },
                 # the tile's share of the right-hand side of each kind of amplitudes
                 'rhs': {kind: None if op is None else op.T(wd) for kind, op in operators.items()},
+                'modes': modes_system(obs, tod),
             }
+
+        def modes_system(obs, tod):
+            # the tile's share of Tᵀ D⁻¹ P d, P the mask, whose correction the system subtracts
+            # from its right-hand side, and K of the observation
+            if not isinstance(model := obs.noise_model, LowRankNoiseModel):
+                return None, None
+            assert isinstance(obs.W, WeightOperator)
+            modes = model.modes_operator(obs.tod_format.structure)
+            data = modes.T(obs.W.weight(obs.M(tod)))
+            return data, model.modes_core(obs.tod_format.n_samples)
 
         def gap_system(obs, tod):
             # the right-hand side Cᵀ N⁻¹ M d of the gap amplitudes, and the inverse of the diagonal
@@ -1021,7 +1068,9 @@ def _detector_statistics(
     edges = [0.0, *diagnostics.bands] if 'bands' in statistics else []
     for k, low in enumerate(edges):
         high = f'{edges[k + 1]:g}' if k + 1 < len(edges) else 'nyquist'
-        columns[f'chi2_{low:g}_{high}hz'] = np.where(usable, statistics['bands'][k], np.nan)
+        samples = statistics['band_samples'][k]
+        reduced = statistics['bands'][k] / np.where(samples > 0, samples, 1)
+        columns[f'chi2_{low:g}_{high}hz'] = np.where(usable & (samples > 0), reduced, np.nan)
     return columns
 
 

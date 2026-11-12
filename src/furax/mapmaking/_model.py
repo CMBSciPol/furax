@@ -24,7 +24,7 @@ from ._gaps import GapSplineOperator, GapSplines
 from ._observation import ReaderField, _sample_rate
 from .acquisition import build_acquisition_operator
 from .config import GapTreatment, MapMakingConfig, NoiseSource, TemplatesConfig, WeightingMode
-from .lowrank import fit_low_rank_noise
+from .lowrank import LowRankNoiseModel, fit_low_rank_noise
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
 from .templates import TemplateOperator, build_templates, required_reader_fields
 from .templates.fit import TemplateFit
@@ -441,8 +441,12 @@ def _noise_operator(
     """Build the (inverse) noise covariance operator for this block.
 
     ``correlation_length`` sets the Toeplitz band for correlated (atmospheric) models; it is unused
-    by white-noise models and may be omitted for them.
+    by white-noise models and may be omitted for them. The weight of a low-rank model is that of
+    its diagonal alone: its correlated modes are amplitudes of the system (see
+    [`LowRankModesOperator`][furax.mapmaking.lowrank.LowRankModesOperator]).
     """
+    if inverse and isinstance(noise_model, LowRankNoiseModel):
+        return noise_model.diagonal_inverse_operator(tod_format.structure)
     build = noise_model.inverse_operator if inverse else noise_model.operator
     return build(
         tod_format.structure, sample_rate=sample_rate, correlation_length=correlation_length

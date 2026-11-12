@@ -22,6 +22,7 @@ from furax.core import BlockRowOperator
 
 from ._model import ObservationModel, TileTemplates
 from .config import DiagnosticsConfig
+from .lowrank import LowRankNoiseModel
 from .weight import WeightOperator
 
 
@@ -49,9 +50,11 @@ def tile_statistics(
 
     Returns:
         `good`, the number of good samples, `(stream, det)`, and those of the statistics turned
-        on: `chi2`, `(stream, det)`; `bands`, the reduced $\chi^2$ of each band, `(band, stream,
-        det)`; `map`, the residual binned under the white-noise weight, before its normalization
-        by the white pixel system.
+        on: `chi2`, `(stream, det)`; `bands`, the $\chi^2$ of each band, `(band, stream, det)`,
+        and `band_samples`, its expected value; `map`, the residual binned under the white-noise
+        weight, before its normalization by the white pixel system. Under a low-rank noise model,
+        the $\chi^2$ are those under the diagonal weight, and `modes` and `low` give their
+        correction (see [`modes_correction`][]).
     """
     operators = {} if templates is None else templates.operators
     blocks, inputs = [obs.H], [sky]
@@ -65,6 +68,7 @@ def tile_statistics(
     if gaps is not None:
         # the gap amplitudes stand for the flagged samples, under N⁻¹ unmasked
         blocks = [obs.M @ block for block in blocks]
+    if gaps is not None:
         blocks.append(obs.gap_basis())
         inputs.append(gaps)
         data = obs.M(tod)
@@ -83,25 +87,83 @@ def tile_statistics(
     r, wr = fmt.as_array(residual), fmt.as_array(weight(residual))
     if diagnostics.chi2:
         out['chi2'] = jnp.sum(r * wr, axis=-1)
+    low_rank = isinstance(obs.noise_model, LowRankNoiseModel)
+    # under a low-rank model, the weight is P D⁻¹ P, P the mask unless the gaps are explicit
+    masked = residual if gaps is not None else obs.M(residual)
     if diagnostics.bands:
-        out['bands'] = _band_chi2(r, wr, out['good'], obs.sample_rate, diagnostics.bands)
+        n = r.shape[-1]
+        if low_rank:
+            # the masked residual against D⁻¹ of it, as its correction pairs them (the total is
+            # the same as with the weight, but the frequencies of the flagged samples are not)
+            assert isinstance(obs.W, WeightOperator)
+            r, wr = fmt.as_array(masked), fmt.as_array(obs.W.weight(masked))
+        product = jnp.real(jnp.conj(jnp.fft.rfft(r)) * jnp.fft.rfft(wr))
+        out['bands'] = _band_sums(product, obs.sample_rate, n, diagnostics.bands)
+        # the expected χ² of a band: its frequencies, times the fraction of the samples that are good
+        ones = jnp.ones(n // 2 + 1)
+        share = _band_sums(ones, obs.sample_rate, n, diagnostics.bands)[:, None, None]
+        out['band_samples'] = share * out['good']
+    if low_rank:
+        # the correlated modes are marginalized once the whole observation is summed (see
+        # `modes_correction`)
+        model = obs.noise_model
+        assert isinstance(model, LowRankNoiseModel) and isinstance(obs.W, WeightOperator)
+        modes = model.modes_operator(fmt.structure)
+        out['modes'] = modes.T(obs.W.weight(masked))
+        n_low = modes.in_structure.shape[0]
+        out['low'] = jnp.fft.rfft(fmt.as_array(masked))[..., :n_low]
     return out
 
 
-def _band_chi2(
-    r: Array, wr: Array, good: Array, sample_rate: Array, bands: tuple[float, ...]
-) -> Array:
-    r"""The reduced $\chi^2$ of each band, `(band, stream, det)`, by Parseval."""
-    n = r.shape[-1]
-    product = jnp.real(jnp.conj(jnp.fft.rfft(r)) * jnp.fft.rfft(wr))
-    frequencies = jnp.arange(product.shape[-1]) * sample_rate / n
-    weights = jnp.full(product.shape[-1], 2.0).at[0].set(1.0)
-    if n % 2 == 0:
+def modes_correction(
+    obs: ObservationModel,
+    low: Array,
+    z: Array,
+    diagnostics: DiagnosticsConfig,
+) -> dict[str, Array]:
+    r"""What the correlated modes of a low-rank noise model take from the statistics of a tile.
+
+    Under $N^{-1} = D^{-1} - D^{-1} T K T^\top D^{-1}$, the $\chi^2$ of a residual $r$ is that under
+    $D^{-1}$ less $(P r)^\top D^{-1} T z$, with $z = K T^\top D^{-1} P r$ summed over the tiles of
+    the observation. It lives below the last coupled bin edge, where `low` holds the coefficients
+    of $P r$.
+
+    Args:
+        obs: The tile's model.
+        low: The rfft coefficients of $P r$ below the last coupled bin edge, `(stream, det, freq)`.
+        z: $K$ of the sums of the observation, on the amplitudes of its modes.
+        diagnostics: The statistics to correct.
+
+    Returns:
+        The corrections of `chi2`, `(stream, det)`, and of the band sums `bands`, `(band, stream,
+        det)`, of those turned on.
+    """
+    model = obs.noise_model
+    assert isinstance(model, LowRankNoiseModel)
+    assert isinstance(obs.W, WeightOperator)
+    fmt = obs.tod_format
+    n = fmt.n_samples
+    modes = obs.W.weight(model.modes_operator(fmt.structure)(z))
+    product = jnp.real(jnp.conj(low) * jnp.fft.rfft(fmt.as_array(modes))[..., : low.shape[-1]])
+    sums = _band_sums(product, obs.sample_rate, n, diagnostics.bands)
+    out = {}
+    if diagnostics.chi2:
+        out['chi2'] = jnp.sum(sums, axis=0)
+    if diagnostics.bands:
+        out['bands'] = sums
+    return out
+
+
+def _band_sums(product: Array, sample_rate: Array, n: int, bands: tuple[float, ...]) -> Array:
+    r"""The $\chi^2$ of each band, `(band, ...)`, from the products of the rfft coefficients.
+
+    The products are those of the first frequencies of `n` samples, by Parseval.
+    """
+    n_frequencies = product.shape[-1]
+    frequencies = jnp.arange(n_frequencies) * sample_rate / n
+    weights = jnp.full(n_frequencies, 2.0).at[0].set(1.0)
+    if n % 2 == 0 and n_frequencies == n // 2 + 1:
         weights = weights.at[-1].set(1.0)
     band = jnp.searchsorted(jnp.asarray(bands), frequencies, side='right')
-    n_bands = len(bands) + 1
-    in_band = jax.nn.one_hot(band, n_bands, dtype=product.dtype) * weights[:, None]  # (freq, band)
-    band_chi2 = jnp.moveaxis(product @ in_band, -1, 0) / n  # (band, stream, det)
-    # the expected χ² of a band: its frequencies, times the fraction of the samples that are good
-    expected = jnp.sum(in_band, axis=0)[:, None, None] * good / n
-    return band_chi2 / jnp.where(expected > 0, expected, 1)
+    in_band = jax.nn.one_hot(band, len(bands) + 1, dtype=product.dtype) * weights[:, None]
+    return jnp.moveaxis(product @ in_band, -1, 0) / n

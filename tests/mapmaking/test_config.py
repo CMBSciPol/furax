@@ -228,7 +228,6 @@ def test_correlated_gap_treatments_reject_detector_tiles(treatment: GapTreatment
 @pytest.mark.parametrize(
     ('options', 'match'),
     [
-        ({'detector_tile_size': 16}, 'detector_tile_size to 0'),
         (
             {
                 'weighting': WeightingConfig(
@@ -240,7 +239,7 @@ def test_correlated_gap_treatments_reject_detector_tiles(treatment: GapTreatment
         ({'gaps': GapsConfig(treatment=GapTreatment.FILL)}, 'inner_mask or explicit'),
         ({'gaps': GapsConfig(treatment=GapTreatment.NESTED)}, 'inner_mask or explicit'),
     ],
-    ids=['detector-tiles', 'precomputed', 'fill-gaps', 'nested-gaps'],
+    ids=['precomputed', 'fill-gaps', 'nested-gaps'],
 )
 def test_low_rank_weighting_rejects(options, match):
     base = {

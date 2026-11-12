@@ -2,7 +2,7 @@
 
 import itertools
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import jax
@@ -22,6 +22,8 @@ __all__ = [
     'LowRankModesOperator',
     'LowRankNoiseModel',
     'fit_low_rank_noise',
+    'fit_low_rank_spectra',
+    'low_rank_spectra',
 ]
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,10 @@ class LowRankNoiseModel(NoiseModel):
     lead: tuple[int, ...] = field(metadata={'static': True})
     """The shape of the channel axes: `(streams, detectors)` for a demodulated TOD."""
 
+    zero_lag: Float[Array, ' channel'] | None = None
+    """The zero-lag of $N^{-1}$ of each channel, kept by [`select`][]: that of the model of the
+    channels it was selected from, not of their marginal model."""
+
     @property
     def n_detectors(self) -> int:
         return self.lead[-1]
@@ -101,6 +107,21 @@ class LowRankNoiseModel(NoiseModel):
     ) -> LowRankFourierOperator:
         """The weight $N^{-1}$, as an operator on TODs of structure `in_structure`."""
         return self.operator(in_structure).inverse()
+
+    def select(self, channels: Array, lead: tuple[int, ...]) -> 'LowRankNoiseModel':
+        """The marginal model of some of the channels, such as those of a detector tile.
+
+        Args:
+            channels: The indices of the channels kept, in the flat order of `lead`.
+            lead: The shape of their channel axes.
+        """
+        return replace(
+            self,
+            diagonal=self.diagonal[:, channels],
+            modes=self.modes[:, channels],
+            lead=lead,
+            zero_lag=self._zero_lag()[channels],
+        )
 
     def diagonal_inverse_operator(
         self, in_structure: PyTree[jax.ShapeDtypeStruct]
@@ -159,14 +180,19 @@ class LowRankNoiseModel(NoiseModel):
         It is the diagonal of the weight in the time domain: the average of the diagonal of
         $N^{-1}(f)$ over the frequencies up to Nyquist.
         """
+        return WhiteNoiseModel(sigma=(1 / jnp.sqrt(self._zero_lag())).reshape(self.lead))
+
+    def _zero_lag(self) -> Float[Array, ' channel']:
+        """The zero-lag of $N^{-1}$ of each channel (see `zero_lag`)."""
+        if self.zero_lag is not None:
+            return self.zero_lag
         weight = self.inverse_operator(
             jax.ShapeDtypeStruct((self.diagonal.shape[1], 1), self.diagonal.dtype)
         )
         diagonal = _diagonal_power(weight.diagonal, weight.modes, weight.core)
         bounds = np.array([0.0, *self.edges, self.sample_rate / 2]).clip(0, self.sample_rate / 2)
         fractions = jnp.asarray(np.diff(bounds) / (self.sample_rate / 2), diagonal.dtype)
-        inverse_variance = fractions @ diagonal
-        return WhiteNoiseModel(sigma=(1 / jnp.sqrt(inverse_variance)).reshape(self.lead))
+        return fractions @ diagonal
 
 
 class LowRankModesOperator(AbstractLinearOperator):
@@ -337,16 +363,65 @@ def fit_low_rank_noise(
             f'threshold_quantile must be in [0.9, 0.999], got {config.threshold_quantile}'
         )
 
-    n_channels, n_samples = samples.shape
-    frequencies = np.fft.rfftfreq(n_samples, 1 / sample_rate)
-    spectra, level, efficiency = _observation_spectra(
+    n_samples = samples.shape[-1]
+    n_real = n_samples if n_real is None else n_real
+    spectra, level = low_rank_spectra(samples, sample_rate, n_real, config)
+    return fit_low_rank_spectra(
+        spectra, level, n_samples, n_real, sample_rate, lead=lead, config=config
+    )
+
+
+def low_rank_spectra(
+    samples: Float[Array, 'channel sample'],
+    sample_rate: float,
+    n_real: int | Array,
+    config: LowRankNoiseFitConfig,
+) -> tuple[Inexact[Array, 'channel frequency'], Float[Array, ' channel']]:
+    """What the low-rank fit takes of each channel.
+
+    That is its spectrum up to the last bin edge, and its white level. Each channel is taken alone, so that a detector tile gives the rows of its channels (see
+    [`fit_low_rank_spectra`][]). The samples past `n_real` are padding.
+    """
+    edges = tuple(float(e) for e in config.bin_edges)
+    frequencies = np.fft.rfftfreq(samples.shape[-1], 1 / sample_rate)
+    return _observation_spectra(
         samples,
-        n_samples if n_real is None else n_real,
+        n_real,
         frequencies,
         edges[-1],
         config.whitening_band,
         max(round(config.taper * sample_rate), 1),
     )
+
+
+def fit_low_rank_spectra(
+    spectra: Inexact[Array, 'channel frequency'],
+    level: Float[Array, ' channel'],
+    n_samples: int,
+    n_real: int | Array,
+    sample_rate: float,
+    *,
+    lead: tuple[int, ...] | None = None,
+    config: LowRankNoiseFitConfig | None = None,
+) -> LowRankNoiseModel:
+    """The low-rank noise model of the channels of an observation, from [`low_rank_spectra`][].
+
+    The channels with no white power are dead: they take no part in the modes.
+
+    Args:
+        spectra: The spectrum of each channel up to the last bin edge.
+        level: The white level of each channel.
+        n_samples: The number of samples of the TOD the spectra are of, its padding included.
+        n_real: The number of samples before its padding.
+        sample_rate: Sample rate in Hz.
+        lead: The shape of the channel axes, as in [`fit_low_rank_noise`][].
+        config: Fit options.
+    """
+    config = config or LowRankNoiseFitConfig()
+    edges = tuple(float(e) for e in config.bin_edges)
+    n_channels = spectra.shape[0]
+    frequencies = np.fft.rfftfreq(n_samples, 1 / sample_rate)
+    efficiency = _window_efficiency(n_samples, n_real, max(round(config.taper * sample_rate), 1))
     alive = level > 0
     median = jnp.nanmedian(jnp.where(alive, level, jnp.nan))
     level = jnp.where(alive, level, jnp.where(jnp.isnan(median), 1.0, median))
@@ -405,6 +480,8 @@ def fit_low_rank_noise(
         sample_rate=float(sample_rate),
         lead=(n_channels,) if lead is None else tuple(lead),
     )
+    # the zero-lag of the whole model, which the rows selected from it keep
+    model = replace(model, zero_lag=model._zero_lag())
     # Decided when the fit is traced: no host callback unless the record would be logged
     if logger.isEnabledFor(logging.DEBUG):
         jax.debug.callback(_log_fit, *_fit_summary(model, level, alive))
@@ -466,28 +543,39 @@ def _observation_spectra(
     top: float,
     band: tuple[float, float],
     n_taper: int,
-) -> tuple[Array, Array, Array]:
-    """Spectra of the whole observation up to `top`, with their white-band power and efficiency.
+) -> tuple[Array, Array]:
+    """Spectra of the whole observation up to `top`, with their white-band power.
 
     The samples past `n_real` are left out. The spectra are normalised by the power of the
-    window, so that white noise of per-sample variance σ² has E|X|² = σ². The efficiency is the
-    effective number of samples of the window, `(Σw²)²/Σw⁴`, over the length of the transform:
-    the fraction of independent coefficients.
+    window, so that white noise of per-sample variance σ² has E|X|² = σ².
     """
     in_band = (frequencies >= band[0]) & (frequencies <= band[1])
     if not in_band.any():
         raise ValueError(f'No frequency in the whitening band {band} Hz')
     n_low = int(np.searchsorted(frequencies, top))
     n_samples = samples.shape[-1]
-    t = jnp.arange(n_samples)
-    real = t < n_real
-    ramp = jnp.clip(jnp.minimum(t + 1, n_real - t) / n_taper, 0, 1)
-    window = jnp.where(real, (1 - jnp.cos(jnp.pi * ramp)) / 2, 0).astype(samples.dtype)
+    real = jnp.arange(n_samples) < n_real
+    window = _window(n_samples, n_real, n_taper).astype(samples.dtype)
     mean = jnp.where(real, samples, 0).sum(axis=1, keepdims=True) / n_real
     coefficients = jnp.fft.rfft((samples - mean) * window) / jnp.sqrt(jnp.sum(window**2))
     level = jnp.mean(jnp.abs(coefficients[:, in_band]) ** 2, axis=1)
-    efficiency = jnp.sum(window**2) ** 2 / jnp.sum(window**4) / n_samples
-    return coefficients[:, :n_low], level, efficiency
+    return coefficients[:, :n_low], level
+
+
+def _window(n_samples: int, n_real: int | Array, n_taper: int) -> Array:
+    """The cosine taper over `n_taper` samples at each end of the first `n_real`, zero after."""
+    t = jnp.arange(n_samples)
+    ramp = jnp.clip(jnp.minimum(t + 1, n_real - t) / n_taper, 0, 1)
+    return jnp.where(t < n_real, (1 - jnp.cos(jnp.pi * ramp)) / 2, 0)
+
+
+def _window_efficiency(n_samples: int, n_real: int | Array, n_taper: int) -> Array:
+    """The fraction of independent Fourier coefficients of the window.
+
+    That is its effective number of samples, `(Σw²)²/Σw⁴`, over the length of the transform.
+    """
+    window = _window(n_samples, n_real, n_taper)
+    return jnp.sum(window**2) ** 2 / jnp.sum(window**4) / n_samples
 
 
 def _fit_bin(

@@ -269,6 +269,28 @@ class GappyGroundObservation(FakeGroundObservation):
         return mask
 
 
+class CorrelatedGroundObservation(GappyGroundObservation):
+    """Gappy ground observation whose detectors share two red common modes, over white noise."""
+
+    def get_tods(self, out: np.ndarray | None = None) -> Float[np.ndarray, 'dets samps']:
+        rng = np.random.default_rng(self._seed)
+        n, k = self._n_samples, self._n_dets
+        f = np.fft.rfftfreq(n, 1 / self._sample_rate)
+        red = np.fft.irfft(np.fft.rfft(rng.normal(size=(2, n))) / np.maximum(f, 0.05) ** 1.5, n=n)
+        red /= red.std(axis=-1, keepdims=True)
+        tods = rng.normal(size=(k, n)) + 3 * rng.normal(size=(k, 2)) @ red
+        return self._scaled_tod(tods.astype(np.float32), 1.0, out)
+
+
+class CorrelatedLazyGroundObservation(FakeLazyObservation):
+    """File-free lazy wrapper around :class:`CorrelatedGroundObservation`."""
+
+    interface_class = CorrelatedGroundObservation
+
+    def get_data(self, requested_fields=None) -> CorrelatedGroundObservation:
+        return CorrelatedGroundObservation(**self._kwargs)
+
+
 class FakeLazyGroundObservation(FakeLazyObservation):
     """File-free lazy wrapper around :class:`FakeGroundObservation`."""
 

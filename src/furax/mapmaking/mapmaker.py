@@ -19,6 +19,7 @@ import furax.tree
 from furax.core import HostEnsemble, IndexOperator, Policy, StackedEnsemble, map_reduce
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesType
+from furax.obs.tod import TODFormat
 from furax.profiling import format_bytes
 
 from ._accumulated import AccumulatedModel
@@ -33,6 +34,7 @@ from ._model import (
     ObservationModel,
     ObservationTemplates,
     acquisition_operator,
+    low_rank_tile_spectra,
     restrict_streams,
 )
 from ._observation import (
@@ -53,7 +55,7 @@ from .config import (
 )
 from .gap_filling import gap_fill
 from .layout import TileBucket, TileLayout, TilePlacement
-from .lowrank import LowRankNoiseModel
+from .lowrank import LowRankNoiseModel, ModesCore, fit_low_rank_spectra
 from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
 from .templates.gram import factor
 from .weight import WeightOperator
@@ -582,14 +584,27 @@ class MultiObservationMapMaker[T]:
         and the segments, which is the layout `BucketModel` holds.
         """
         bucket = self.layout.buckets[bucket_index]
+        fitted = None
+        if self.fit_config.weighting.mode == WeightingMode.LOW_RANK:
+            fitted = self._fit_low_rank(bucket_index, reader, sky)
+            # kept for the residual pass, whose tiles take the same rows
+            self._low_rank_fits[bucket_index] = (fitted[0], fitted[2])
         tile_reader, read_tile = self._tile_reader(bucket, reader)
+        read, structure, strides = read_tile, tile_reader.structure, tile_reader.strides
+        if fitted is not None:
+            rows_of, rows_structure = self._fitted_rows(bucket, *fitted[::2])
+
+            def read(tile: int) -> Any:
+                return read_tile(tile), rows_of(tile)
+
+            structure, strides = (structure, rows_structure), (strides, (1, 1, 1, 1))
         ensemble = HostEnsemble(
             bucket.n_tiles,
-            read_tile,
-            tile_reader.structure,
+            read,
+            structure,
             policy=Policy(axis=self.placement.axis),
             prefetch=self._prefetches_reads,
-            strides=tile_reader.strides,
+            strides=strides,
             owner=bucket.owner,
             segments=bucket.n_segments,
         )
@@ -613,11 +628,112 @@ class MultiObservationMapMaker[T]:
         }
         spec['gaps'] = 1
         # Tᵀ D⁻¹ P of the data under a low-rank noise model, summed over the tiles of each
-        # observation, and K of the observation, from its noise model
-        spec['modes'] = ('segment_sum', 'segment')
+        # observation
+        spec['modes'] = 'segment_sum'
         kernel = self._tile_kernel(self._gap_splines[bucket_index])
         out, resolved = map_reduce(kernel, ensemble, spec, sky)
-        return out['hits'], out['map'], self._bucket_model(bucket, out, resolved)
+        modes_core = None if fitted is None else fitted[1]
+        return out['hits'], out['map'], self._bucket_model(bucket, out, resolved, modes_core)
+
+    @cached_property
+    def _low_rank_fits(self) -> dict[int, tuple[LowRankNoiseModel, int]]:
+        """The low-rank noise models of each bucket fitted in the last pass over the data.
+
+        Each comes with its padded number of detectors (see `_fit_low_rank`).
+        """
+        return {}
+
+    def _fit_low_rank(
+        self, bucket_index: int, reader: ObservationReader[T], sky: StokesType | None
+    ) -> tuple[LowRankNoiseModel, ModesCore, int]:
+        """A pass over the data of a bucket for its low-rank noise models, one per observation.
+
+        Each tile gives the spectrum and white level of its channels, in its rows of an array of
+        its observation, summed over its tiles on the device that holds them; each observation is
+        then fitted there. The detector axis of the models is padded to a whole number of tiles:
+        the rows past the detectors of an observation are dead channels.
+
+        Returns the models and their $K$ (see
+        [`LowRankNoiseModel.modes_core`][furax.mapmaking.lowrank.LowRankNoiseModel.modes_core]),
+        their leaves `(segment, ...)`, and the padded number of detectors.
+        """
+        bucket = self.layout.buckets[bucket_index]
+        tile_size = bucket.tile_size
+        detectors = max(self._buffer_shapes[i].detector_count for i in bucket.observations)
+        capacity = -(-detectors // tile_size) * tile_size
+        tile_reader, read_tile = self._tile_reader(bucket, reader)
+
+        def read(tile: int) -> tuple[Any, np.ndarray]:
+            return read_tile(tile), np.asarray(bucket.tile_starts[tile], np.int32)
+
+        ensemble = HostEnsemble(
+            bucket.n_tiles,
+            read,
+            (tile_reader.structure, jax.ShapeDtypeStruct((), np.int32)),
+            policy=Policy(axis=self.placement.axis),
+            prefetch=self._prefetches_reads,
+            strides=(tile_reader.strides, 1),
+            owner=bucket.owner,
+            segments=bucket.n_segments,
+        )
+        kernel = self._fit_kernel(self._gap_splines[bucket_index], capacity)
+        (spectra, level, n_real), _ = map_reduce(
+            kernel, ensemble, ('segment_sum', 'segment_sum', 'segment'), sky
+        )
+        config = self.fit_config
+        n_samples = bucket.envelope.sample_count
+        sample_rate = self._probed_sample_rate
+        landscape_stokes = self.landscape.stokes
+        demodulated = config.demodulated
+
+        def fit(member: tuple[Array, Array, Array]) -> tuple[LowRankNoiseModel, ModesCore]:
+            spectra, level, n_real = member
+            lead = (len(landscape_stokes), capacity) if demodulated else (capacity,)
+            model = fit_low_rank_spectra(
+                spectra.reshape(-1, spectra.shape[-1]),
+                level.reshape(-1),
+                n_samples,
+                n_real,
+                sample_rate,
+                lead=lead,
+                config=config.weighting.low_rank,
+            )
+            return model, model.modes_core(n_samples)
+
+        segments = StackedEnsemble(
+            bucket.n_segments, (spectra, level, n_real), policy=Policy(axis=self.placement.axis)
+        )
+        (models, cores), _ = map_reduce(fit, segments, 1)
+        return models, cores, capacity
+
+    def _fitted_rows(
+        self, bucket: TileBucket, models: LowRankNoiseModel, capacity: int
+    ) -> tuple[Callable[[int], tuple[np.ndarray, ...]], tuple[jax.ShapeDtypeStruct, ...]]:
+        """The rows of each tile in the low-rank noise model of its observation, and their structure.
+
+        They are read from the shards of this process: an observation's tiles are read by the
+        process of the device that holds it.
+        """
+        assert models.zero_lag is not None
+        local = _local_segments((models.diagonal, models.modes, models.core, models.zero_lag))
+        tile_size = bucket.tile_size
+        n_streams = models.lead[0] if len(models.lead) > 1 else 1
+
+        def rows_of(tile: int) -> tuple[np.ndarray, ...]:
+            diagonal, modes, core, zero_lag = local[int(bucket.owner[tile])]
+            start = int(bucket.tile_starts[tile])
+            rows = (np.arange(n_streams)[:, None] * capacity + start + np.arange(tile_size)).ravel()
+            return diagonal[:, rows], modes[:, rows], core, zero_lag[rows]
+
+        n_rows = n_streams * tile_size
+        diagonal, modes, core = models.diagonal, models.modes, models.core
+        structure = (
+            jax.ShapeDtypeStruct((diagonal.shape[1], n_rows), diagonal.dtype),
+            jax.ShapeDtypeStruct((modes.shape[1], n_rows, modes.shape[3]), modes.dtype),
+            jax.ShapeDtypeStruct(core.shape[1:], core.dtype),
+            jax.ShapeDtypeStruct((n_rows,), models.zero_lag.dtype),
+        )
+        return rows_of, structure
 
     def _tile_reader(
         self, bucket: TileBucket, reader: ObservationReader[T]
@@ -687,7 +803,18 @@ class MultiObservationMapMaker[T]:
                 for kind in ('explicit', 'gaps', 'common')
             }
 
-            def read(tile: int, amplitudes=amplitudes, read_tile=read_tile, bucket=bucket) -> Any:
+            # the tiles of a low-rank noise model take the rows they were solved with, last
+            rows_of, rows_structure = None, ()
+            if b in self._low_rank_fits:
+                rows_of, rows_structure = self._fitted_rows(bucket, *self._low_rank_fits[b])
+
+            def read(
+                tile: int,
+                amplitudes=amplitudes,
+                read_tile=read_tile,
+                bucket=bucket,
+                rows_of=rows_of,
+            ) -> Any:
                 segment = bucket.owner[tile]
 
                 def at(index):
@@ -698,12 +825,13 @@ class MultiObservationMapMaker[T]:
                     jax.tree.map(at(tile), amplitudes['explicit']),
                     jax.tree.map(at(tile), amplitudes['gaps']),
                     jax.tree.map(at(segment), amplitudes['common']),
+                    *(() if rows_of is None else (rows_of(tile),)),
                 )
 
             structures = tuple(
                 jax.tree.map(lambda a: jax.ShapeDtypeStruct(a.shape[1:], a.dtype), amplitudes[k])
                 for k in ('explicit', 'gaps', 'common')
-            )
+            ) + ((rows_structure,) if rows_of is not None else ())
             ensemble = HostEnsemble(
                 bucket.n_tiles,
                 read,
@@ -764,7 +892,11 @@ class MultiObservationMapMaker[T]:
         return out | {name: out[name] - value for name, value in correction.items()}
 
     def _bucket_model(
-        self, bucket: TileBucket, out: dict[str, Any], resolved: dict[str, Any]
+        self,
+        bucket: TileBucket,
+        out: dict[str, Any],
+        resolved: dict[str, Any],
+        modes_core: ModesCore | None = None,
     ) -> BucketModel:
         """The model of a bucket, from the outputs of its pass over the data and their kinds."""
         strides = _strides(out, resolved)
@@ -789,8 +921,7 @@ class MultiObservationMapMaker[T]:
             owner=self.placement.shard(bucket.owner),
             segments=bucket.n_segments,
         )
-        modes_data, modes_core = out['modes']
-        return BucketModel(tiles, out['rhs']['common'], modes_data, modes_core)
+        return BucketModel(tiles, out['rhs']['common'], out['modes'], modes_core)
 
     def _factor_common_grams(
         self, grams: dict[str, tuple[Any, Any]]
@@ -860,10 +991,26 @@ class MultiObservationMapMaker[T]:
         """
         return self._tile_kernels(gaps)[1]
 
+    def _fit_kernel(
+        self, gaps: GapSplines | None, capacity: int
+    ) -> Callable[[tuple[Any, ...], StokesType | None], tuple[Array, ...]]:
+        """What the low-rank fit takes of one detector tile, in an array of its observation.
+
+        The member is one tile's read and its first detector. The spectrum and white level of each
+        channel of the tile go to its rows of arrays `(stream, capacity, ...)`, zero elsewhere, so
+        that their sum over the tiles of an observation holds all its channels; then the number of
+        samples of the observation.
+        """
+        return self._tile_kernels(gaps, capacity)[2]
+
     def _tile_kernels(
-        self, gaps: GapSplines | None
-    ) -> tuple[Callable[..., Any], Callable[..., Any]]:
-        """The kernels of the pass that accumulates the system, and of the residual pass."""
+        self, gaps: GapSplines | None, capacity: int = 0
+    ) -> tuple[Callable[..., Any], Callable[..., Any], Callable[..., Any]]:
+        """The kernels of the passes over the data.
+
+        These are the pass that accumulates the system, the residual pass, and that of the
+        low-rank fit.
+        """
         config = self.fit_config
         noise_sample_rate = None
         if config.weighting.mode == WeightingMode.LOW_RANK:
@@ -891,10 +1038,32 @@ class MultiObservationMapMaker[T]:
                 data = inject(H, sky, data, unpadded(padding, shape), replaces)
             return data
 
+        low_rank = config.weighting.mode == WeightingMode.LOW_RANK
+
+        def noise_of(rows, tod_format):
+            # the rows of a tile of the low-rank model fitted on its whole observation
+            if rows is None:
+                return None
+            diagonal, modes, core, zero_lag = rows
+            lead = tod_format.det_shape
+            if tod_format.stokes is not None:
+                lead = (tod_format.n_streams, *lead)
+            edges = tuple(float(e) for e in config.weighting.low_rank.bin_edges)
+            assert noise_sample_rate is not None
+            return LowRankNoiseModel(
+                diagonal,
+                modes,
+                core,
+                edges=edges,
+                sample_rate=noise_sample_rate,
+                lead=lead,
+                zero_lag=zero_lag,
+            )
+
         def kernel(member, sky):
             # Gap filling needs whole observations, so it only runs with one tile per observation
             # (see `MapMakingConfig`).
-            data, padding, use = member
+            (data, padding, use), rows = member if low_rank else (member, None)
             data = prepare(data, padding, sky)
             tod = raw = data[ReaderField.SAMPLE_DATA]
             if fill_gaps:
@@ -904,7 +1073,7 @@ class MultiObservationMapMaker[T]:
                     lambda: fill_observation_gaps(data, padding),
                     lambda: raw,  # nothing to fill
                 )
-            return accumulate(data, tod, padding, use)
+            return accumulate(data, tod, padding, use, rows)
 
         def fill_observation_gaps(data, padding):
             obs = ObservationModel.create(
@@ -932,23 +1101,55 @@ class MultiObservationMapMaker[T]:
 
         def residual_kernel(member, sky, solution):
             (data, padding, use), *amplitudes = member
+            rows = amplitudes.pop() if low_rank else None
             explicit, gap_amplitudes, common = (
                 None if not jax.tree.leaves(a) else a for a in amplitudes
             )
             data = prepare(data, padding, sky)
-            data, tod, obs, built = build(data, data[ReaderField.SAMPLE_DATA], padding, use)
+            tod = data[ReaderField.SAMPLE_DATA]
+            data, tod, obs, built = build(data, tod, padding, use, rows)
             return tile_statistics(
                 obs, built, tod, solution, explicit, common, gap_amplitudes, diagnostics
             )
 
-        def build(data, tod, padding, use):
-            # the tile's data and TOD restricted to the streams of the map, its model, and its
-            # templates, if any
+        def fit_kernel(member, sky):
+            # what the low-rank fit takes of the tile, in the rows of its detectors of an array of
+            # its whole observation, `(stream, detector, ...)`
+            (data, padding, use), start = member
+            data = prepare(data, padding, sky)
+            data, tod, temperature = restrict(data, data[ReaderField.SAMPLE_DATA])
+            tod_format = _format_of(tod)
+            assert noise_sample_rate is not None
+            spectra, level, n_real = low_rank_tile_spectra(
+                data, config, tod_format, padding, noise_sample_rate, temperature
+            )
+            n_streams = 1 if tod_format.stokes is None else tod_format.n_streams
+            zero = jnp.zeros((), jnp.int32)
+            spectra = spectra.reshape(n_streams, -1, spectra.shape[-1]) * use
+            level = level.reshape(n_streams, -1) * use
+            placed = (
+                jax.lax.dynamic_update_slice(
+                    jnp.zeros((n_streams, capacity, *x.shape[2:]), x.dtype),
+                    x,
+                    (zero, start.astype(zero.dtype), *(zero for _ in x.shape[2:])),
+                )
+                for x in (spectra, level)
+            )
+            return (*placed, n_real)
+
+        def restrict(data, tod):
+            # the tile's data and TOD restricted to the streams of the map, and the I stream
             temperature = None
             if config.read_stokes != landscape.stokes:
                 # The extra streams read, the I one for the T2P template, stay out of the model
                 temperature = data[ReaderField.SAMPLE_DATA].i
                 data, tod = restrict_streams(data, tod, landscape.stokes)
+            return data, tod, temperature
+
+        def build(data, tod, padding, use, rows=None):
+            # the tile's data and TOD restricted to the streams of the map, its model, and its
+            # templates, if any
+            data, tod, temperature = restrict(data, tod)
             # Padding/failed observations contribute nothing
             obs = ObservationModel.create(
                 data,
@@ -959,14 +1160,15 @@ class MultiObservationMapMaker[T]:
                 gaps,
                 noise_sample_rate=noise_sample_rate,
                 temperature=temperature,
+                noise_model=noise_of(rows, _format_of(tod)),
             )
             built = None
             if build_templates:  # templates are rejected with gap filling (see `MapMakingConfig`)
                 built = ObservationTemplates.assemble(data, config, obs, tod, temperature)
             return data, tod, obs, built
 
-        def accumulate(data, tod, padding, use):
-            data, tod, obs, built = build(data, tod, padding, use)
+        def accumulate(data, tod, padding, use, rows=None):
+            data, tod, obs, built = build(data, tod, padding, use, rows)
 
             # Hit map = nearest-neighbour coverage of the sample mask
             hit_pointing = PointingOperator.create(
@@ -1015,13 +1217,12 @@ class MultiObservationMapMaker[T]:
 
         def modes_system(obs, tod):
             # the tile's share of Tᵀ D⁻¹ P d, P the mask, whose correction the system subtracts
-            # from its right-hand side, and K of the observation
+            # from its right-hand side
             if not isinstance(model := obs.noise_model, LowRankNoiseModel):
-                return None, None
+                return None
             assert isinstance(obs.W, WeightOperator)
             modes = model.modes_operator(obs.tod_format.structure)
-            data = modes.T(obs.W.weight(obs.M(tod)))
-            return data, model.modes_core(obs.tod_format.n_samples)
+            return modes.T(obs.W.weight(obs.M(tod)))
 
         def gap_system(obs, tod):
             # the right-hand side Cᵀ N⁻¹ M d of the gap amplitudes, and the inverse of the diagonal
@@ -1034,7 +1235,7 @@ class MultiObservationMapMaker[T]:
             usable = diagonal > 0  # the slots past the amplitudes of a detector are unused
             return rhs, jnp.where(usable, 1 / jnp.where(usable, diagonal, 1), 1)
 
-        return kernel, residual_kernel
+        return kernel, residual_kernel, fit_kernel
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -1052,6 +1253,31 @@ class MultiObservationMapMaker[T]:
             )
 
         return valid
+
+
+def _local_segments(tree: PyTree[Array]) -> dict[int, PyTree[np.ndarray]]:
+    """The entries held by this process of arrays sharded over their leading segment axis.
+
+    They are on the host, by segment.
+    """
+    leaves, treedef = jax.tree.flatten(tree)
+    per_leaf: list[dict[int, np.ndarray]] = []
+    for leaf in leaves:
+        rows: dict[int, np.ndarray] = {}
+        for shard in leaf.addressable_shards:
+            start = shard.index[0].start or 0
+            data = np.asarray(shard.data)
+            for k in range(data.shape[0]):
+                rows[start + k] = data[k]
+        per_leaf.append(rows)
+    return {s: jax.tree.unflatten(treedef, [r[s] for r in per_leaf]) for s in per_leaf[0]}
+
+
+def _format_of(tod: PyTree[Array]) -> TODFormat:
+    """The format of a TOD."""
+    if isinstance(tod, Stokes):
+        return TODFormat(tod.shape, tod.dtype, tod.stokes)
+    return TODFormat(tod.shape, tod.dtype)
 
 
 def _detector_statistics(

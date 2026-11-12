@@ -18,9 +18,11 @@ from furax.mapmaking._reader import detector_tile_structure
 from furax.mapmaking.config import (
     DiagnosticsConfig,
     ExplicitGapsConfig,
+    GapsConfig,
     GapTreatment,
     HealpixConfig,
     LandscapeConfig,
+    LowRankNoiseFitConfig,
     NestedConfig,
     NoiseFitConfig,
     NoiseSource,
@@ -37,6 +39,7 @@ from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
 from furax.obs.stokes import ValidStokesLiteral
 from tests.mapmaking.helpers import (
+    CorrelatedLazyGroundObservation,
     FailingLazyObservation,
     FakeLazyGroundObservation,
     FakeLazyObservation,
@@ -409,6 +412,34 @@ def _config(
         pomme_tau=pomme_tau,
         max_buckets=max_buckets,
     )
+
+
+def test_low_rank_weight_on_detector_tiles_gives_the_map_of_whole_observations():
+    """The low-rank fit and its correlated modes span the tiles of each observation."""
+    observations = [
+        CorrelatedLazyGroundObservation(seed=i, n_dets=12, n_samples=4096) for i in range(2)
+    ]
+    results = []
+    for tile_size in (0, 4):
+        config = MapMakingConfig(
+            weighting=WeightingConfig(
+                mode=WeightingMode.LOW_RANK,
+                low_rank=LowRankNoiseFitConfig(bin_edges=(0.5, 2.0, 8.0), max_modes=4),
+            ),
+            solver=SolverConfig(rtol=1e-12, atol=0, max_steps=200),
+            landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8)),
+            pointing=PointingConfig(on_the_fly=True, interpolation='nearest'),
+            gaps=GapsConfig(treatment=GapTreatment.INNER_MASK),
+            detector_tile_size=tile_size,
+            diagnostics=DiagnosticsConfig(bands=(0.5,), residual_map=False),
+        )
+        results.append(MultiObservationMapMaker(observations, config=config).make_maps())
+    whole, tiles = results
+    atol = 1e-10 * float(np.abs(whole.map.data).max())
+    np.testing.assert_allclose(tiles.map.data, whole.map.data, atol=atol)
+    assert whole.detectors is not None and tiles.detectors is not None
+    for column in ('chi2', 'chi2_0_0.5hz', 'chi2_0.5_nyquisthz'):
+        np.testing.assert_allclose(tiles.detectors[column], whole.detectors[column], rtol=1e-8)
 
 
 def test_nested_healpix_gives_the_ring_map():

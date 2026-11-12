@@ -24,7 +24,7 @@ from ._gaps import GapSplineOperator, GapSplines
 from ._observation import ReaderField, _sample_rate
 from .acquisition import build_acquisition_operator
 from .config import GapTreatment, MapMakingConfig, NoiseSource, TemplatesConfig, WeightingMode
-from .lowrank import LowRankNoiseModel, fit_low_rank_noise
+from .lowrank import LowRankNoiseModel, fit_low_rank_spectra, low_rank_spectra
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
 from .templates import TemplateOperator, build_templates, required_reader_fields
 from .templates.fit import TemplateFit
@@ -86,6 +86,7 @@ class ObservationModel:
         *,
         noise_sample_rate: float | None = None,
         temperature: Float[Array, 'det samp'] | None = None,
+        noise_model: NoiseModel | None = None,
     ) -> Self:
         """Build the model of an observation from the fields read for it.
 
@@ -103,6 +104,8 @@ class ObservationModel:
             temperature: The I timestream, from which the T2P template is built when the low-rank
                 noise model is fitted on the deprojected TOD; by default, the I stream of the
                 sample data.
+            noise_model: The noise model of its detectors, fitted beforehand, as the low-rank
+                one of a detector tile is, from its whole observation; fitted here by default.
         """
         H = acquisition_operator(data, config, landscape)
         tod_format = _tod_format(H)
@@ -115,14 +118,17 @@ class ObservationModel:
             over_gap_budget = ~dropped & (gaps.counts(kept, n_samples) > gaps.budget)
         valid_detectors = ~(dropped | over_gap_budget)[:, None]
         M = _mask_projector(mask, valid_detectors, jnp.asarray(use), tod_format=tod_format)
-        noise_model, sample_rate = _noise_model(
-            data,
-            config,
-            tod_format,
-            padding=padding,
-            noise_sample_rate=noise_sample_rate,
-            temperature=temperature,
-        )
+        if noise_model is None:
+            noise_model, sample_rate = _noise_model(
+                data,
+                config,
+                tod_format,
+                padding=padding,
+                noise_sample_rate=noise_sample_rate,
+                temperature=temperature,
+            )
+        else:
+            sample_rate = _sample_rate(data[ReaderField.TIMESTAMPS])
         Ninv = _noise_operator(
             noise_model,
             tod_format,
@@ -335,16 +341,46 @@ def _low_rank_noise_model(
     temperature: Float[Array, 'det samp'] | None,
 ) -> NoiseModel:
     """Fit the detector-correlated noise model of a whole observation."""
+    spectra, level, n_real = low_rank_tile_spectra(
+        data, config, tod_format, padding, sample_rate, temperature
+    )
+    return fit_low_rank_spectra(
+        spectra,
+        level,
+        tod_format.n_samples,
+        n_real,
+        sample_rate,
+        lead=lead,
+        config=config.weighting.low_rank,
+    )
+
+
+def low_rank_tile_spectra(
+    data: Any,
+    config: MapMakingConfig,
+    tod_format: TODFormat,
+    padding: Any | None,
+    sample_rate: float,
+    temperature: Float[Array, 'det samp'] | None,
+) -> tuple[Array, Array, Array]:
+    """What the low-rank fit takes of the channels of a tile, and the samples of its observation.
+
+    Returns the spectrum and the white level of each channel (see
+    [`low_rank_spectra`][furax.mapmaking.lowrank.low_rank_spectra]), streams then detectors, and the
+    number of samples before the padding. With `deproject`, the TOD is first rid of its fit by the
+    templates, on the tile alone.
+    """
     fit_config = config.weighting.low_rank
     nsamp = tod_format.n_samples
-    n_real = nsamp
+    n_real = jnp.asarray(nsamp)
     if padding is not None:  # one padding per axis of the TOD's array, the samples last
         n_real = nsamp - jax.tree.leaves(padding[ReaderField.SAMPLE_DATA])[0][-1]
     tod = data[ReaderField.SAMPLE_DATA]
     if fit_config.deproject and config.templates is not None:
         tod = _deprojected_tod(data, config, tod_format, n_real, temperature)
     samples = tod_format.as_array(tod).reshape(-1, nsamp)
-    return fit_low_rank_noise(samples, sample_rate, n_real=n_real, lead=lead, config=fit_config)
+    spectra, level = low_rank_spectra(samples, sample_rate, n_real, fit_config)
+    return spectra, level, n_real
 
 
 def _deprojected_tod(

@@ -1398,11 +1398,6 @@ class MapMakingConfig:
         """Check that the detector-correlated weighting supports the config."""
         if self.weighting.source != NoiseSource.FIT:
             raise ValueError('weighting.mode=low_rank requires weighting.source=fit.')
-        if self.detector_tile_size:
-            raise ValueError(
-                'weighting.mode=low_rank couples the detectors of an observation: set '
-                f'detector_tile_size to 0 (got {self.detector_tile_size})'
-            )
         if self.gaps.treatment in (GapTreatment.FILL, GapTreatment.NESTED):
             # the nested weight solves with a banded Toeplitz N⁻¹, which the low-rank one is not
             raise ValueError(

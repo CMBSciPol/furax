@@ -48,7 +48,8 @@ class MapMakingSystem:
     preconditioner: AbstractLinearOperator
     """Approximate inverse of `A`."""
     has_amplitudes: bool
-    """Whether the unknowns include explicit-template amplitudes."""
+    """Whether the unknowns include explicit-template amplitudes: a dictionary of the map, under
+    `'map'`, and of the amplitudes of each kind, rather than the map alone."""
     injected_b: PyTree | None = None
     """The right-hand side for the injected simulated sky, if any."""
 
@@ -91,7 +92,7 @@ class MapMakingSystem:
             )
             if checkpoints[1] is not None and response.converged:
                 converged.append(('injected', checkpoints[1]))
-            injected = response.solution if not self.has_amplitudes else response.solution[0]
+            injected = response.solution['map'] if self.has_amplitudes else response.solution
 
         # A converged solve keeps its checkpoint until the other is done too, so that a run killed
         # in between does not redo it.

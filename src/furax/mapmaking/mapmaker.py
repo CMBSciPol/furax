@@ -351,8 +351,8 @@ class MultiObservationMapMaker[T]:
             )
             sky, amplitudes = solved.x, None
             if system.has_amplitudes:
-                sky, *blocks = solved.x
-                amplitudes = acc.template_amplitudes(blocks, self.placement)
+                sky = solved.x['map']
+                amplitudes = acc.template_amplitudes(solved.x, self.placement)
 
         # Built only now, so that their copies are not held through the solve
         return MapMakingResults(

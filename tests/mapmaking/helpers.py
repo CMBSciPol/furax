@@ -306,12 +306,12 @@ def accumulate(maker: MultiObservationMapMaker) -> AccumulatedModel:
         return maker.build_model_and_accumulate()
 
 
-def probe_normal_system(maker: MultiObservationMapMaker, seed: int = 0) -> tuple[list, list]:
+def probe_normal_system(maker: MultiObservationMapMaker, seed: int = 0) -> tuple[dict, dict]:
     """The action of the normal system of `maker` on a random vector, and its right-hand side.
 
-    The system is the one `make_maps` hands to the solver, in the same blocks: the sky, then the
-    amplitudes of each kind of explicit template. Comparing these for two makers tests that their
-    models agree, whatever the conditioning of the solve.
+    The system is the one `make_maps` hands to the solver, in the same blocks: the sky under
+    `'map'`, and the amplitudes of each kind of explicit template. Comparing these for two makers
+    tests that their models agree, whatever the conditioning of the solve.
 
     The amplitudes each detector has of its own are set to zero and left out of the blocks
     returned, since their layout depends on how the detectors are batched.
@@ -323,17 +323,16 @@ def probe_normal_system(maker: MultiObservationMapMaker, seed: int = 0) -> tuple
         valid = maker.pixel_selection(acc.hit_map, BJ.blocks)
         S = IndexOperator((..., *jnp.where(valid)), in_structure=maker.landscape.structure)
         system = acc.build_system(S, BJ)
-        templates = acc.buckets[0].templates
-        kinds = [] if templates is None else [k for k in FACTORED_KINDS if getattr(templates, k)]
         x = tree.normal_like(system.A.in_structure, jax.random.key(seed))
-        if not kinds:
-            return [system.A(x)], [system.b]
-        for i, kind in enumerate(kinds, 1):
-            if FACTORED_KINDS[kind] == 'stack':
-                x[i] = tree.zeros_like(x[i])
-        keep = [0, *(i for i, kind in enumerate(kinds, 1) if FACTORED_KINDS[kind] != 'stack')]
+        if not system.has_amplitudes:
+            return {'map': system.A(x)}, {'map': system.b}
+        own = [k for k in acc.buckets[0].amplitude_kinds if FACTORED_KINDS[k] == 'stack']
+        x |= {kind: tree.zeros_like(x[kind]) for kind in own}
         Ax, b = system.A(x), system.b
-        return [Ax[i] for i in keep], [b[i] for i in keep]
+        return (
+            {k: v for k, v in Ax.items() if k not in own},
+            {k: v for k, v in b.items() if k not in own},
+        )
 
 
 def assert_same_system(got: Any, expected: Any) -> None:

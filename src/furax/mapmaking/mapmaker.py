@@ -26,7 +26,7 @@ from ._accumulated import AccumulatedModel
 from ._bucket import BucketModel, Tile, bucket_apply
 from ._catalog import ObservationCatalog, Read, detector_table, gather_rows
 from ._diagnostics import modes_correction, tile_statistics
-from ._gaps import GapSplines, gap_budget, knot_spacing
+from ._gaps import GapSplines, bridge_amplitudes, gap_budget, knot_spacing
 from ._injection import inject, load_sky, unpadded
 from ._landscape import build_landscape
 from ._model import (
@@ -169,7 +169,7 @@ class MultiObservationMapMaker[T]:
             or (bridge := weighting.low_rank.bridge) is None
         ):
             return 0
-        return max(math.ceil(bridge.length * self._probed_sample_rate), bridge.amplitudes)
+        return max(math.ceil(bridge.length * self._probed_sample_rate), 4)
 
     @cached_property
     def _buffer_shapes(self) -> list[ObservationBufferShape]:
@@ -248,12 +248,27 @@ class MultiObservationMapMaker[T]:
             logger.info(
                 f'Bucket {b}: {budget} gap amplitudes per detector, knots every {spacing} samples'
             )
-            bridge = 0
-            if self._bridge_samples:
-                assert self.config.weighting.low_rank.bridge is not None
-                bridge = self.config.weighting.low_rank.bridge.amplitudes
-            models.append(GapSplines(spacing, budget, bridge))
+            models.append(GapSplines(spacing, budget, *self._bridge(bucket)))
         return models
+
+    def _bridge(self, bucket: TileBucket) -> tuple[int, float, float]:
+        """The amplitude slots of the bridge of a bucket, its knot spacing in samples, its growth.
+
+        The slots fit the longest padding of the observations of the bucket; there are none
+        without a bridge.
+        """
+        if not self._bridge_samples:
+            return 0, 1.0, 1.0
+        bridge = self.config.weighting.low_rank.bridge
+        assert bridge is not None
+        spacing = bridge.resolution * self._probed_sample_rate
+        envelope = bucket.envelope.sample_count
+        shortest = min(self._probe_shapes[i].sample_count for i in bucket.observations)
+        slots = bridge_amplitudes(envelope - shortest, spacing, bridge.growth)
+        logger.info(
+            f'Bridge: {slots} amplitudes per channel over at most {envelope - shortest} samples'
+        )
+        return slots, spacing, bridge.growth
 
     def _knot_spacing(self, i: int, probe: ObservationProbe) -> int:
         """The knot spacing of the explicit gaps of observation `i`, in samples."""

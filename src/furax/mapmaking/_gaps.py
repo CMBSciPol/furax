@@ -35,9 +35,14 @@ class GapSplines:
     budget: int
     """The number of amplitude slots of each channel for its gaps."""
     bridge: int = 0
-    """The number of amplitudes of the cubic spline over the padding after the data, in the slots
-    after the budget; 0 for none. Under a circulant weight, the padding joins the end of the data
-    to its start: the spline bridges them, so that the weight sees no step there."""
+    """The number of amplitude slots of the cubic spline over the padding after the data, after
+    the budget; 0 for none. Under a circulant weight, the padding joins the end of the data to its
+    start: the spline bridges them, so that the weight sees no step there."""
+    bridge_spacing: float = 1.0
+    """The knot spacing of the bridge next to the data, in samples."""
+    bridge_growth: float = 1.0
+    """The factor by which its knot spacing grows from each end of the padding to its middle
+    (see [`bridge_amplitudes`][])."""
 
     def counts(
         self, good: Bool[Array, '... samp'], n_samples: Int[Array, ''] | int
@@ -65,7 +70,32 @@ class GapSplines:
         if not self.bridge:
             return basis
         # only the channels holding data have something to bridge
-        return basis.with_bridge(n_samples, jnp.any(good, axis=-1), self.budget)
+        return basis.with_bridge(
+            n_samples,
+            jnp.any(good, axis=-1),
+            self.budget,
+            self.bridge_spacing,
+            self.bridge_growth,
+        )
+
+
+def bridge_amplitudes(length: int, spacing: float, growth: float) -> int:
+    r"""The amplitudes of the bridge over a padding of `length` samples.
+
+    Its knots are `spacing` samples apart next to each end of the padding, their spacing growing by
+    `growth` towards its middle: the $j$-th knot from an end lies $s (g^j - 1) / (g - 1)$ samples
+    from it. A long padding takes few more amplitudes than a short one: their number grows with the
+    logarithm of its length.
+    """
+    intervals = 2 * float(_knot_index(np.asarray((length - 1) / 2), spacing, growth))
+    return max(1, math.ceil(intervals)) + 3
+
+
+def _knot_index(distance: Array | np.ndarray | float, spacing: float, growth: float) -> Array:
+    """The index, fractional, of the knot of the bridge at `distance` samples from an end."""
+    if growth == 1:
+        return jnp.asarray(distance) / spacing
+    return jnp.log1p(distance * (growth - 1) / spacing) / np.log(growth)
 
 
 def knot_spacing(resolution: float, sample_rate: float) -> int:
@@ -159,20 +189,38 @@ class GapSplineOperator(AbstractLinearOperator):
         return cls(index, values, treedef, in_structure=structure)
 
     def with_bridge(
-        self, n_samples: Int[Array, ''] | int, channels: Bool[Array, '...'], first: int
+        self,
+        n_samples: Int[Array, ''] | int,
+        channels: Bool[Array, '...'],
+        first: int,
+        spacing: float,
+        growth: float,
     ) -> Self:
         """The basis with a cubic spline over the samples from `n_samples` on.
 
-        The spline takes the slots from `first` to the last one, on the `channels` given.
+        The spline takes the slots from `first` on, on the `channels` given. Its knots are
+        `spacing` samples apart next to each end of the span, growing by `growth` towards its middle
+        (see [`bridge_amplitudes`][]); with more of them than slots, they are spread wider.
         """
-        bridge = self.in_structure.shape[-1] - first
+        slots = self.in_structure.shape[-1] - first
         n = self.index.shape[-2]
         dtype = self.values.dtype
         t = jnp.arange(n)
         span = (t >= n_samples) & channels[..., None]
-        # uniform cubic B-splines on `bridge - 3` intervals over the span
-        u = (t - n_samples).astype(dtype) / jnp.maximum(n - n_samples - 1, 1) * (bridge - 3)
-        offset = jnp.clip(jnp.floor(u).astype(jnp.int32), 0, bridge - 4)[:, None]
+        # uniform cubic B-splines in the knot index, mirrored at the middle of the span
+        length = n - n_samples
+        middle = (length - 1) / 2
+        distance = (t - n_samples).astype(dtype)
+        total = 2 * _knot_index(middle, spacing, growth)
+        intervals = jnp.clip(jnp.ceil(total), 1, slots - 3)
+        index = jnp.where(
+            distance <= middle,
+            _knot_index(distance, spacing, growth),
+            total - _knot_index(length - 1 - distance, spacing, growth),
+        )
+        u = index * intervals / jnp.maximum(total, 1e-12)
+        offset = jnp.clip(jnp.floor(u).astype(jnp.int32), 0, intervals.astype(jnp.int32) - 1)
+        offset = offset[:, None]
         o = jnp.arange(4, dtype=jnp.int32)
         values = cardinal_bspline(u[:, None] - (offset + o) + 3, 3).astype(dtype)
         return replace(

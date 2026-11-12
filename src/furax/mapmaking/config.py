@@ -276,22 +276,33 @@ class CirculantBridgeConfig:
 
     The weight applies across the end of the buffer to its start: without padding, the end of the
     data meets its start there, and the step between them spreads noise into the map. Every
-    observation gets this much padding. With explicit gaps, a cubic spline of `amplitudes` per
-    channel, solved for with the map, bridges the end of the data to its start across it; under
-    other gap treatments, the padding is left empty.
+    observation gets at least `length` of padding, more when its bucket pads it further. With
+    explicit gaps, a cubic spline over the whole padding, solved for with the map, bridges the end
+    of the data to its start across it; under other gap treatments, the padding is left empty.
+
+    The knots of the spline are `resolution` apart next to the data, where the noise it bridges is
+    correlated with the data, and their spacing grows by `growth` towards the middle of the
+    padding, where a smooth spline is all the noise needs: a long padding takes few more
+    amplitudes than a short one.
     """
 
-    length: float = 128.0
-    """Padding after the data, in seconds."""
+    length: float = 32.0
+    """The least padding after the data, in seconds."""
 
-    amplitudes: int = 8
-    """Amplitudes per channel of the spline over the padding; at least 4, for a cubic."""
+    resolution: float = 6.4
+    """The knot spacing of the spline next to the data, in seconds."""
+
+    growth: float = 1.5
+    """The factor by which the knot spacing grows towards the middle of the padding; 1 for
+    uniform knots."""
 
     def __post_init__(self) -> None:
         if self.length <= 0:
             raise ValueError(f"'length' must be positive, got {self.length}")
-        if self.amplitudes < 4:
-            raise ValueError(f"'amplitudes' must be at least 4, got {self.amplitudes}")
+        if self.resolution <= 0:
+            raise ValueError(f"'resolution' must be positive, got {self.resolution}")
+        if self.growth < 1:
+            raise ValueError(f"'growth' must be at least 1, got {self.growth}")
 
 
 @dataclass

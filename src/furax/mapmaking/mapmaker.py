@@ -21,7 +21,7 @@ from furax.profiling import format_bytes
 
 from . import _report
 from ._accumulated import AccumulatedModel
-from ._bucket import BucketModel
+from ._bucket import AmplitudeKind, BucketModel
 from ._catalog import ObservationCatalog, ProbeRecord, Read, detector_table, gather_rows
 from ._gaps import GapSplines, gap_budget, knot_spacing, max_gap_amplitudes
 from ._injection import load_sky
@@ -185,7 +185,7 @@ class MultiObservationMapMaker[T]:
         )
 
     def build_model_and_accumulate(self, scanned_sky: StokesType | None = None) -> AccumulatedModel:
-        """Build the model and accumulate the hit map and map RHS in one pass over the data.
+        """Build the model and accumulate the hit map and right-hand side in one pass over the data.
 
         Padding tiles and failed observations are gated out using a zero-mask, so they drop from
         the system.
@@ -196,7 +196,7 @@ class MultiObservationMapMaker[T]:
         This method must run under `jax.set_mesh(self.placement.mesh)`.
         """
         hit_map = jnp.zeros(self.landscape.shape, jnp.int64)
-        map_rhs = self.landscape.zeros()
+        rhs: dict[str, Any] = {'map': self.landscape.zeros()}
         # The sky to scan in is an argument of the kernels, held by every device for this pass
         # only, rather than a constant compiled into them
         sky = None
@@ -204,11 +204,13 @@ class MultiObservationMapMaker[T]:
             sky = self.placement.broadcast(scanned_sky)
         bucket_models = []
         for b, reader in enumerate(self.readers):
-            hits, rhs, model = self._accumulate_bucket(b, reader, sky)
+            hits, map_rhs, bucket_rhs, model = self._accumulate_bucket(b, reader, sky)
             hit_map = hit_map + hits
-            map_rhs = furax.tree.add(map_rhs, rhs)
+            rhs['map'] = furax.tree.add(rhs['map'], map_rhs)
+            for kind, kind_rhs in bucket_rhs.items():
+                rhs.setdefault(kind, []).append(kind_rhs)
             bucket_models.append(model)
-        return AccumulatedModel(buckets=bucket_models, hit_map=hit_map, map_rhs=map_rhs)
+        return AccumulatedModel(buckets=bucket_models, hit_map=hit_map, rhs=rhs)
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -392,8 +394,8 @@ class MultiObservationMapMaker[T]:
 
     def _accumulate_bucket(
         self, bucket_index: int, reader: ObservationReader[T], sky: StokesType | None
-    ) -> tuple[Int64[Array, '...'], StokesType, BucketModel]:
-        """One bucket's pass over the data: its hit map and RHS partials, and its stacked model.
+    ) -> tuple[Int64[Array, '...'], StokesType, dict[AmplitudeKind, Any], BucketModel]:
+        """One bucket's pass over the data: its hit map, its right-hand sides and its stacked model.
 
         The pass is an engine call on a host ensemble of the bucket's tiles: each round launches
         one tile on each device while its process reads the next round. An observation is read
@@ -430,8 +432,8 @@ class MultiObservationMapMaker[T]:
         )
         kernel = tile_kernel(self.fit_config, self.landscape, self._gap_splines[bucket_index])
         out, resolved = map_reduce(kernel, ensemble, TILE_REDUCTIONS, sky)
-        model = bucket_model(out, resolved, bucket, self.placement, self.fit_config)
-        return out.hits, out.map_rhs, model
+        model, rhs = bucket_model(out, resolved, bucket, self.placement, self.fit_config)
+        return out.hits, out.map_rhs, rhs, model
 
     @cached_property
     def _prefetches_reads(self) -> bool:

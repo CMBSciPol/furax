@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 from fastquat import Quaternion
 from jax.tree_util import register_dataclass
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Bool, Float, PyTree
 
 from furax import AbstractLinearOperator, IdentityOperator, MaskOperator, tree
 from furax.obs import TODFormat
@@ -50,11 +50,26 @@ class ObservationModel:
 
     @classmethod
     def create(
-        cls, data: Any, padding: Any, config: MapMakingConfig, landscape: StokesLandscape
+        cls,
+        data: Any,
+        padding: Any,
+        config: MapMakingConfig,
+        landscape: StokesLandscape,
+        use: Bool[Array, ''] | bool = True,
     ) -> Self:
+        """Build the model of an observation from the fields read for it.
+
+        Args:
+            data: The fields read for the observation.
+            padding: Their padding widths, as returned by the reader.
+            config: The mapmaking configuration.
+            landscape: The landscape of the maps.
+            use: Whether the observation contributes: false for a padding tile or a failed
+                observation, whose samples are then all masked.
+        """
         H = acquisition_operator(data, config, landscape)
         tod_format = _tod_format(H)
-        M = _mask_projector(_sample_mask(data, config), tod_format=tod_format)
+        M = _mask_projector(_sample_mask(data, config), jnp.asarray(use), tod_format=tod_format)
         noise_model, sample_rate = _noise_model(data, config, tod_format, padding=padding)
         Ninv = _noise_operator(
             noise_model,
@@ -122,11 +137,6 @@ class ObservationModel:
     @property
     def M(self) -> MaskOperator:
         return self.W.mask
-
-    @M.setter
-    def M(self, mask: MaskOperator) -> None:
-        # rebuild the weight around the new mask (W is the only holder of M)
-        self.W = self.W.with_mask(mask)
 
     @property
     def rhs_operator(self) -> AbstractLinearOperator:

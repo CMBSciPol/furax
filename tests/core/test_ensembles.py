@@ -465,6 +465,96 @@ def test_lift_keeps_the_leaves_and_strides_of_a_structural_function():
     assert rearranged.strides == (2, 1)
 
 
+def _holding_none() -> StackedEnsemble:
+    xs, by_2 = _xs(), jnp.ones((N // 2, N_SAMPS))
+    return StackedEnsemble(
+        N,
+        {'x': xs, 'b': by_2, 'absent': None},
+        {'x': 1, 'b': 2, 'absent': None},
+        axes={'x': 0, 'b': 0, 'absent': None},
+    )
+
+
+def _host_holding_none() -> HostEnsemble:
+    xs = np.asarray(_xs())
+    template = {'x': jax.ShapeDtypeStruct((N_SAMPS,), jnp.float64), 'absent': None}
+    return HostEnsemble(
+        N, lambda i: {'x': xs[i], 'absent': None}, template, strides={'x': 1, 'absent': None}
+    )
+
+
+_ZIPPED = {'v': _xs(), 'absent': None}
+_ZIPPED_AXES = {'v': 0, 'absent': None}
+
+
+@pytest.mark.parametrize(
+    ('build', 'expected'),
+    [
+        (_holding_none, lambda: {'x': _xs()[3], 'b': jnp.ones(N_SAMPS), 'absent': None}),
+        (_host_holding_none, lambda: {'x': _xs()[3], 'absent': None}),
+        (
+            lambda: _stacked().zip(_ZIPPED, axes=_ZIPPED_AXES),
+            lambda: ({'x': _xs()[3], 't': _shared()}, {'v': _xs()[3], 'absent': None}),
+        ),
+        (
+            lambda: _list().zip(_ZIPPED, axes=_ZIPPED_AXES),
+            lambda: ({'x': _xs()[3], 't': _shared()}, {'v': _xs()[3], 'absent': None}),
+        ),
+        (
+            lambda: lift(lambda m: {'pair': (m['b'], m['x']), 'absent': None}, _holding_none()),
+            lambda: {'pair': (jnp.ones(N_SAMPS), _xs()[3]), 'absent': None},
+        ),
+        (
+            lambda: lift(lambda m: {'y': 2 * m['x'], 'absent': None}, _holding_none()),
+            lambda: {'y': 2 * _xs()[3], 'absent': None},
+        ),
+        (
+            lambda: dataclasses.replace(_holding_none(), policy=Policy(batch=2)),
+            lambda: {'x': _xs()[3], 'b': jnp.ones(N_SAMPS), 'absent': None},
+        ),
+        # the canonical strides of a single array, one per leaf, are a tuple of one stride
+        (
+            lambda: dataclasses.replace(StackedEnsemble(N, _xs(), 1), policy=Policy(batch=2)),
+            lambda: _xs()[3],
+        ),
+    ],
+    ids=[
+        'stacked',
+        'host',
+        'stacked-zip',
+        'list-zip',
+        'lift-structural',
+        'lift-vectorized',
+        'replace',
+        'replace-single-leaf',
+    ],
+)
+def test_strides_and_axes_may_hold_none_subtrees(build, expected):
+    # aligned with a pytree holding None, the strides and axes hold None where it does: a None
+    # subtree holds no leaf, a None entry where the pytree has a leaf is that leaf's value
+    member = build().fetch(3)
+    assert jax.tree.structure(member) == jax.tree.structure(expected())
+    jax.tree.map(assert_allclose, member, expected())
+
+
+@pytest.mark.parametrize(
+    'strides',
+    [{'x': 1, 'other': 2}, {'x': 1}, (1, 2, 1)],
+    ids=['other-key', 'missing-key', 'too-many'],
+)
+def test_strides_misaligned_with_the_stacked_pytree_are_rejected(strides):
+    with pytest.raises(ValueError):
+        StackedEnsemble(N, {'x': _xs(), 'b': jnp.ones((N // 2, N_SAMPS))}, strides)
+
+
+def test_lifted_operators_with_an_unset_field_apply_through_the_engine():
+    # as an operator paired with an inverse not yet computed
+    diagonals = _xs() + 1
+    pairs = lift(lambda m: (DiagonalOperator(m['d']), None), StackedEnsemble(N, {'d': diagonals}))
+    out, _ = map_reduce(lambda pair: pair[0](jnp.ones(N_SAMPS)), pairs, 1)
+    assert_allclose(out, diagonals)
+
+
 def test_lift_composes_operators_structurally():
     diagonals = jnp.arange(float(N * N_SAMPS)).reshape(N, N_SAMPS) + 1
     left = lift(lambda m: DiagonalOperator(m['d']), StackedEnsemble(N, {'d': diagonals}, 1))

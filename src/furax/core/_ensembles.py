@@ -39,7 +39,7 @@ from jax.extend.core import Literal as JaxprLiteral
 from jax.extend.core import jaxpr_as_fun
 from jax.sharding import AbstractMesh, Mesh
 from jax.sharding import PartitionSpec as P
-from jax.tree_util import GetAttrKey, register_pytree_with_keys
+from jax.tree_util import GetAttrKey, PyTreeDef, register_pytree_with_keys
 from jaxtyping import Array, Bool, Int, PyTree
 
 __all__ = [
@@ -315,7 +315,8 @@ class ListEnsemble(Ensemble):
 
     def zip(self, x: PyTree[Any], axes: PyTree[int | None] = 0) -> 'ListEnsemble':
         x_leaves, x_def = jax.tree.flatten(x)
-        x_axes = _normalized_axes(x_leaves, _normalized_strides(x_leaves, 1), axes)
+        x_strides = _normalized_strides(x_leaves, x_def, 1)
+        x_axes = _normalized_axes(x_leaves, x_def, x_strides, axes)
         members = [
             (
                 member,
@@ -423,9 +424,10 @@ class StackedEnsemble(Ensemble):
         # never has to look at the leaves again: tree transformations (eqx.partition,
         # jax.eval_shape) replace the arrays with placeholders, and an array test at flatten time
         # would flip the strides.
-        leaves = jax.tree.leaves(self.stacked)
-        object.__setattr__(self, 'strides', _normalized_strides(leaves, self.strides))
-        object.__setattr__(self, 'axes', _normalized_axes(leaves, self.strides, self.axes))
+        leaves, treedef = jax.tree.flatten(self.stacked)
+        strides = _normalized_strides(leaves, treedef, self.strides)
+        object.__setattr__(self, 'strides', strides)
+        object.__setattr__(self, 'axes', _normalized_axes(leaves, treedef, strides, self.axes))
         segments = self.segments
         for leaf, stride, axis in zip(leaves, self.strides, self.axes, strict=True):
             if stride is None:
@@ -479,9 +481,9 @@ class StackedEnsemble(Ensemble):
         return jax.tree.unflatten(jax.tree.structure(self.stacked), picked)
 
     def zip(self, x: PyTree[Any], axes: PyTree[int | None] = 0) -> 'StackedEnsemble':
-        x_leaves = jax.tree.leaves(x)
-        x_strides = _normalized_strides(x_leaves, 1)
-        x_axes = _normalized_axes(x_leaves, x_strides, axes)
+        x_leaves, x_def = jax.tree.flatten(x)
+        x_strides = _normalized_strides(x_leaves, x_def, 1)
+        x_axes = _normalized_axes(x_leaves, x_def, x_strides, axes)
         return StackedEnsemble(
             self.size,
             (self.stacked, x),
@@ -670,8 +672,8 @@ class HostEnsemble(Ensemble):
     """The number of segments, given with `owner`."""
 
     def __post_init__(self) -> None:
-        leaves = jax.tree.leaves(self.template)
-        strides = _normalized_strides(leaves, self.strides, is_member=_is_abstract)
+        leaves, treedef = jax.tree.flatten(self.template)
+        strides = _normalized_strides(leaves, treedef, self.strides, is_member=_is_abstract)
         object.__setattr__(self, 'strides', strides)
         if any(s not in (1, 'segment', None) for s in strides):
             raise ValueError(f"the strides of a host ensemble are 1 or 'segment', got {strides}")
@@ -1493,11 +1495,7 @@ def _dependent_outputs(jaxpr: Any, seeds: Iterable[Any]) -> list[bool]:
 
 def _spec_leaves(out_spec: OutSpec, out_shape: PyTree[Any]) -> list[Any]:
     """The specification broadcast against the output tree, one kind per output leaf."""
-
-    def is_kind(x: Any) -> bool:
-        return x is None or isinstance(x, int | str)
-
-    kinds, treedef = jax.tree.flatten(out_spec, is_leaf=is_kind)
+    kinds, treedef = jax.tree.flatten(out_spec, is_leaf=_is_single_value)
     try:
         subtrees = treedef.flatten_up_to(out_shape)
     except ValueError as error:
@@ -1632,39 +1630,26 @@ def _abstract(leaf: Any) -> Any:
 
 
 def _normalized_strides(
-    leaves: list[Any], strides: PyTree[Stride], is_member: Callable[[Any], bool] | None = None
+    leaves: list[Any],
+    treedef: PyTreeDef,
+    strides: PyTree[Stride],
+    is_member: Callable[[Any], bool] | None = None,
 ) -> tuple[Stride, ...]:
-    """One stride per leaf, the leaves that are not `is_member` forced to None (they are shared).
+    """One stride per leaf of a tree, those of the leaves that are not `is_member` None (shared).
 
     By default, the member leaves are the arrays.
     """
     if is_member is None:
         is_member = _is_array
-    if strides is None or isinstance(strides, int | str):
-        flat: list[Stride] = [strides] * len(leaves)
-    else:
-        flat = jax.tree.flatten(strides, is_leaf=lambda x: x is None)[0]
-        if len(flat) != len(leaves):
-            raise ValueError(
-                f'{len(flat)} strides for {len(leaves)} leaves: strides must be a single '
-                f'value or a pytree aligned with the stacked leaves'
-            )
+    flat = _per_leaf(treedef, strides)
     return tuple(s if is_member(leaf) else None for leaf, s in zip(leaves, flat))
 
 
 def _normalized_axes(
-    leaves: list[Any], strides: tuple[Stride, ...], axes: PyTree[int | None]
+    leaves: list[Any], treedef: PyTreeDef, strides: tuple[Stride, ...], axes: PyTree[int | None]
 ) -> tuple[int | None, ...]:
-    """One non-negative member axis per leaf, None on the shared leaves."""
-    if axes is None or isinstance(axes, int):
-        flat: list[int | None] = [axes] * len(leaves)
-    else:
-        flat = jax.tree.flatten(axes, is_leaf=lambda x: x is None)[0]
-        if len(flat) != len(leaves):
-            raise ValueError(
-                f'{len(flat)} axes for {len(leaves)} leaves: axes must be a single '
-                f'value or a pytree aligned with the stacked leaves'
-            )
+    """One non-negative member axis per leaf of a tree, None on the shared leaves."""
+    flat = _per_leaf(treedef, axes)
     out: list[int | None] = []
     for leaf, s, a in zip(leaves, strides, flat):
         if s is None:
@@ -1677,6 +1662,35 @@ def _normalized_axes(
             raise ValueError(f'axis {a} is out of bounds for a leaf of shape {leaf.shape}')
         out.append(a % ndim)
     return tuple(out)
+
+
+def _per_leaf(treedef: PyTreeDef, values: PyTree[Any]) -> list[Any]:
+    """`values` as one entry per leaf of a tree of structure `treedef`.
+
+    `values` is a single value for every leaf, the canonical flat tuple of one value per leaf, or
+    a pytree with the structure `treedef`. In the latter, a None where the tree has a leaf is
+    that leaf's value, and a None subtree of the tree holds no leaf, so no value.
+
+    Raises:
+        ValueError: If `values` is a pytree whose structure is not `treedef`.
+    """
+    if _is_single_value(values):
+        return [values] * treedef.num_leaves
+    # A tuple of single values has the structure `treedef` only if the tree is a flat tuple, whose
+    # length is its number of leaves only if it holds no None: both readings then agree.
+    is_canonical = (
+        isinstance(values, tuple)
+        and len(values) == treedef.num_leaves
+        and all(_is_single_value(value) for value in values)
+    )
+    if is_canonical:
+        return list(values)
+    return treedef.flatten_up_to(values)
+
+
+def _is_single_value(value: Any) -> bool:
+    """Whether `value` is one stride or one member axis: an integer, a string or None."""
+    return value is None or isinstance(value, int | str)
 
 
 def _is_array(leaf: Any) -> bool:

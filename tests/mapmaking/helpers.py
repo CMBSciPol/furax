@@ -25,7 +25,7 @@ from furax.mapmaking import (
     SampleRanges,
 )
 from furax.mapmaking._accumulated import AccumulatedModel
-from furax.mapmaking._bucket import AMPLITUDE_KINDS
+from furax.mapmaking._bucket import AMPLITUDE_KINDS, amplitude_kinds
 from furax.mapmaking.config import HealpixConfig, LandscapeConfig, MapMakingConfig, PointingConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.math.coords import XiEtaAngles
@@ -358,7 +358,7 @@ def probe_normal_system(maker: MultiObservationMapMaker, seed: int = 0) -> tuple
         S = IndexOperator((..., *jnp.where(valid)), in_structure=maker.landscape.structure)
         system = acc.build_system(S, BJ)
         x = tree.normal_like(system.A.in_structure, jax.random.key(seed))
-        per_tile = [k for k in acc.buckets[0].amplitude_kinds if AMPLITUDE_KINDS[k] == 'tile']
+        per_tile = [k for k in amplitude_kinds(acc.buckets[0]) if AMPLITUDE_KINDS[k] == 'tile']
         x |= {kind: tree.zeros_like(x[kind]) for kind in per_tile}
         Ax, b = system.A(x), system.b
         return (

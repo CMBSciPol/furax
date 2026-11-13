@@ -1,40 +1,39 @@
 """The pass over the data: what each detector tile contributes to the system, and its buckets.
 
 The mapmaker reads its observations once, a bucket at a time. Each detector tile of a bucket goes
-through [`tile_kernel`][], which builds the tile's model and returns its
-[`TileContribution`][]: its hit map and map RHS, summed over the tiles, the right-hand sides of its
-amplitudes, and what the normal system keeps of it, its model and templates. The engine combines
-the contributions of the tiles as [`TILE_REDUCTIONS`][] says, and [`bucket_model`][] assembles
-what it keeps into the [`BucketModel`][furax.mapmaking._bucket.BucketModel] of the bucket.
+through [`tile_kernel`][], which builds the tile's model and returns its hit map and map RHS, summed
+over the tiles, the right-hand side of its amplitudes, its share of the Gram of the templates its
+observation's detectors share, and the [`Tile`][furax.mapmaking._bucket.Tile] the normal system
+keeps. The engine combines them over the tiles as [`TILE_REDUCTIONS`][] says, and
+[`bucket_tiles`][] makes the tiles of the bucket a stacked ensemble.
 """
 
 from collections.abc import Callable
 from dataclasses import replace
-from functools import partial
-from typing import Any, NamedTuple
+from typing import Any
 
 import jax
 import jax.numpy as jnp
 from fastquat import Quaternion
-from jaxtyping import Array, Int64, PyTree
+from jaxtyping import Array, PyTree
 
-from furax.core import Policy, StackedEnsemble, map_reduce
+from furax import AbstractLinearOperator, DiagonalOperator
+from furax.core import Policy, StackedEnsemble, lift, map_reduce
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesType
 
-from ._bucket import GAPS, AmplitudeKind, BucketModel, Tile
+from ._bucket import AMPLITUDE_KINDS, GAPS, AmplitudeKind, Tile
 from ._gaps import GapSplines
 from ._injection import inject, unpadded
 from ._model import (
     SHARED_TEMPLATES,
-    TEMPLATE_KINDS,
     TEMPLATES,
     TemplateBundle,
     TemplateKind,
     TileModel,
-    TileTemplates,
     acquisition_operator,
+    assemble_templates,
     restrict_streams,
 )
 from ._observation import ReaderField
@@ -45,70 +44,46 @@ from .templates import TemplateOperator
 from .templates.gram import factor
 from .weight import WeightOperator
 
-
-class TileContribution(NamedTuple):
-    """What one detector tile contributes to the system, from the pass over the data."""
-
-    hits: Int64[Array, '...']
-    """The hit map of the tile's good samples."""
-    map_rhs: StokesType
-    r"""The tile's share of the map RHS, $H^\top W' d$."""
-    model: TileModel
-    """The tile's model."""
-    implicit: TemplateBundle | None
-    """The tile's implicit templates, factored: its weight marginalizes their amplitudes."""
-    template_operators: dict[TemplateKind, TemplateOperator | None]
-    """The operator of the explicit templates of each kind of `TEMPLATE_KINDS`, `None` if
-    absent."""
-    template_gram_inverse: tuple[Any, Any] | None
-    """The inverse of the Gram of the templates of each detector, and its ridge, factored in the
-    tile (see [`factor`][furax.mapmaking.templates.gram.factor])."""
-    shared_template_gram: tuple[Any, Any]
-    """The tile's share of the Gram of the templates the observation's detectors share, and their
-    coarse amplitudes, `(None, None)` without them: the Gram is factored once summed over the
-    tiles."""
-    template_rhs: dict[TemplateKind, PyTree[Array] | None]
-    """The tile's share of the template RHS of each kind of template amplitudes."""
-    gap_rhs: Array | None
-    r"""The gap RHS $C_t^\top N_t^{-1} M_t d_t$, if the gaps are explicit, laid out as the TOD,
-    the budget of amplitudes of each channel in place of its samples."""
-    gap_preconditioner: Array | None
-    """The preconditioner of the gap amplitudes (see [`Tile.gap_preconditioner`][])."""
-
-
-_REDUCTIONS: dict[str, Any] = {
-    'hits': 'sum',
-    'map_rhs': 'sum',
+TILE_REDUCTIONS = (
+    'sum',  # the hit map
+    'sum',  # the map RHS
+    # the right-hand side of each kind of amplitudes, held where they are
+    {
+        kind: 'segment_sum' if holder == 'observation' else 1
+        for kind, holder in AMPLITUDE_KINDS.items()
+    },
+    # the templates an observation's detectors share: a Gram summed over its tiles, paired with
+    # its coarse amplitudes, which follow from the bases alone, the same in every tile, and the
+    # operator, kept as the tile's own
+    ('segment_sum', 'segment', 'auto'),
     # what the tiles of an observation share (boresight pointing, bases of the shared templates,
     # ...) is kept once per segment, the rest per tile
-    'model': 'auto',
-    'implicit': 'auto',
-    'template_operators': 'auto',
-    'template_gram_inverse': 1,
-    # a Gram summed over the tiles of an observation is paired with its coarse amplitudes, which
-    # follow from the bases alone, the same in every tile
-    'shared_template_gram': ('segment_sum', 'segment'),
-    'template_rhs': {
-        kind: 'segment_sum' if holder == 'observation' else 1
-        for kind, holder in TEMPLATE_KINDS.items()
-    },
-    'gap_rhs': 1,
-    'gap_preconditioner': 1,
-}
-
-TILE_REDUCTIONS = TileContribution(**_REDUCTIONS)
-"""How the engine combines the contributions of the tiles of a bucket (see `map_reduce`): the
-hit map and the map RHS are summed, and the rest is kept where its amplitudes live, per tile or
-per observation."""
+    'auto',
+)
+"""How the engine combines the outputs of [`tile_kernel`][] over the tiles of a bucket (see
+`map_reduce`): the hit map and the map RHS are summed, and the rest is kept where it lives, per
+tile or per observation."""
 
 
 def tile_kernel(
     config: MapMakingConfig, landscape: StokesLandscape, gaps: GapSplines | None = None
-) -> Callable[[tuple[Any, Any, Array], StokesType | None], TileContribution]:
-    """The kernel of the pass over a bucket: the contribution of one detector tile.
+) -> Callable[[tuple[Any, Any, Array], StokesType | None], tuple[Any, ...]]:
+    r"""The kernel of the pass over a bucket: the contribution of one detector tile.
 
     The member is one tile's read, the triple `(data, padding, use)` restricted to the tile's
     detectors; the sky to inject, if any, is a shared input that every member receives whole.
+    The kernel returns, in the order of [`TILE_REDUCTIONS`][]:
+
+    - the hit map of the tile's good samples;
+    - its share of the map RHS, $H^\top W' d$;
+    - the right-hand side of its amplitudes, keyed by each kind of `AMPLITUDE_KINDS`, `None` for a
+      kind absent: its template RHS $T^\top W' d$, its share of that of the templates its
+      observation's detectors share, and its gap RHS $C^\top N^{-1} M d$;
+    - the templates its observation's detectors share: its share of their Gram, their coarse
+      amplitudes and their operator, `(None, None, None)` without them. The Gram is factored once
+      summed over the tiles;
+    - the [`Tile`][furax.mapmaking._bucket.Tile], without the templates its observation's
+      detectors share.
 
     Args:
         config: The mapmaking configuration.
@@ -139,55 +114,47 @@ def tile_kernel(
     return kernel
 
 
-def bucket_model(
-    out: TileContribution,
-    resolved: TileContribution,
+def bucket_tiles(
+    shared: tuple[Any, Any, Any],
+    tile: Tile,
+    resolved: tuple[Any, ...],
     bucket: TileBucket,
     placement: TilePlacement,
     config: MapMakingConfig,
-) -> tuple[BucketModel, dict[AmplitudeKind, PyTree[Array]]]:
-    """The model of a bucket and the right-hand side of its amplitudes, from its tiles' contributions.
+) -> StackedEnsemble:
+    """The tiles of a bucket, from the outputs of [`tile_kernel`][] combined over the pass.
 
-    The Grams of the templates the detectors of an observation share are factored here, once
-    summed over its tiles, on the device that holds the observation. The right-hand side holds
-    the kinds of amplitudes present, `(tile, ...)`, or `(segment, ...)` for those the detectors
-    of an observation share.
+    Each leaf of the tiles is held as the engine combined it: per tile, per segment, or once for
+    the bucket. The Grams of the templates the detectors of an observation share are factored
+    here, once summed over its tiles, on the device that holds the observation, and the templates
+    joined to its tiles.
 
     Args:
-        out: The contributions of the tiles, combined by [`TILE_REDUCTIONS`][].
-        resolved: How each of their leaves was combined, as `map_reduce` resolves it.
+        shared: The templates the detectors of each observation share, as the kernel returns them.
+        tile: The tiles.
+        resolved: How each output of the kernel was combined, as `map_reduce` resolves it.
         bucket: The bucket.
         placement: The placement of its tiles on the devices.
         config: The mapmaking configuration.
     """
-    strides = _strides(out, resolved)
-    templates = template_strides = None
-    if config.use_templates:
-        shared, shared_strides = _factor_shared_gram(
-            out.shared_template_gram, placement, _gram_factor(config)
-        )
-        templates = TileTemplates.from_inverses(
-            out.implicit,
-            out.template_operators,
-            {TEMPLATES: out.template_gram_inverse, SHARED_TEMPLATES: shared},
-        )
-        template_strides = TileTemplates.from_inverses(
-            strides.implicit,
-            strides.template_operators,
-            {TEMPLATES: strides.template_gram_inverse, SHARED_TEMPLATES: shared_strides},
-        )
-    tile = Tile(out.model, templates, out.gap_preconditioner)
-    tile_strides = Tile(strides.model, template_strides, strides.gap_preconditioner)
+    *_, (_, _, operator_kinds), tile_kinds = resolved
     tiles = StackedEnsemble(
         bucket.n_tiles,
         tile,
-        tuple(jax.tree.structure(tile).flatten_up_to(tile_strides)),
+        tile_kinds,  # the kinds the leaves resolved to are their strides
         policy=Policy(axis=placement.axis),
         owner=placement.shard(bucket.owner),
         segments=bucket.n_segments,
     )
-    rhs: dict[AmplitudeKind, Any] = {**out.template_rhs, GAPS: out.gap_rhs}
-    return BucketModel(tiles), {kind: v for kind, v in rhs.items() if v is not None}
+    gram, coarse, operator = shared
+    if gram is None:
+        return tiles
+    operators = replace(tiles, stacked=operator, strides=operator_kinds, axes=0)
+    inverses = _factor_shared_gram(gram, coarse, tiles, config)
+    # structural: each ensemble keeps its leaves and strides, the inverses one per segment
+    joined = lift(_with_shared_templates, tiles, operators, inverses)
+    assert isinstance(joined, StackedEnsemble)
+    return joined
 
 
 def _contribution(
@@ -198,7 +165,7 @@ def _contribution(
     config: MapMakingConfig,
     landscape: StokesLandscape,
     gaps: GapSplines | None,
-) -> TileContribution:
+) -> tuple[Any, ...]:
     """The contribution of one tile, from the fields read for it and its TOD."""
     temperature = None
     if config.read_stokes != landscape.stokes:
@@ -220,35 +187,34 @@ def _contribution(
     masked = masked_tod.data if isinstance(masked_tod, Stokes) else masked_tod
     hits = jnp.int64(hit_pointing.T(StokesI(masked)).i)
 
+    implicit = templates = shared = None
     if config.use_templates:  # templates are rejected with gap filling (see `MapMakingConfig`)
-        built = TileTemplates.assemble(data, config, model, tod, temperature)
-        wd = built.weighted_tod
-        map_rhs, implicit = model.H.T(wd), built.implicit
-        operators, grams = built.operators, built.grams
+        implicit, templates, shared = assemble_templates(data, config, model, temperature)
+        wd = model.deprojected_weight(implicit)(tod)
+        map_rhs = model.H.T(wd)
     else:
         # Gaps filled: skip the data-side mask so the fill survives N⁻¹.
         filled = config.gap_treatment == GapTreatment.FILL
         map_rhs = (model.rhs_operator_prefilled if filled else model.rhs_operator)(tod)
-        implicit, wd = None, None
-        operators = grams = dict.fromkeys(TEMPLATE_KINDS)
-    gram, shared_gram = grams[TEMPLATES], grams[SHARED_TEMPLATES]
-    gap_rhs = gap_preconditioner = None
+        wd = None
+    rhs: dict[AmplitudeKind, Any] = dict.fromkeys(AMPLITUDE_KINDS)
+    gap_preconditioner = None
+    shared_outputs = (None, None, None)
+    if templates is not None:
+        rhs[TEMPLATES] = templates.operator.T(wd)
+    if shared is not None:
+        operator, gram = shared
+        rhs[SHARED_TEMPLATES] = operator.T(wd)
+        shared_outputs = (replace(gram, coarse=None), gram.coarse, operator)
     if model.gaps is not None:
-        gap_rhs, gap_preconditioner = _gap_system(model, tod)
-    return TileContribution(
-        hits=hits,
-        map_rhs=map_rhs,
-        model=model,
-        implicit=implicit,
-        template_operators=operators,
-        template_gram_inverse=None if gram is None else _gram_factor(config)(gram),
-        shared_template_gram=(None, None)
-        if shared_gram is None
-        else (replace(shared_gram, coarse=None), shared_gram.coarse),
-        template_rhs={kind: None if op is None else op.T(wd) for kind, op in operators.items()},
-        gap_rhs=gap_rhs,
-        gap_preconditioner=gap_preconditioner,
-    )
+        rhs[GAPS], gap_preconditioner = _gap_system(model, tod)
+    # the shared templates join the tiles once their Gram is factored (see `bucket_tiles`)
+    explicit: dict[TemplateKind, TemplateBundle | None] = {
+        TEMPLATES: templates,
+        SHARED_TEMPLATES: None,
+    }
+    tile = Tile(model, implicit, explicit, gap_preconditioner)
+    return hits, map_rhs, rhs, shared_outputs, tile
 
 
 def _filled(
@@ -277,7 +243,7 @@ def _filled(
     )
 
 
-def _gap_system(model: TileModel, tod: PyTree[Array]) -> tuple[Array, Array]:
+def _gap_system(model: TileModel, tod: PyTree[Array]) -> tuple[Array, DiagonalOperator]:
     r"""The gap RHS $C^\top N^{-1} M d$ of a tile, and the preconditioner of its gap amplitudes.
 
     The preconditioner is the inverse of the diagonal of their white-noise Gram $C^\top D C$.
@@ -287,55 +253,46 @@ def _gap_system(model: TileModel, tod: PyTree[Array]) -> tuple[Array, Array]:
     diagonal = C.squared().T(model.diag_W().weight(model.tod_format.ones()))
     usable = diagonal > 0  # the slots past the amplitudes of a detector are unused
     rhs = C.T(model.W.weight(model.M(tod)))
-    return rhs, jnp.where(usable, 1 / jnp.where(usable, diagonal, 1), 1)
-
-
-def _gram_factor(config: MapMakingConfig) -> Callable[[Any], Any]:
-    """`factor` of a Gram, with the run's template regularization."""
-    templates = config.templates
-    return partial(factor, regularization=0.0 if templates is None else templates.regularization)
+    inverse = jnp.where(usable, 1 / jnp.where(usable, diagonal, 1), 1)
+    return rhs, DiagonalOperator(inverse, in_structure=C.in_structure)
 
 
 def _factor_shared_gram(
-    gram: tuple[Any, Any], placement: TilePlacement, factor_gram: Callable[[Any], Any]
-) -> tuple[Any, Any]:
-    """The inverse of the Gram of the shared templates of each observation, and its strides.
+    gram: Any, coarse: Any, tiles: StackedEnsemble, config: MapMakingConfig
+) -> StackedEnsemble:
+    """The inverse of the Gram of the shared templates of each observation, and its ridge.
 
     The Gram is summed over the tiles of the observation, paired with its coarse amplitudes, and
-    factored on the device that holds the observation, one observation per round. Both are `None`
-    without shared templates.
+    factored on the device that holds the observation, one observation per round. The inverse is
+    returned as an ensemble of `tiles`, each tile reading that of its observation.
     """
-    gram, coarse = gram
-    if gram is None:
-        return None, None
-    n_segments = jax.tree.leaves(gram)[0].shape[0]
-    ensemble = StackedEnsemble(n_segments, (gram, coarse), policy=Policy(axis=placement.axis))
+    assert config.templates is not None  # a shared Gram comes with templates
+    assert tiles.segments is not None  # the tiles are grouped by observation
+    regularization = config.templates.regularization
+    ensemble = StackedEnsemble(
+        tiles.segments, (gram, coarse), policy=Policy(axis=tiles.policy.axis)
+    )
 
     def factor_one(member):
         gram, coarse = member
-        return factor_gram(replace(gram, coarse=coarse))
+        return factor(replace(gram, coarse=coarse), regularization=regularization)
 
     inverse, kinds = map_reduce(factor_one, ensemble, 'auto')
-    # one per observation: per segment among the tiles
-    return inverse, _strides(inverse, kinds, segment=True)
+    return StackedEnsemble(
+        tiles.size,
+        inverse,
+        # stacked over the segments, an inverse is one per observation among the tiles; the
+        # shared leaves, of kind None, stay None
+        jax.tree.map(lambda _: 'segment', kinds),
+        policy=tiles.policy,
+        owner=tiles.owner,
+        segments=tiles.segments,
+    )
 
 
-def _strides(outputs: PyTree[Any], resolved: PyTree[Any], segment: bool = False) -> PyTree[Any]:
-    """The stride of each output leaf of `map_reduce` in an ensemble of tiles.
-
-    An output stacked per tile has stride 1, one kept or summed per segment the stride
-    `'segment'`, and one shared by the bucket None. With `segment`, the outputs are those of an
-    ensemble of segments, whose stacked outputs are per segment among the tiles.
-
-    The resolved spec puts `None` on the shared leaves, which `jax.tree.map` over the outputs
-    would read as a missing subtree; the returned tree has the structure of the outputs, so it
-    maps with them.
-    """
-    treedef = jax.tree.structure(outputs)
-    kinds = treedef.flatten_up_to(resolved)
-    per_member = 'segment' if segment else 1
-    strides = [
-        None if kind is None else 'segment' if kind in ('segment', 'segment_sum') else per_member
-        for kind in kinds
-    ]
-    return jax.tree.unflatten(treedef, strides)
+def _with_shared_templates(
+    tile: Tile, operator: TemplateOperator, inverse: tuple[AbstractLinearOperator, Any]
+) -> Tile:
+    """`tile` with the templates its observation's detectors share, their Gram factored."""
+    shared = TemplateBundle(operator, *inverse)
+    return replace(tile, explicit=tile.explicit | {SHARED_TEMPLATES: shared})

@@ -108,7 +108,7 @@ def test_mixed_explicit_and_implicit():
             azimuth_synchronous=_azimuth_spline(6, False),
         )
     )
-    templates = accumulate(MultiObservationMapMaker(_ground_obs(), config=cfg)).buckets[0].templates
+    templates = accumulate(MultiObservationMapMaker(_ground_obs(), config=cfg)).buckets[0].template
     assert list(templates.explicit[TEMPLATES].operator.templates) == ['hwp_synchronous']
     assert list(templates.implicit.operator.templates) == ['azimuth_synchronous']
 
@@ -158,7 +158,7 @@ def test_demodulated_streams_fitted_alike_form_one_template(name, option, templa
     else:
         template.n_knots = option
     acc = accumulate(MultiObservationMapMaker(_ground_obs(), config=cfg))
-    operator = acc.buckets[0].templates.implicit.operator
+    operator = acc.buckets[0].template.implicit.operator
     assert {key: t.streams for key, t in operator.templates.items()} == templates
 
 

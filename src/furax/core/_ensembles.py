@@ -1641,7 +1641,7 @@ def _normalized_strides(
     """
     if is_member is None:
         is_member = _is_array
-    flat = _per_leaf(treedef, strides)
+    flat = _per_leaf(treedef, strides, 'strides')
     return tuple(s if is_member(leaf) else None for leaf, s in zip(leaves, flat))
 
 
@@ -1649,7 +1649,7 @@ def _normalized_axes(
     leaves: list[Any], treedef: PyTreeDef, strides: tuple[Stride, ...], axes: PyTree[int | None]
 ) -> tuple[int | None, ...]:
     """One non-negative member axis per leaf of a tree, None on the shared leaves."""
-    flat = _per_leaf(treedef, axes)
+    flat = _per_leaf(treedef, axes, 'axes')
     out: list[int | None] = []
     for leaf, s, a in zip(leaves, strides, flat):
         if s is None:
@@ -1664,7 +1664,7 @@ def _normalized_axes(
     return tuple(out)
 
 
-def _per_leaf(treedef: PyTreeDef, values: PyTree[Any]) -> list[Any]:
+def _per_leaf(treedef: PyTreeDef, values: PyTree[Any], name: str) -> list[Any]:
     """`values` as one entry per leaf of a tree of structure `treedef`.
 
     `values` is a single value for every leaf, the canonical flat tuple of one value per leaf, or
@@ -1685,7 +1685,11 @@ def _per_leaf(treedef: PyTreeDef, values: PyTree[Any]) -> list[Any]:
     )
     if is_canonical:
         return list(values)
-    return treedef.flatten_up_to(values)
+    try:
+        return treedef.flatten_up_to(values)
+    except ValueError as error:
+        msg = f'{name} must be a single value or a pytree with the structure {treedef}: {error}'
+        raise ValueError(msg) from None
 
 
 def _is_single_value(value: Any) -> bool:

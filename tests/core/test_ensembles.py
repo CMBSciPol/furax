@@ -543,7 +543,7 @@ def test_strides_and_axes_may_hold_none_subtrees(build, expected):
     ids=['other-key', 'missing-key', 'too-many'],
 )
 def test_strides_misaligned_with_the_stacked_pytree_are_rejected(strides):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='strides must be a single value or a pytree'):
         StackedEnsemble(N, {'x': _xs(), 'b': jnp.ones((N // 2, N_SAMPS))}, strides)
 
 

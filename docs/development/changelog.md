@@ -89,6 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `map_reduce` over a `ListEnsemble` accepts members holding 0-d arrays (#463)
 - Padded samples are no longer binned onto one pixel, which serialized the GPU scatter in proportion to the padding (#425)
 - `MultiObservationMapMaker` builds the weight of each detector tile once, with its final mask, instead of building it again to gate out padding tiles and failed observations (#477)
+- The strides and axes of `StackedEnsemble`, `HostEnsemble` and `Ensemble.zip` can follow a pytree holding `None`, and `lift` accepts functions whose output holds `None` (#486)
 
 ## [0.17.2] - 2026-10-30
 

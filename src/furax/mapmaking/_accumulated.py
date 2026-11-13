@@ -79,17 +79,15 @@ class AccumulatedModel:
             sky: A simulated sky on the full grid, whose right-hand side `injected_b` is added.
 
         Returns:
-            The system to solve. Its unknowns are the selected sky pixels, then the amplitudes
-            of each kind of explicit template present, if any, one block per bucket.
+            The system to solve. Its unknowns are the selected sky pixels; with amplitudes, a
+            dictionary of them under `'map'` and of the amplitudes of each kind, one block per
+            bucket.
         """
         # Restrict BJ preconditioner to selected pixels
         M = (S @ BJ.I @ S.T).reduce()
 
         # Explicit templates are configured for the run, so every bucket carries them or none.
-        templates = self.buckets[0].templates
-        kinds = []
-        if templates is not None:
-            kinds = [kind for kind in FACTORED_KINDS if getattr(templates, kind) is not None]
+        kinds = self.buckets[0].amplitude_kinds
 
         if not kinds:
             terms = [
@@ -107,16 +105,17 @@ class AccumulatedModel:
         structures = {
             kind: [_amplitude_structure(bm, kind) for bm in self.buckets] for kind in kinds
         }
-        at = {kind: 1 + k for k, kind in enumerate(kinds)}  # their block among the unknowns
 
         # Joint system. Each bucket's system sees the selected pixels and its own amplitudes,
         # picked out of the lists and embedded back by `E`.
         terms, responses = [], []
         for b, bm in enumerate(self.buckets):
-            in_structure = [S.out_structure, *(structures[kind][b] for kind in kinds)]
+            in_structure = {'map': S.out_structure} | {kind: structures[kind][b] for kind in kinds}
             normal = BucketNormalOperator(bm, S, in_structure=in_structure)
-            picks = [BlockSelectOperator(b, in_structure=structures[kind]) for kind in kinds]
-            E = BlockDiagonalOperator([IdentityOperator(in_structure=S.out_structure), *picks])
+            picks = {kind: BlockSelectOperator(b, in_structure=structures[kind]) for kind in kinds}
+            E = BlockDiagonalOperator(
+                {'map': IdentityOperator(in_structure=S.out_structure)} | picks
+            )
             terms.append((E.T @ normal @ E).reduce())
             if sky is not None:
                 responses.append(E.T(normal.response(sky)))
@@ -137,24 +136,19 @@ class AccumulatedModel:
             ridged = ridges[kind]
             assert all(r is None for r in ridged) or all(r is not None for r in ridged)
             if ridged[0] is not None:
-                amplitudes = BlockSelectOperator(at[kind], in_structure=terms[0].in_structure)
+                amplitudes = BlockSelectOperator(kind, in_structure=terms[0].in_structure)
                 terms.append((amplitudes.T @ BlockDiagonalOperator(ridged) @ amplitudes).reduce())
 
-        rhs = [
-            S(self.map_rhs),
-            *(
-                # declared stacked over the tiles, the right-hand sides of each tile's own
-                # amplitudes are wholly per tile
-                [
-                    bm.tiles.stacked.amplitude_rhs
-                    if FACTORED_KINDS[kind] == 'stack'
-                    else bm.common_rhs
-                    for bm in self.buckets
-                ]
-                for kind in kinds
-            ),
-        ]
-        M = BlockDiagonalOperator([M, *(inverses[kind] for kind in kinds)])
+        rhs = {'map': S(self.map_rhs)} | {
+            # declared stacked over the tiles, the right-hand sides of each tile's own amplitudes
+            # are wholly per tile
+            kind: [
+                bm.tiles.stacked.amplitude_rhs if FACTORED_KINDS[kind] == 'stack' else bm.common_rhs
+                for bm in self.buckets
+            ]
+            for kind in kinds
+        }
+        M = BlockDiagonalOperator({'map': M} | inverses)
         A = AdditionOperator(terms, sequential=True)
         response = None
         if sky is not None:
@@ -162,19 +156,18 @@ class AccumulatedModel:
         return MapMakingSystem(A, rhs, M, has_amplitudes=True, injected_b=response)
 
     def template_amplitudes(
-        self, blocks: list[list[PyTree[Array]]], placement: TilePlacement
+        self, x: dict[str, PyTree[Array]], placement: TilePlacement
     ) -> dict[str, np.ndarray]:
-        """The explicit-template amplitudes solved for, per observation, from their CG blocks.
+        """The explicit-template amplitudes solved for, per observation, from the unknowns `x`.
 
         Every device holds the same replicated copy after the gather, so the host array is
         complete on every process; then back to observation order.
         """
-        # Explicit templates are configured for the run, so every bucket carries them or none.
-        templates = self.buckets[0].templates
-        explicit = None if templates is None else templates.explicit
         amplitudes = {}
-        if explicit is not None:
-            own, *blocks = blocks
+        if (own := x.get('explicit')) is not None:
+            templates = self.buckets[0].templates
+            assert templates is not None and templates.explicit is not None
+            explicit = templates.explicit
             per_bucket = [placement.gather(a) for a in own]
             for name in per_bucket[0]:
                 # the detector axis follows the stream axis, if any (see `Template`), after the
@@ -183,7 +176,7 @@ class AccumulatedModel:
                 amplitudes[name] = placement.layout.to_observation_order(
                     [a[name] for a in per_bucket], detector_axis=axis
                 )
-        for common in blocks:  # one set per segment, no detector axis
+        if (common := x.get('common')) is not None:  # one set per segment, no detector axis
             amplitudes |= jax.tree.map(
                 lambda *leaves: placement.layout.to_observation_order(leaves),
                 *[placement.gather(a) for a in common],

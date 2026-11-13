@@ -25,7 +25,7 @@ from furax import AbstractLinearOperator, symmetric
 from furax.core import BlockRowOperator, Policy, StackedEnsemble, map_reduce
 from furax.obs.stokes import StokesType
 
-from ._model import ObservationModel, ObservationTemplates
+from ._model import FACTORED_KINDS, ObservationModel, ObservationTemplates
 
 
 @register_dataclass
@@ -56,6 +56,14 @@ class BucketModel:
     def templates(self) -> ObservationTemplates | None:
         """The kinds of templates of the bucket, from the structure of its tiles."""
         return self.tiles.template.templates
+
+    @property
+    def amplitude_kinds(self) -> tuple[str, ...]:
+        """The kinds of amplitudes solved for with the map, each a key of the unknowns."""
+        templates = self.templates
+        if templates is None:
+            return ()
+        return tuple(kind for kind in FACTORED_KINDS if getattr(templates, kind) is not None)
 
 
 def bucket_apply(
@@ -111,24 +119,23 @@ def bucket_apply(
 
 
 def joint_operator(
-    tile: Tile, selection: AbstractLinearOperator | None, own: bool, common: bool
+    tile: Tile, selection: AbstractLinearOperator | None, kinds: tuple[str, ...]
 ) -> AbstractLinearOperator:
     r"""$J_t = [H_t S^\top, T_{e,t}, T_{g,t}]$ of a tile, with the amplitudes asked for.
+
+    Its input is a dictionary: the `'map'`, and the amplitudes of each kind of `kinds`.
 
     Args:
         tile: The tile.
         selection: The selection $S$ of the estimated pixels; the whole sky without it.
-        own: Whether to include the tile's own explicit amplitudes.
-        common: Whether to include those its observation's detectors have in common.
+        kinds: The kinds of amplitudes to include (see [`BucketModel.amplitude_kinds`][]).
     """
     H = tile.model.H if selection is None else tile.model.H @ selection.T
-    blocks = [H]
-    if own:
-        assert tile.templates is not None and tile.templates.explicit is not None
-        blocks.append(tile.templates.explicit.operator)
-    if common:
-        assert tile.templates is not None and tile.templates.common is not None
-        blocks.append(tile.templates.common.operator)
+    blocks = {'map': H}
+    for kind in kinds:
+        bundle = None if tile.templates is None else getattr(tile.templates, kind)
+        assert bundle is not None
+        blocks[kind] = bundle.operator
     return BlockRowOperator(blocks)
 
 
@@ -155,9 +162,9 @@ def segment_ensemble(ensemble: StackedEnsemble) -> StackedEnsemble:
 class BucketNormalOperator(AbstractLinearOperator):
     r"""$\sum_t J_t^\top W'_t J_t$ over the detector tiles of a bucket.
 
-    The unknowns are a list: the map, then the tiles' own amplitudes and their observations', if
-    the bucket has such templates and `amplitudes` is set. Otherwise they are the map alone. Without
-    `selection`, the map is the whole sky.
+    The unknowns are a dictionary: the `'map'`, and the amplitudes of each kind the bucket has
+    (see [`BucketModel.amplitude_kinds`][]), if `amplitudes` is set. Otherwise, or without such
+    amplitudes, they are the map alone. Without `selection`, the map is the whole sky.
     """
 
     model: BucketModel
@@ -177,27 +184,19 @@ class BucketNormalOperator(AbstractLinearOperator):
         selection = self.selection
 
         def apply(tile, m, own_t, common_o):
-            J = joint_operator(tile, selection, *self._amplitudes_present)
-            inputs = [v for v in (own_t, common_o) if v is not None]
-            return self._project(tile, self._weight(tile)(J([m, *inputs])), selection)
+            J = joint_operator(tile, selection, self._kinds)
+            return _by_owner(J.T(self._weight(tile)(J({'map': m, **own_t, **common_o}))))
 
         return self._join(*bucket_apply(self.model, apply, m, own, common, self.policy))
 
     def response(self, sky: StokesType) -> Any:
         r"""$\sum_t J_t^\top W'_t H_t \, s$: the right-hand side of the TOD of a sky `sky`."""
-        selection = self.selection
 
         def apply(tile, sky, _own, _common):
-            return self._project(tile, self._weight(tile)(tile.model.H(sky)), selection)
+            J = joint_operator(tile, self.selection, self._kinds)
+            return _by_owner(J.T(self._weight(tile)(tile.model.H(sky))))
 
-        return self._join(*bucket_apply(self.model, apply, sky, None, None, self.policy))
-
-    def _project(
-        self, tile: Tile, u: PyTree[Array], selection: AbstractLinearOperator | None
-    ) -> tuple[Any, Any, Any]:
-        r"""$J_t^\top u$, in parts."""
-        own, common = self._amplitudes_present
-        return _unpack(joint_operator(tile, selection, own, common).T(u), own, common)
+        return self._join(*bucket_apply(self.model, apply, sky, {}, {}, self.policy))
 
     def _weight(self, tile: Tile) -> AbstractLinearOperator:
         if self.weight == 'system':
@@ -207,25 +206,21 @@ class BucketNormalOperator(AbstractLinearOperator):
         return (W @ model.F).reduce()
 
     @property
-    def _amplitudes_present(self) -> tuple[bool, bool]:
-        """Whether the unknowns have the tiles' own amplitudes, and their observations'."""
-        templates = self.model.templates
-        if not self.amplitudes or templates is None:
-            return False, False
-        return templates.explicit is not None, templates.common is not None
+    def _kinds(self) -> tuple[str, ...]:
+        """The kinds of amplitudes among the unknowns."""
+        return self.model.amplitude_kinds if self.amplitudes else ()
 
-    def _split(self, x: Any) -> tuple[Any, Any, Any]:
-        """The map and the amplitudes of each kind, `None` for those absent."""
-        own, common = self._amplitudes_present
-        if not own and not common:
-            return x, None, None
-        return _unpack(x, own, common)
+    def _split(self, x: Any) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+        """The map and the amplitudes of the unknowns `x`, in parts (see [`_by_owner`][])."""
+        if not self._kinds:
+            return x, {}, {}
+        return _by_owner(x)
 
-    def _join(self, m: Any, own: Any, common: Any) -> Any:
-        present_own, present_common = self._amplitudes_present
-        if not present_own and not present_common:
+    def _join(self, m: Any, own: dict[str, Any], common: dict[str, Any]) -> Any:
+        """The unknowns from their parts."""
+        if not self._kinds:
             return m
-        return [m, *([own] if present_own else []), *([common] if present_common else [])]
+        return {'map': m, **own, **common}
 
 
 @symmetric
@@ -253,7 +248,11 @@ class MemberOperator(AbstractLinearOperator):
         return out
 
 
-def _unpack(parts: list[PyTree[Array]], own: bool, common: bool) -> tuple[Any, Any, Any]:
-    """The map and the amplitudes of each kind of a list of parts, `None` for those absent."""
-    m, *rest = parts
-    return m, rest.pop(0) if own else None, rest.pop(0) if common else None
+def _by_owner(x: dict[str, Any]) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    """The map of the unknowns `x`, and their amplitudes of each tile and of each observation.
+
+    The engine strides the two differently: per tile, and per segment.
+    """
+    own = {kind: v for kind, v in x.items() if kind != 'map' and FACTORED_KINDS[kind] == 'stack'}
+    common = {kind: v for kind, v in x.items() if kind != 'map' and FACTORED_KINDS[kind] == 'sum'}
+    return x['map'], own, common

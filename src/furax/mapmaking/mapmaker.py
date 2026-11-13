@@ -14,31 +14,32 @@ from jaxtyping import Array, Bool, Float, Int64, Integer
 
 import furax.linalg
 import furax.tree
-from furax.core import HostEnsemble, IndexOperator, Policy, map_reduce
+from furax.core import HostEnsemble, IndexOperator, Policy, StackedEnsemble, map_reduce
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.stokes import StokesType
 from furax.profiling import format_bytes
 
 from . import _report
 from ._accumulated import AccumulatedModel
-from ._bucket import AmplitudeKind, BucketModel
+from ._bucket import AmplitudeKind
 from ._catalog import ObservationCatalog, ProbeRecord, Read, detector_table, gather_rows
 from ._gaps import GapSplines, gap_budget, knot_spacing, max_gap_amplitudes
 from ._injection import load_sky
 from ._landscape import explicit_wcs_geometry, scan_wcs_footprint
-from ._model import TileModel, TileTemplates
+from ._model import TileModel
 from ._observation import (
     AbstractLazyObservation,
     ObservationBufferShape,
     ObservationProbe,
     ReaderField,
 )
-from ._pass import TILE_REDUCTIONS, bucket_model, tile_kernel
+from ._pass import TILE_REDUCTIONS, bucket_tiles, tile_kernel
 from ._provenance import provenance
 from ._reader import ObservationReader, TileReader, detector_tile_structure
 from .config import GapTreatment, InjectionMode, MapMakingConfig, NoiseSource, WeightingMode
 from .layout import TileLayout, TilePlacement
 from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
+from .templates import required_reader_fields
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +180,7 @@ class MultiObservationMapMaker[T]:
             detectors=detector_table(
                 self._catalog.reads,
                 noise_parameters,
-                acc.buckets[0].tiles.template.model.tod_format.stokes,
+                acc.buckets[0].template.model.tod_format.stokes,
                 drops,
             ),
         )
@@ -202,15 +203,15 @@ class MultiObservationMapMaker[T]:
         sky = None
         if scanned_sky is not None:
             sky = self.placement.broadcast(scanned_sky)
-        bucket_models = []
+        buckets = []
         for b, reader in enumerate(self.readers):
-            hits, map_rhs, bucket_rhs, model = self._accumulate_bucket(b, reader, sky)
+            hits, map_rhs, bucket_rhs, tiles = self._accumulate_bucket(b, reader, sky)
             hit_map = hit_map + hits
             rhs['map'] = furax.tree.add(rhs['map'], map_rhs)
             for kind, kind_rhs in bucket_rhs.items():
                 rhs.setdefault(kind, []).append(kind_rhs)
-            bucket_models.append(model)
-        return AccumulatedModel(buckets=bucket_models, hit_map=hit_map, rhs=rhs)
+            buckets.append(tiles)
+        return AccumulatedModel(buckets=buckets, hit_map=hit_map, rhs=rhs)
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -276,7 +277,8 @@ class MultiObservationMapMaker[T]:
     def reader_fields(self) -> set[str]:
         rhs_fields = {ReaderField.METADATA, ReaderField.SAMPLE_DATA}
         model_fields = TileModel.required_reader_fields(self.config)
-        template_fields = TileTemplates.required_reader_fields(self.config)
+        templates = self.config.templates
+        template_fields = set() if templates is None else required_reader_fields(templates)
         return model_fields | rhs_fields | template_fields
 
     @property
@@ -394,15 +396,15 @@ class MultiObservationMapMaker[T]:
 
     def _accumulate_bucket(
         self, bucket_index: int, reader: ObservationReader[T], sky: StokesType | None
-    ) -> tuple[Int64[Array, '...'], StokesType, dict[AmplitudeKind, Any], BucketModel]:
-        """One bucket's pass over the data: its hit map, its right-hand sides and its stacked model.
+    ) -> tuple[Int64[Array, '...'], StokesType, dict[AmplitudeKind, Any], StackedEnsemble]:
+        """One bucket's pass over the data: its hit map, its right-hand sides and its tiles.
 
         The pass is an engine call on a host ensemble of the bucket's tiles: each round launches
         one tile on each device while its process reads the next round. An observation is read
         once, when its first tile is, and held on the host until its last tile has been read, so
         only one observation per device is in memory at a time, and the processes need not keep
         in step until the device sum at the end. The stacked outputs land sharded over the tiles
-        and the segments, which is the layout `BucketModel` holds.
+        and the segments, which is the layout of the bucket's tiles.
         """
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         bucket = self.layout.buckets[bucket_index]
@@ -431,9 +433,11 @@ class MultiObservationMapMaker[T]:
             segments=bucket.n_segments,
         )
         kernel = tile_kernel(self.fit_config, self.landscape, self._gap_splines[bucket_index])
-        out, resolved = map_reduce(kernel, ensemble, TILE_REDUCTIONS, sky)
-        model, rhs = bucket_model(out, resolved, bucket, self.placement, self.fit_config)
-        return out.hits, out.map_rhs, rhs, model
+        (hits, map_rhs, rhs, shared, tile), resolved = map_reduce(
+            kernel, ensemble, TILE_REDUCTIONS, sky
+        )
+        tiles = bucket_tiles(shared, tile, resolved, bucket, self.placement, self.fit_config)
+        return hits, map_rhs, {kind: v for kind, v in rhs.items() if v is not None}, tiles
 
     @cached_property
     def _prefetches_reads(self) -> bool:

@@ -130,9 +130,10 @@ class GapSplineOperator(AbstractLinearOperator):
         Their knots are every `spacing` samples. `flagged` broadcasts to the TOD: channels that
         share their flags, as the streams of a detector do, share the layout of their amplitudes.
         """
-        (leaf,), treedef = jax.tree.flatten(mask.in_structure)
+        treedef = jax.tree.structure(mask.in_structure)
+        structure = _amplitude_structure(mask, budget)
         layout = _GapLayout.create(flagged, spacing)
-        dtype = leaf.dtype
+        dtype = structure.dtype
         # position on the knot grid of the gap, from 0 at its first sample to `intervals` at its last
         u = layout.position.astype(dtype) / jnp.maximum(layout.length - 1, 1) * layout.intervals
         offset = jnp.clip(jnp.floor(u).astype(jnp.int32), 0, layout.intervals - 1)
@@ -150,7 +151,6 @@ class GapSplineOperator(AbstractLinearOperator):
         first_slot = jnp.cumsum(layout.amplitudes, axis=-1)
         first_slot = first_slot - layout.functions
         index = jnp.clip(first_slot[..., None] + local[..., None] + o, 0, budget - 1)
-        structure = jax.ShapeDtypeStruct((*leaf.shape[:-1], budget), dtype)
         return cls(index, values, treedef, in_structure=structure)
 
     def squared(self) -> Self:
@@ -168,6 +168,35 @@ class GapSplineOperator(AbstractLinearOperator):
         for _ in range(x.ndim - (self.index.ndim - 1)):
             apply = jax.vmap(apply)
         return jax.tree.unflatten(self.tod_treedef, [apply(x)])
+
+
+class GapBasisOperator(AbstractLinearOperator):
+    """The gap basis $C$ of a mask, built when applied.
+
+    [`GapSplineOperator`][] holds several values per sample, which this holds none of: a tile
+    keeps its mask, and builds the basis of its gaps only to apply it.
+    """
+
+    mask: MaskOperator
+    """The mask $M$ of the good samples."""
+    n_samples: Int[Array, '']
+    """The number of samples of the observation, before those padding it."""
+    gaps: GapSplines = field(metadata={'static': True})
+    """The spline model of the gaps."""
+
+    @classmethod
+    def create(cls, gaps: GapSplines, mask: MaskOperator, n_samples: Int[Array, '']) -> Self:
+        """The basis of the gaps of `mask`, as [`GapSplines.basis`][] builds it."""
+        return cls(mask, n_samples, gaps, in_structure=_amplitude_structure(mask, gaps.budget))
+
+    def mv(self, x: Array) -> PyTree[Array]:
+        return self.gaps.basis(self.mask, self.n_samples).mv(x)
+
+
+def _amplitude_structure(mask: MaskOperator, budget: int) -> jax.ShapeDtypeStruct:
+    """The amplitudes of the gaps of the TOD of `mask`: `budget` slots in place of its samples."""
+    (leaf,) = jax.tree.leaves(mask.in_structure)
+    return jax.ShapeDtypeStruct((*leaf.shape[:-1], budget), leaf.dtype)
 
 
 def _flagged(

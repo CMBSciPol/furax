@@ -15,13 +15,12 @@ from jaxtyping import Array, PyTree
 
 from furax.core import StackedEnsemble, lift
 
-from ._bucket import BucketModel
 from ._model import DROP_REASONS, SHARED_TEMPLATES, TEMPLATES
 from .layout import TilePlacement
 
 
 def template_amplitudes(
-    buckets: Sequence[BucketModel], x: dict[str, PyTree[Array]], placement: TilePlacement
+    buckets: Sequence[StackedEnsemble], x: dict[str, PyTree[Array]], placement: TilePlacement
 ) -> dict[str, np.ndarray]:
     """The template amplitudes solved for, by template, per observation, from the unknowns `x`.
 
@@ -30,8 +29,7 @@ def template_amplitudes(
     """
     amplitudes = {}
     if (per_detector := x.get(TEMPLATES)) is not None:
-        templates = buckets[0].templates
-        bundle = None if templates is None else templates.explicit[TEMPLATES]
+        bundle = buckets[0].template.explicit[TEMPLATES]
         assert bundle is not None
         operator = bundle.operator
         per_bucket = [placement.gather(a) for a in per_detector]
@@ -51,7 +49,7 @@ def template_amplitudes(
 
 
 def detector_drops(
-    buckets: Sequence[BucketModel], placement: TilePlacement
+    buckets: Sequence[StackedEnsemble], placement: TilePlacement
 ) -> dict[str, np.ndarray]:
     """Per detector, whether it was dropped, by reason (see [`DROP_REASONS`][]).
 
@@ -59,13 +57,13 @@ def detector_drops(
     padded with `False`.
     """
     per_bucket = []
-    for bm in buckets:
-        flags = lift(lambda tile: {r: getattr(tile.model, r) for r in DROP_REASONS}, bm.tiles)
+    for tiles in buckets:
+        flags = lift(lambda tile: {r: getattr(tile.model, r) for r in DROP_REASONS}, tiles)
         assert isinstance(flags, StackedEnsemble)
         leaves, treedef = jax.tree.flatten(placement.gather(flags.stacked))
         # a flag the same in every tile, as when none is dropped, is held once
         leaves = [
-            v if stride == 1 else np.broadcast_to(v, (bm.tiles.size, *v.shape))
+            v if stride == 1 else np.broadcast_to(v, (tiles.size, *v.shape))
             for v, stride in zip(leaves, flags.strides, strict=True)
         ]
         per_bucket.append(jax.tree.unflatten(treedef, leaves))
@@ -78,16 +76,16 @@ def detector_drops(
 
 
 def noise_parameters(
-    buckets: Sequence[BucketModel], placement: TilePlacement
+    buckets: Sequence[StackedEnsemble], placement: TilePlacement
 ) -> dict[str, np.ndarray]:
     """The noise model parameters of every detector, in observation order.
 
     Each parameter is `(n_observations, [stream,] detector)`, its detector axis padded.
     """
     per_bucket = []
-    for bm in buckets:
+    for tiles in buckets:
         # the parameters of the detectors are held per tile: `(tile, ..., detector)`
-        noise = lift(lambda tile: tile.model.noise_model, bm.tiles)
+        noise = lift(lambda tile: tile.model.noise_model, tiles)
         assert isinstance(noise, StackedEnsemble)
         leaves, _ = jax.tree_util.tree_flatten_with_path(placement.gather(noise.stacked))
         per_bucket.append(

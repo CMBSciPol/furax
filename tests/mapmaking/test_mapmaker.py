@@ -106,7 +106,7 @@ def test_model_matches_the_reader_and_the_landscape(stokes, demodulated):
     (bucket,) = maker.layout.buckets
     (reader,) = maker.readers
     assert reader.count == len(observations)
-    tiles = accumulate(maker).buckets[0].tiles
+    tiles = accumulate(maker).buckets[0]
     assert tiles.size == bucket.n_tiles
     model = tiles.template.model
     # structures compared ignoring sharding (the model is built sharded inside shard_map)

@@ -90,7 +90,7 @@ class AccumulatedModel:
             )
             terms.append((E.T @ normal @ E).reduce())
             if sky is not None:
-                responses.append(E.T(bucket_response(tiles, S, sky)))
+                responses.append(E.T(bucket_response(tiles, S)(sky)))
 
         # The ridge the Gram inverses were factored with acts on the amplitudes alone, so it is
         # one term over them all, outside the passes over the TOD.

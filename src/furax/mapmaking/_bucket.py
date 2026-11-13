@@ -24,21 +24,21 @@ shared templates, ...), or held once for the bucket. The functions and operators
 evaluate the sums over it with the ensemble engine.
 """
 
-from dataclasses import dataclass, field, replace
-from typing import Any, Final, Literal
+from dataclasses import dataclass, replace
+from typing import Final, Literal
 
 from jax.tree_util import register_dataclass
 
-from furax import AbstractLinearOperator, symmetric
+from furax import AbstractLinearOperator
 from furax.core import (
     AdditionOperator,
     BlockDiagonalOperator,
     BlockRowOperator,
+    DeferredOperator,
     StackedEnsemble,
+    Stride,
     lift,
-    map_reduce,
 )
-from furax.obs.stokes import StokesType
 
 from ._gaps import GapBasisOperator
 from ._model import TEMPLATE_KINDS, Holder, TemplateBundle, TemplateKind, TileModel
@@ -160,8 +160,7 @@ def _amplitude_operator(
 
 
 _STRIDES: dict[Holder, Literal[1, 'segment']] = {'tile': 1, 'observation': 'segment'}
-"""How each tile reads the amplitudes held per tile, and per observation, and how the
-contributions of the tiles to them combine: per tile, and summed over each observation."""
+"""The stride of the amplitudes held per tile, and per observation, in the sums over the tiles."""
 
 
 def tile_joint(
@@ -210,24 +209,43 @@ def tile_weight(
     return (W @ model.F).reduce()
 
 
-@symmetric
-class TileNormalOperator(AbstractLinearOperator):
-    r"""$J_t^\top W'_t J_t$ of a tile (see [`tile_joint`][] and [`tile_weight`][]).
+@dataclass(frozen=True)
+class TileNormal:
+    r"""Builds $J_t^\top W'_t J_t$ of a tile from `(tile, selection)`.
 
-    It holds the tile and builds $J_t$ and $W'_t$ when applied, so that lifting it over the tiles
-    of a bucket reuses their arrays and strides.
+    The builder of a [`DeferredOperator`][furax.core.DeferredOperator], see [`tile_joint`][] and
+    [`tile_weight`][].
     """
 
-    tile: Tile
-    selection: AbstractLinearOperator | None
-    """The selection of the estimated pixels, if any."""
-    kinds: tuple[AmplitudeKind, ...] = field(metadata={'static': True})
+    kinds: tuple[AmplitudeKind, ...]
     """The kinds of amplitudes among the unknowns."""
-    weight: Weight = field(default='system', metadata={'static': True})
+    weight: Weight = 'system'
 
-    def mv(self, x: dict[str, Any]) -> dict[str, Any]:
-        J = tile_joint(self.tile, self.selection, self.kinds)
-        return J.T(tile_weight(self.tile, self.kinds, self.weight)(J(x)))
+    def __call__(
+        self, member: tuple[Tile, AbstractLinearOperator | None]
+    ) -> AbstractLinearOperator:
+        tile, selection = member
+        J = tile_joint(tile, selection, self.kinds)
+        return J.T @ tile_weight(tile, self.kinds, self.weight) @ J
+
+
+@dataclass(frozen=True)
+class TileResponse:
+    r"""Builds $J_t^\top W'_t M_t H_t$ of a tile from `(tile, selection)`.
+
+    It maps a sky to the right-hand side of the tile's TOD, masked as the data are.
+    """
+
+    kinds: tuple[AmplitudeKind, ...]
+    """The kinds of amplitudes among the unknowns."""
+
+    def __call__(
+        self, member: tuple[Tile, AbstractLinearOperator | None]
+    ) -> AbstractLinearOperator:
+        tile, selection = member
+        J = tile_joint(tile, selection, self.kinds)
+        # with the gap amplitudes, the weight is unmasked
+        return J.T @ tile_weight(tile, self.kinds) @ tile.model.M @ tile.model.H
 
 
 def segment_ensemble(ensemble: StackedEnsemble) -> StackedEnsemble:
@@ -262,32 +280,25 @@ def bucket_normal(
         amplitudes: Whether the unknowns include the template and gap amplitudes.
     """
     kinds = amplitude_kinds(tiles) if amplitudes else ()
-
-    def normal(tile: Tile) -> TileNormalOperator:
-        J = tile_joint(tile, selection, kinds)
-        return TileNormalOperator(tile, selection, kinds, weight, in_structure=J.in_structure)
-
-    members = lift(normal, tiles)
-    strides = {'map': None} | {kind: _STRIDES[AMPLITUDE_KINDS[kind]] for kind in kinds}
-    return AdditionOperator(members, in_strides=strides)
+    build = TileNormal(kinds, weight)
+    members = lift(lambda tile: DeferredOperator(build, (tile, selection)), tiles)
+    return AdditionOperator(members, in_strides=_unknown_strides(kinds))
 
 
 def bucket_response(
-    tiles: StackedEnsemble,
-    selection: AbstractLinearOperator | None,
-    sky: StokesType,
-) -> dict[str, Any]:
-    r"""$\sum_t J_t^\top W'_t H_t \, s$: the right-hand side of the TOD of a sky `sky`.
+    tiles: StackedEnsemble, selection: AbstractLinearOperator | None
+) -> AdditionOperator:
+    r"""$\sum_t J_t^\top W'_t M_t H_t$ over the detector tiles of a bucket.
 
-    It has the keys of the unknowns of [`bucket_normal`][], with the amplitudes.
+    It maps a sky on the full grid, which every tile reads whole, to the right-hand side of its
+    TOD, keyed as the unknowns of [`bucket_normal`][].
     """
     kinds = amplitude_kinds(tiles)
+    build = TileResponse(kinds)
+    members = lift(lambda tile: DeferredOperator(build, (tile, selection)), tiles)
+    return AdditionOperator(members, in_strides=None, out_strides=_unknown_strides(kinds))
 
-    def apply(tile, sky):
-        J, W = tile_joint(tile, selection, kinds), tile_weight(tile, kinds)
-        # masked as the data are: with the gap amplitudes, the weight is unmasked
-        return J.T(W(tile.model.M(tile.model.H(sky))))
 
-    reductions = {None: 'sum', 1: 1, 'segment': 'segment_sum'}
-    spec = {'map': 'sum'} | {k: reductions[_STRIDES[AMPLITUDE_KINDS[k]]] for k in kinds}
-    return map_reduce(apply, tiles, spec, sky)[0]
+def _unknown_strides(kinds: tuple[AmplitudeKind, ...]) -> dict[str, Stride]:
+    """How each tile reads the unknowns: the map whole, the amplitudes per tile or segment."""
+    return {'map': None} | {kind: _STRIDES[AMPLITUDE_KINDS[kind]] for kind in kinds}

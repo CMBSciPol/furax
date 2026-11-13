@@ -112,9 +112,9 @@ def test_float32_tod_accumulates_like_float64(detector_tile_size: int) -> None:
         ),
     )
     float64, float32 = accumulate(reference), accumulate(maker)
-    assert float32.map_rhs.data.dtype == jnp.float64
+    assert float32.rhs['map'].data.dtype == jnp.float64
     assert_array_equal(float32.hit_map, float64.hit_map)
-    assert_allclose(float32.map_rhs.data, float64.map_rhs.data, rtol=1e-12)
+    assert_allclose(float32.rhs['map'].data, float64.rhs['map'].data, rtol=1e-12)
 
 
 def _check_float32_run() -> None:

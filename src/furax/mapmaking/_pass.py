@@ -2,8 +2,8 @@
 
 The mapmaker reads its observations once, a bucket at a time. Each detector tile of a bucket goes
 through [`tile_kernel`][], which builds the tile's model and returns its
-[`TileContribution`][]: its hit map and map RHS, summed over the tiles, and what the normal system
-keeps of it, its model, templates and the right-hand sides of its amplitudes. The engine combines
+[`TileContribution`][]: its hit map and map RHS, summed over the tiles, the right-hand sides of its
+amplitudes, and what the normal system keeps of it, its model and templates. The engine combines
 the contributions of the tiles as [`TILE_REDUCTIONS`][] says, and [`bucket_model`][] assembles
 what it keeps into the [`BucketModel`][furax.mapmaking._bucket.BucketModel] of the bucket.
 """
@@ -23,7 +23,7 @@ from furax.obs.landscapes import StokesLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesType
 
-from ._bucket import BucketModel, Tile
+from ._bucket import GAPS, AmplitudeKind, BucketModel, Tile
 from ._gaps import GapSplines
 from ._injection import inject, unpadded
 from ._model import (
@@ -70,7 +70,8 @@ class TileContribution(NamedTuple):
     template_rhs: dict[TemplateKind, PyTree[Array] | None]
     """The tile's share of the template RHS of each kind of template amplitudes."""
     gap_rhs: Array | None
-    """The gap RHS (see [`Tile.gap_rhs`][]), if the gaps are explicit."""
+    r"""The gap RHS $C_t^\top N_t^{-1} M_t d_t$, if the gaps are explicit, laid out as the TOD,
+    the budget of amplitudes of each channel in place of its samples."""
     gap_preconditioner: Array | None
     """The preconditioner of the gap amplitudes (see [`Tile.gap_preconditioner`][])."""
 
@@ -144,11 +145,13 @@ def bucket_model(
     bucket: TileBucket,
     placement: TilePlacement,
     config: MapMakingConfig,
-) -> BucketModel:
-    """The model of a bucket, from the contributions of its tiles combined over the pass.
+) -> tuple[BucketModel, dict[AmplitudeKind, PyTree[Array]]]:
+    """The model of a bucket and the right-hand side of its amplitudes, from its tiles' contributions.
 
     The Grams of the templates the detectors of an observation share are factored here, once
-    summed over its tiles, on the device that holds the observation.
+    summed over its tiles, on the device that holds the observation. The right-hand side holds
+    the kinds of amplitudes present, `(tile, ...)`, or `(segment, ...)` for those the detectors
+    of an observation share.
 
     Args:
         out: The contributions of the tiles, combined by [`TILE_REDUCTIONS`][].
@@ -173,20 +176,8 @@ def bucket_model(
             strides.template_operators,
             {TEMPLATES: strides.template_gram_inverse, SHARED_TEMPLATES: shared_strides},
         )
-    tile = Tile(
-        out.model,
-        templates,
-        out.template_rhs[TEMPLATES],
-        out.gap_rhs,
-        out.gap_preconditioner,
-    )
-    tile_strides = Tile(
-        strides.model,
-        template_strides,
-        strides.template_rhs[TEMPLATES],
-        strides.gap_rhs,
-        strides.gap_preconditioner,
-    )
+    tile = Tile(out.model, templates, out.gap_preconditioner)
+    tile_strides = Tile(strides.model, template_strides, strides.gap_preconditioner)
     tiles = StackedEnsemble(
         bucket.n_tiles,
         tile,
@@ -195,7 +186,8 @@ def bucket_model(
         owner=placement.shard(bucket.owner),
         segments=bucket.n_segments,
     )
-    return BucketModel(tiles, out.template_rhs[SHARED_TEMPLATES])
+    rhs: dict[AmplitudeKind, Any] = {**out.template_rhs, GAPS: out.gap_rhs}
+    return BucketModel(tiles), {kind: v for kind, v in rhs.items() if v is not None}
 
 
 def _contribution(

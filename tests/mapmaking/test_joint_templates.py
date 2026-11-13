@@ -7,13 +7,16 @@ Backed by the file-free synthetic observations (no sotodlib/toast, no fixtures):
 
 from dataclasses import replace
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 from polars.testing import assert_frame_equal
 
+from furax.core import StackedEnsemble
 from furax.mapmaking import ReaderField
+from furax.mapmaking._bucket import bucket_normal
 from furax.mapmaking._model import TEMPLATES
 from furax.mapmaking.config import (
     AzimuthSynchronousConfig,
@@ -308,6 +311,22 @@ def test_amplitudes_shared_by_detectors_are_returned_per_observation(name, templ
     amplitudes = maps.template_amplitudes[name]
     assert jnp.all(jnp.isfinite(amplitudes)) and jnp.max(jnp.abs(amplitudes)) > 0
     assert amplitudes.shape[0] == 2  # one set of amplitudes per observation
+
+
+@pytest.mark.parametrize('weight', ['system', 'plain', 'white'])
+def test_the_normal_system_of_a_bucket_holds_the_arrays_of_its_tiles(weight):
+    # Memory: the system of each tile reads the arrays of the tiles in place, those the tiles of
+    # an observation share -- its boresight pointing, its shared templates -- held once per
+    # observation rather than copied for each of its tiles.
+    cfg = replace(_quadrupolar_config(_T2P_QUADRUPOLE), detector_tile_size=3)
+    maker = MultiObservationMapMaker(_ground_obs(n_dets=7, focal_plane_radius=0.2), config=cfg)
+    tiles = accumulate(maker).buckets[0]
+    members = bucket_normal(tiles, None, weight).operands
+    assert isinstance(members, StackedEnsemble)
+    held = {id(leaf) for leaf in jax.tree.leaves(tiles.stacked)}
+    arrays = [leaf for leaf in jax.tree.leaves(members.stacked) if isinstance(leaf, jax.Array)]
+    assert all(id(leaf) in held for leaf in arrays)
+    assert members.strides.count('segment') == tiles.strides.count('segment') > 0
 
 
 @pytest.mark.parametrize(('batch', 'n_buffered'), [(0, 8), (64, 8), (3, 9)])

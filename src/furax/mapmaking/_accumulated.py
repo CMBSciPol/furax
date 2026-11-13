@@ -17,7 +17,7 @@ from furax import AbstractLinearOperator, IdentityOperator
 from furax.core import AdditionOperator, BlockDiagonalOperator, BlockSelectOperator, StackedEnsemble
 from furax.obs.stokes import StokesType
 
-from ._bucket import BucketNormalOperator, amplitude_kinds, preconditioner, ridge
+from ._bucket import amplitude_kinds, bucket_normal, bucket_response, preconditioner, ridge
 from ._solve import MapMakingSystem
 from .preconditioner import BJPreconditioner
 
@@ -46,10 +46,7 @@ class AccumulatedModel:
         weight = 'plain' if binned else 'white'
         unknowns = {'map': in_structure}
         E = BlockSelectOperator('map', in_structure=unknowns)
-        terms = [
-            BucketNormalOperator(tiles, None, weight, amplitudes=False, in_structure=unknowns)
-            for tiles in self.buckets
-        ]
+        terms = [bucket_normal(tiles, None, weight, amplitudes=False) for tiles in self.buckets]
         return BJPreconditioner.create(
             (E @ AdditionOperator(terms, sequential=True) @ E.T).reduce()
         )
@@ -86,15 +83,14 @@ class AccumulatedModel:
         # picked out of the lists and embedded back by `E`.
         terms, responses = [], []
         for b, tiles in enumerate(self.buckets):
-            in_structure = {'map': S.out_structure} | {kind: structures[kind][b] for kind in kinds}
-            normal = BucketNormalOperator(tiles, S, in_structure=in_structure)
+            normal = bucket_normal(tiles, S)
             picks = {kind: BlockSelectOperator(b, in_structure=structures[kind]) for kind in kinds}
             E = BlockDiagonalOperator(
                 {'map': IdentityOperator(in_structure=S.out_structure)} | picks
             )
             terms.append((E.T @ normal @ E).reduce())
             if sky is not None:
-                responses.append(E.T(normal.response(sky)))
+                responses.append(E.T(bucket_response(tiles, S, sky)))
 
         # The ridge the Gram inverses were factored with acts on the amplitudes alone, so it is
         # one term over them all, outside the passes over the TOD.

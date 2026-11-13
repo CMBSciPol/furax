@@ -45,6 +45,7 @@ _OBSERVATIONS_SCHEMA = {
     'name': pl.String,
     'loaded': pl.Boolean,
     'n_detectors': pl.Int64,
+    'over_flagged': pl.Int64,
     'n_samples': pl.Int64,
     'probed_detectors': pl.Int64,
     'probed_samples': pl.Int64,
@@ -93,7 +94,8 @@ class MapMakingResults:
 
     observations: pl.DataFrame | None = None
     """One row per observation, in the order of the observation axis of the per-observation
-    products: `name`, whether it was `loaded`, the `n_detectors` and `n_samples` read, the
+    products: `name`, whether it was `loaded`, the `n_detectors` read and those among them dropped
+    as `over_flagged` (see `GapsConfig.max_flagged_fraction`), the `n_samples` read, the
     `probed_detectors` and `probed_samples` its buffers were sized from (zero if its probe
     failed), the `valid_sample_fraction` (null if the flags were not read), `load_seconds`, and
     the `error` that stopped an observation not loaded, its probe or its load (null if there was
@@ -103,9 +105,9 @@ class MapMakingResults:
     r"""One row per detector read. `observation` and `detector` are its indices along the
     observation and detector axes of the per-detector products, such as the amplitudes of a
     template with one set per detector. Then come its `name`, its focal-plane coordinates `xi`,
-    `eta` and `gamma` in radians (null if the run did not read them), and the parameters of its
-    noise model (`sigma`, and `alpha`, `fk`, `f0` for a $1/f$ model), suffixed by the stream on a
-    demodulated TOD (`sigma_q`, `sigma_u`)"""
+    `eta` and `gamma` in radians (null if the run did not read them), whether it was dropped as
+    `over_flagged`, and the parameters of its noise model (`sigma`, and `alpha`, `fk`, `f0` for a
+    $1/f$ model), suffixed by the stream on a demodulated TOD (`sigma_q`, `sigma_u`)"""
 
     @property
     def failed_observations(self) -> list[str] | None:
@@ -163,7 +165,9 @@ class MapMakingResults:
             solver_stats=cls._load_json(out_dir / _SOLVER_STATS_FILE),
             template_amplitudes=cls._load_amplitudes(out_dir),
             observations=_read_if_present(
-                partial(pl.read_csv, schema=_OBSERVATIONS_SCHEMA), out_dir / _OBSERVATIONS_FILE
+                # the columns added since a file was written read as null
+                partial(pl.read_csv, schema=_OBSERVATIONS_SCHEMA, missing_columns='insert'),
+                out_dir / _OBSERVATIONS_FILE,
             ),
             detectors=_read_if_present(pl.read_parquet, out_dir / _DETECTORS_FILE),
         )

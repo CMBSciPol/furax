@@ -26,7 +26,7 @@ from furax.core import (
 from furax.obs.stokes import StokesType
 
 from ._bucket import BucketModel, BucketNormalOperator, MemberOperator, Tile, segment_ensemble
-from ._model import FACTORED_KINDS, TemplateBundle
+from ._model import DROP_REASONS, FACTORED_KINDS, TemplateBundle
 from ._solve import MapMakingSystem
 from .layout import TilePlacement
 from .preconditioner import BJPreconditioner
@@ -189,6 +189,25 @@ class AccumulatedModel:
                 *[placement.gather(a) for a in common],
             )
         return amplitudes
+
+    def detector_drops(self, placement: TilePlacement) -> dict[str, np.ndarray]:
+        """Per detector, whether it was dropped, by reason (see [`DROP_REASONS`][]).
+
+        Each array is `(n_observations, detector)`, in observation order, its detector axis
+        padded with `False`.
+        """
+        drops = {}
+        for reason in DROP_REASONS:
+            per_bucket = []
+            for bm in self.buckets:
+                flags = lift(lambda tile, reason=reason: getattr(tile.model, reason), bm.tiles)
+                assert isinstance(flags, StackedEnsemble)
+                values = placement.gather(flags.stacked)
+                if flags.strides[0] is None:  # the same in every tile, as when none is dropped
+                    values = np.broadcast_to(values, (bm.tiles.size, *values.shape))
+                per_bucket.append(values)
+            drops[reason] = placement.layout.to_observation_order(per_bucket, detector_axis=-1)
+        return drops
 
     def noise_parameters(self, placement: TilePlacement) -> dict[str, np.ndarray]:
         """The noise model parameters of every detector, in observation order.

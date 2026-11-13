@@ -11,7 +11,7 @@ from furax import AbstractLinearOperator, tree
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.stokes import Stokes, StokesType
 
-from ._observation import ReaderField
+from ._observation import ReaderField, real_extent
 from .config import InjectionConfig
 from .results import MapMakingResults
 
@@ -75,8 +75,7 @@ def unpadded(padding: dict[str, Any], shape: tuple[int, ...]) -> Bool[Array, 'de
         padding: The padding widths read for the observation, one per axis of each field.
         shape: The shape of the sample data.
     """
-    widths = jax.tree.leaves(padding[ReaderField.SAMPLE_DATA])[0]
-    n_dets, n_samples = shape[-2:]
-    dets = jnp.arange(n_dets) < n_dets - widths[-2]
-    samples = jnp.arange(n_samples) < n_samples - widths[-1]
+    n_dets, n_samples = real_extent(padding, shape)
+    dets = jnp.arange(shape[-2]) < n_dets
+    samples = jnp.arange(shape[-1]) < n_samples
     return dets[:, None] & samples[None, :]

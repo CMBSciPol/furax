@@ -63,9 +63,17 @@ class ObservationCatalog:
             if not isinstance(self.reads.get(i), ObservationRecord)
         ]
 
-    def to_table(self) -> pl.DataFrame:
-        """The catalog as `MapMakingResults.observations` holds it."""
+    def to_table(self, drops: dict[str, Bool[np.ndarray, 'obs det']] | None = None) -> pl.DataFrame:
+        """The catalog as `MapMakingResults.observations` holds it.
+
+        Args:
+            drops: Per detector of each observation, whether it was dropped, by reason; each
+                observation counts them in the column of the reason.
+        """
         rows = [self._row(i) for i in range(len(self.names))]
+        for reason, dropped in (drops or {}).items():
+            for row, count in zip(rows, dropped.sum(axis=-1), strict=True):
+                row[reason] = int(count)
         return pl.DataFrame(rows, schema=_OBSERVATIONS_SCHEMA, orient='row')
 
     def _row(self, i: int) -> dict[str, Any]:
@@ -75,6 +83,7 @@ class ObservationCatalog:
             'name': self.names[i],
             'loaded': False,
             'n_detectors': 0,
+            'over_flagged': 0,
             'n_samples': 0,
             'probed_detectors': 0,
             'probed_samples': 0,
@@ -113,6 +122,7 @@ def detector_table(
     reads: dict[int, Read],
     noise: dict[str, np.ndarray] | None = None,
     stokes: str | None = None,
+    drops: dict[str, Bool[np.ndarray, 'obs det']] | None = None,
 ) -> pl.DataFrame:
     """One row per detector read, in observation then detector order.
 
@@ -125,6 +135,8 @@ def detector_table(
         noise: Each noise model parameter, `(n_observations, [stream,] detector)`.
         stokes: The streams of a demodulated TOD, which suffix the noise parameters; `None`
             otherwise.
+        drops: Per detector of each observation, whether it was dropped, by reason; each marks
+            the detectors in the column of the reason.
     """
     records = [
         (i, r)
@@ -142,6 +154,8 @@ def detector_table(
     coordinates = _focal_plane_coordinates([r for _, r in records])
     for axis, values in zip(('xi', 'eta', 'gamma'), coordinates, strict=True):
         columns[axis] = pl.Series(axis, values).fill_nan(None)  # null where not read
+    for reason, dropped in (drops or {}).items():
+        columns[reason] = dropped[observation, detector]
     for name, values in (noise or {}).items():
         if values.ndim == 2:
             columns[name] = values[observation, detector]

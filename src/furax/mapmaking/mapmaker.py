@@ -313,6 +313,13 @@ class MultiObservationMapMaker[T]:
                 # The catalog is the same on every process: one warning is enough
                 level = logging.WARNING if jax.process_index() == 0 else logging.DEBUG
                 logger.log(level, _excluded_message(failures))
+            drops = acc.detector_drops(self.placement)
+            if n_dropped := int(drops['over_flagged'].sum()):
+                logger.info(
+                    f'Dropped {n_dropped} detectors flagged above '
+                    f'{self.config.gaps.max_flagged_fraction:.0%} '
+                    f'in {int(drops["over_flagged"].any(axis=-1).sum())} observations'
+                )
             noise_parameters = None
             if self.config.weighting.mode != WeightingMode.IDENTITY:
                 noise_parameters = acc.noise_parameters(self.placement)
@@ -356,12 +363,13 @@ class MultiObservationMapMaker[T]:
             landscape=self.landscape,
             template_amplitudes=amplitudes,
             injected_map=None if solved.injected_sky is None else S.T(solved.injected_sky),
-            observations=self._catalog.to_table(),
+            observations=self._catalog.to_table(drops),
             # the noise model covers the streams of the model's TOD, not all those read
             detectors=detector_table(
                 self._catalog.reads,
                 noise_parameters,
                 acc.buckets[0].tiles.template.model.tod_format.stokes,
+                drops,
             ),
         )
 

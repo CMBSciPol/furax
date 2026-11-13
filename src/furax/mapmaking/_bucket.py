@@ -156,53 +156,59 @@ def _amplitude_operator(
 
 def bucket_apply(
     tiles: StackedEnsemble,
-    apply: Callable[
-        [Tile, PyTree[Array], PyTree[Array] | None, PyTree[Array] | None], tuple[Any, ...]
-    ],
+    apply: Callable[[Tile, PyTree[Array], dict[AmplitudeKind, Array]], dict[str, Any]],
     whole: PyTree[Array],
-    per_tile: PyTree[Array] | None,
-    per_observation: PyTree[Array] | None,
+    amplitudes: dict[AmplitudeKind, Array],
+    kinds: tuple[AmplitudeKind, ...],
     policy: Policy | None = None,
-) -> tuple[Any, Any, Any]:
-    """`apply` on every detector tile of a bucket.
+) -> dict[str, Any]:
+    """`apply` on every detector tile of a bucket, its outputs combined as unknowns of the system.
 
     Args:
         tiles: The tiles of the bucket.
-        apply: From a tile, `whole`, its amplitudes and those of its observation, to `(map,
-            per_tile, per_observation)`: a map, the tile's amplitudes and its observation's, any
-            of them `None`.
+        apply: From a tile, `whole` and the tile's entries of `amplitudes`, to a dictionary of a
+            map under `'map'` and of the tile's contribution to the amplitudes of each kind of
+            `kinds`.
         whole: What every tile takes whole, such as a map, held by every device. Its leaves must
             be arrays; anything else (an operator, whose index may hold an `Ellipsis`) is closed
             over `apply` instead.
-        per_tile: The amplitudes held per tile, `(tile, ...)`, if any.
-        per_observation: The amplitudes held per observation, `(segment, ...)`, if any.
+        amplitudes: Amplitudes by kind, `(tile, ...)`, or `(segment, ...)` for those held per
+            observation (see [`AMPLITUDE_KINDS`][]); each tile reads its own entry, or its
+            observation's.
+        kinds: The kinds of amplitudes `apply` returns.
         policy: How the tiles are walked; by default that of `tiles`. A round of `batch`
             tiles holds the temporaries of that many tiles.
 
     Returns:
-        The maps summed over the bucket, the amplitudes of each tile `(tile, ...)`, and those of
-        each observation summed over its tiles, `(segment, ...)`.
+        The maps summed over the bucket under `'map'`, and the amplitudes of each kind of `kinds`:
+        one entry per tile, or, for those held per observation, summed over its tiles.
     """
-    strides = (
-        *tiles.strides,
-        *(1 for _ in jax.tree.leaves(per_tile)),
-        *('segment' for _ in jax.tree.leaves(per_observation)),
-    )
+    strides = {kind: _STRIDES[AMPLITUDE_KINDS[kind]] for kind in amplitudes}
     ensemble = StackedEnsemble(
         tiles.size,
-        (tiles.stacked, per_tile, per_observation),
-        strides,
+        (tiles.stacked, amplitudes),
+        (*tiles.strides, *jax.tree.leaves(strides)),
         owner=tiles.owner,
         segments=tiles.segments,
         policy=policy if policy is not None else tiles.policy,
     )
 
-    def tile_fn(member: tuple[Any, ...], whole: PyTree[Array]) -> tuple[Any, Any, Any]:
-        tile, tile_amplitudes, observation_amplitudes = member
-        return apply(tile, whole, tile_amplitudes, observation_amplitudes)
+    def tile_fn(
+        member: tuple[Tile, dict[AmplitudeKind, Array]], whole: PyTree[Array]
+    ) -> dict[str, Any]:
+        tile, tile_amplitudes = member
+        return apply(tile, whole, tile_amplitudes)
 
-    out, _ = map_reduce(tile_fn, ensemble, ('sum', 1, 'segment_sum'), whole)
+    out_spec = {'map': 'sum'} | {kind: _REDUCTIONS[AMPLITUDE_KINDS[kind]] for kind in kinds}
+    out, _ = map_reduce(tile_fn, ensemble, out_spec, whole)
     return out
+
+
+_STRIDES: dict[Holder, Literal[1, 'segment']] = {'tile': 1, 'observation': 'segment'}
+"""How the engine strides the amplitudes held per tile, and per observation."""
+
+_REDUCTIONS: dict[Holder, Literal[1, 'segment_sum']] = {'tile': 1, 'observation': 'segment_sum'}
+"""How the engine combines the contributions of the tiles to the amplitudes of each holder."""
 
 
 def tile_system(
@@ -271,31 +277,26 @@ class BucketNormalOperator(AbstractLinearOperator):
     """How the tiles are walked (see `bucket_apply`); by default that of `tiles`."""
 
     def mv(self, x: Any) -> Any:
-        m, per_tile, per_observation = _by_holder(x)
         # closed over, not engine arguments: the selection may hold non-array leaves
         selection, kinds, weight = self.selection, self._kinds, self.weight
 
-        def apply(tile, m, tile_amplitudes, observation_amplitudes):
+        def apply(tile, m, amplitudes):
             J, W = tile_system(tile, selection, kinds, weight)
-            u = J({'map': m, **tile_amplitudes, **observation_amplitudes})
-            return _by_holder(J.T(W(u)))
+            return J.T(W(J({'map': m} | amplitudes)))
 
-        m, per_tile, per_observation = bucket_apply(
-            self.tiles, apply, m, per_tile, per_observation, self.policy
-        )
-        return {'map': m, **per_tile, **per_observation}
+        amplitudes = {kind: x[kind] for kind in kinds}
+        return bucket_apply(self.tiles, apply, x['map'], amplitudes, kinds, self.policy)
 
     def response(self, sky: StokesType) -> Any:
         r"""$\sum_t J_t^\top W'_t H_t \, s$: the right-hand side of the TOD of a sky `sky`."""
         selection, kinds, weight = self.selection, self._kinds, self.weight
 
-        def apply(tile, sky, _tile_amplitudes, _observation_amplitudes):
+        def apply(tile, sky, _amplitudes):
             J, W = tile_system(tile, selection, kinds, weight)
             # masked as the data are: with the gap amplitudes, the weight is unmasked
-            return _by_holder(J.T(W(tile.model.M(tile.model.H(sky)))))
+            return J.T(W(tile.model.M(tile.model.H(sky))))
 
-        m, per_tile, per_observation = bucket_apply(self.tiles, apply, sky, {}, {}, self.policy)
-        return {'map': m, **per_tile, **per_observation}
+        return bucket_apply(self.tiles, apply, sky, {}, kinds, self.policy)
 
     @property
     def _kinds(self) -> tuple[AmplitudeKind, ...]:
@@ -326,15 +327,3 @@ class MemberOperator(AbstractLinearOperator):
 
         out, _ = map_reduce(apply, replace(ensemble, policy=policy), 1)
         return out
-
-
-def _by_holder(x: dict[str, Any]) -> tuple[Any, dict[str, Any], dict[str, Any]]:
-    """The map of the unknowns `x`, and their amplitudes held per tile and per observation.
-
-    The engine strides the two differently: per tile, and per segment.
-    """
-
-    def held(holder):
-        return {kind: x[kind] for kind, h in AMPLITUDE_KINDS.items() if h == holder and kind in x}
-
-    return x['map'], held('tile'), held('observation')

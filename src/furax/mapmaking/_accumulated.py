@@ -99,17 +99,14 @@ class AccumulatedModel:
         # The ridge the Gram inverses were factored with acts on the amplitudes alone, so it is
         # one term over them all, outside the passes over the TOD.
         for kind in kinds:
-            ridged = [ridge(t, kind, s) for t, s in zip(self.buckets, structures[kind])]
+            ridged = [ridge(tiles, kind) for tiles in self.buckets]
             assert all(r is None for r in ridged) or all(r is not None for r in ridged)
             if ridged[0] is not None:
                 amplitudes = BlockSelectOperator(kind, in_structure=terms[0].in_structure)
                 terms.append((amplitudes.T @ BlockDiagonalOperator(ridged) @ amplitudes).reduce())
 
         # The preconditioner of the amplitudes of each kind, block-diagonal over the buckets
-        inverses = {
-            kind: [preconditioner(t, kind, s) for t, s in zip(self.buckets, structures[kind])]
-            for kind in kinds
-        }
+        inverses = {kind: [preconditioner(tiles, kind) for tiles in self.buckets] for kind in kinds}
         M = BlockDiagonalOperator({'map': M} | inverses)
         A = AdditionOperator(terms, sequential=True)
         response = None

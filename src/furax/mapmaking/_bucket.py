@@ -33,7 +33,14 @@ from jax.tree_util import register_dataclass
 from jaxtyping import Array, PyTree
 
 from furax import AbstractLinearOperator, symmetric
-from furax.core import BlockRowOperator, Policy, StackedEnsemble, lift, map_reduce
+from furax.core import (
+    BlockDiagonalOperator,
+    BlockRowOperator,
+    Policy,
+    StackedEnsemble,
+    lift,
+    map_reduce,
+)
 from furax.obs.stokes import StokesType
 
 from ._gaps import GapBasisOperator
@@ -106,10 +113,8 @@ def amplitude_kinds(tiles: StackedEnsemble) -> tuple[AmplitudeKind, ...]:
     return tuple(kind for kind in AMPLITUDE_KINDS if tiles.template.amplitudes(kind) is not None)
 
 
-def preconditioner(
-    tiles: StackedEnsemble, kind: AmplitudeKind, structure: PyTree
-) -> AbstractLinearOperator:
-    """The preconditioner of the amplitudes of `kind` of a bucket, whose structure is `structure`.
+def preconditioner(tiles: StackedEnsemble, kind: AmplitudeKind) -> AbstractLinearOperator:
+    """The preconditioner of the amplitudes of `kind` of a bucket.
 
     The amplitudes are preconditioned by the inverse of their Gram (see [`Tile.amplitudes`][]),
     each tile's for those of its detectors and each observation's for those they share.
@@ -117,26 +122,23 @@ def preconditioner(
     Args:
         tiles: The tiles of the bucket.
         kind: The kind of amplitudes.
-        structure: Their structure.
     """
-    inverse = _amplitude_operator(tiles, kind, 'gram_inverse', structure)
+    inverse = _amplitude_operator(tiles, kind, 'gram_inverse')
     assert inverse is not None
     return inverse
 
 
-def ridge(
-    tiles: StackedEnsemble, kind: AmplitudeKind, structure: PyTree
-) -> AbstractLinearOperator | None:
+def ridge(tiles: StackedEnsemble, kind: AmplitudeKind) -> AbstractLinearOperator | None:
     """The ridge the Gram of the amplitudes of `kind` was factored with, a term of the system.
 
     `None` without regularization, and for the gap amplitudes. The arguments are those of
     [`preconditioner`][].
     """
-    return _amplitude_operator(tiles, kind, 'ridge', structure)
+    return _amplitude_operator(tiles, kind, 'ridge')
 
 
 def _amplitude_operator(
-    tiles: StackedEnsemble, kind: AmplitudeKind, part: str, structure: PyTree
+    tiles: StackedEnsemble, kind: AmplitudeKind, part: str
 ) -> AbstractLinearOperator | None:
     """An operator of the amplitudes of `kind`, on them; `None` if absent.
 
@@ -151,7 +153,9 @@ def _amplitude_operator(
     assert isinstance(operators, StackedEnsemble)
     if AMPLITUDE_KINDS[kind] == 'observation':
         operators = segment_ensemble(operators)
-    return MemberOperator(operators, in_structure=structure)
+    # small computations: every member of a device is evaluated at once, vectorized
+    policy = replace(operators.policy, batch=operators.size_per_device)
+    return BlockDiagonalOperator(replace(operators, policy=policy))
 
 
 def bucket_apply(
@@ -302,28 +306,3 @@ class BucketNormalOperator(AbstractLinearOperator):
     def _kinds(self) -> tuple[AmplitudeKind, ...]:
         """The kinds of amplitudes among the unknowns."""
         return amplitude_kinds(self.tiles) if self.amplitudes else ()
-
-
-@symmetric
-class MemberOperator(AbstractLinearOperator):
-    """The operator of each member of an ensemble, on its own amplitudes: `x[i] -> operators[i](x[i])`.
-
-    The operators are one per tile of a bucket, such as the inverses of the Grams of the template
-    amplitudes of its detectors, which precondition them, or one per segment, for the template
-    amplitudes the detectors of an observation share (see [`segment_ensemble`][]).
-    """
-
-    operators: StackedEnsemble
-    """The operators, one member per entry of the amplitudes."""
-
-    def mv(self, x: PyTree[Array]) -> PyTree[Array]:
-        # small computations: every member of a device is evaluated at once, vectorized
-        ensemble = self.operators.zip(x)
-        policy = replace(ensemble.policy, batch=ensemble.size_per_device)
-
-        def apply(member: tuple[Any, ...]) -> PyTree[Array]:
-            operator, v = member
-            return operator(v)
-
-        out, _ = map_reduce(apply, replace(ensemble, policy=policy), 1)
-        return out

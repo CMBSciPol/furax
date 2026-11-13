@@ -6,7 +6,9 @@ from ._observation import (
     FileBackedLazyObservation,
     HashedObservationMetadata,
     ObservationBufferShape,
+    ObservationProbe,
     ReaderField,
+    SampleRanges,
 )
 from ._reader import ObservationReader
 from .config import MapMakingConfig
@@ -31,4 +33,6 @@ __all__ = [
     'MapMakingResults',
     'MultiObservationMapMaker',
     'ObservationBufferShape',
+    'ObservationProbe',
+    'SampleRanges',
 ]

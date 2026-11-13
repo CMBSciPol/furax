@@ -21,6 +21,8 @@ from furax.mapmaking import (
     AbstractObservation,
     MultiObservationMapMaker,
     ObservationBufferShape,
+    ObservationProbe,
+    SampleRanges,
 )
 from furax.mapmaking._accumulated import AccumulatedModel
 from furax.mapmaking._model import FACTORED_KINDS
@@ -199,11 +201,11 @@ class FailingLazyObservation(FakeLazyObservation):
     def name(self) -> str:
         return 'failing_obs'
 
-    def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
+    def probe(self, intervals=False, sample_rate=False, good_ranges=False):
         # get_data raises, so build the shape directly. Non-ground obs -> no scanning intervals.
-        del intervals
+        del intervals, sample_rate, good_ranges
         obs = FakeObservation(**self._kwargs)
-        return ObservationBufferShape(obs.n_detectors, obs.n_samples, 0)
+        return ObservationProbe(ObservationBufferShape(obs.n_detectors, obs.n_samples, 0))
 
     def get_data(self, requested_fields=None) -> FakeObservation:
         raise RuntimeError('simulated preprocessing failure')
@@ -216,8 +218,8 @@ class ProbeFailingLazyObservation(FakeLazyObservation):
     def name(self) -> str:
         return 'probe_failing_obs'
 
-    def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
-        del intervals
+    def probe(self, intervals=False, sample_rate=False, good_ranges=False):
+        del intervals, sample_rate, good_ranges
         raise RuntimeError('simulated shape-probe failure')
 
 
@@ -283,6 +285,38 @@ class GappyLazyGroundObservation(FakeLazyObservation):
 
     def get_data(self, requested_fields=None) -> GappyGroundObservation:
         return GappyGroundObservation(**self._kwargs)
+
+
+class GapProbingLazyGroundObservation(FakeLazyObservation):
+    """Ground observation, gappy or not, whose probe reports its good ranges.
+
+    With `hide_flags`, the probe reports every sample good.
+    """
+
+    interface_class = GappyGroundObservation
+
+    def __init__(self, gappy: bool = True, hide_flags: bool = False, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._gappy = gappy
+        self._hide_flags = hide_flags
+
+    def get_data(self, requested_fields=None) -> FakeGroundObservation:
+        kind = GappyGroundObservation if self._gappy else FakeGroundObservation
+        return kind(**self._kwargs)
+
+    def probe(self, intervals=False, sample_rate=False, good_ranges=False):
+        probe = super().probe(intervals, sample_rate)
+        if not good_ranges:
+            return probe
+        good = self.get_data().get_sample_mask()
+        return probe._replace(good_ranges=ranges(np.ones_like(good) if self._hide_flags else good))
+
+
+def ranges(mask: Bool[np.ndarray, 'det samp']) -> SampleRanges:
+    """The ranges of the `True` samples of each detector of `mask`."""
+    edges = np.diff(np.pad(mask, [(0, 0), (1, 1)]).astype(np.int8), axis=-1)
+    rows = [np.stack([np.flatnonzero(e == 1), np.flatnonzero(e == -1)], axis=-1) for e in edges]
+    return SampleRanges(mask.shape[-1], rows)
 
 
 def healpix_config(

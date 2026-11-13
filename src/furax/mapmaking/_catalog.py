@@ -6,7 +6,7 @@ Each observation is probed and read by one process. The rows each process fills 
 
 import pickle
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -26,6 +26,22 @@ type Read = ObservationRecord | str
 """What a process read of an observation, or the exception that stopped its load."""
 
 
+class ProbeRecord(NamedTuple):
+    """What a run keeps of the probe of an observation (see [`ObservationProbe`][]).
+
+    The run keeps what it derives for the explicit gaps from the sample rate and the good ranges
+    the probe reports, not the ranges.
+    """
+
+    shape: ObservationBufferShape
+    """The sizes of the buffers the observation is read into."""
+    knot_spacing: int | None = None
+    """The knot spacing of the explicit gaps at its sample rate, in samples, if probed."""
+    gap_amplitudes: int | None = None
+    """The most amplitudes the explicit gaps of one of its detectors kept need at that spacing, if
+    its good ranges were probed."""
+
+
 @dataclass
 class ObservationCatalog:
     """What a run knows of each of its observations, keyed by observation index.
@@ -35,8 +51,8 @@ class ObservationCatalog:
 
     names: list[str]
     """The names of the observations, as given, in observation order."""
-    probes: dict[int, ObservationBufferShape | str]
-    """The shape probed of each observation, or the exception its probe raised."""
+    probes: dict[int, ProbeRecord | str]
+    """The probe of each observation, or the exception it raised."""
     reads: dict[int, Read] = field(default_factory=dict)
     """What the last pass read of each observation, or the exception that stopped its load; an
     observation not loaded, such as one whose probe failed, is absent."""
@@ -47,7 +63,7 @@ class ObservationCatalog:
         probed = np.zeros((len(self.names), 3), np.int64)
         for i, probe in self.probes.items():
             if not isinstance(probe, str):
-                probed[i] = probe
+                probed[i] = probe.shape
         return probed
 
     @property
@@ -92,8 +108,9 @@ class ObservationCatalog:
             'load_seconds': None,
             'error': None,
         }
-        if isinstance(probe, ObservationBufferShape):
-            row |= {'probed_detectors': probe.detector_count, 'probed_samples': probe.sample_count}
+        if isinstance(probe, ProbeRecord):
+            shape = probe.shape
+            row |= {'probed_detectors': shape.detector_count, 'probed_samples': shape.sample_count}
         if isinstance(read, ObservationRecord):
             row |= {
                 'name': read.name,

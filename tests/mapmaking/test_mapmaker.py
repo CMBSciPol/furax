@@ -40,6 +40,7 @@ from tests.mapmaking.helpers import (
     FailingLazyObservation,
     FakeLazyGroundObservation,
     FakeLazyObservation,
+    GapProbingLazyGroundObservation,
     GappyLazyGroundObservation,
     ProbeFailingLazyObservation,
     accumulate,
@@ -477,7 +478,7 @@ class TestGapTreatmentMapMaker:
             config.solver = SolverConfig(rtol=1e-10, atol=0, max_steps=200)
             config.detector_tile_size = tile_size
             config.gaps.nested = NestedConfig(inner_steps=200)
-            config.gaps.explicit = ExplicitGapsConfig(resolution=1)
+            config.gaps.explicit = ExplicitGapsConfig(resolution=0.0)
             config.gaps.max_flagged_fraction = 0.5
             results = MultiObservationMapMaker(observations, config=config).make_maps()
             assert results.observations is not None
@@ -485,6 +486,56 @@ class TestGapTreatmentMapMaker:
             maps.append(results.map.data)
         atol = 1e-8 * float(jnp.abs(maps[0]).max())
         assert_allclose(maps[1], maps[0], rtol=1e-8, atol=atol)
+
+    def _explicit_config(self, probe: bool) -> MapMakingConfig:
+        config = self._config(GapTreatment.EXPLICIT)
+        config.detector_tile_size = 2
+        config.gaps.explicit = ExplicitGapsConfig(resolution=0.04, probe=probe)  # 4 samples
+        config.gaps.max_flagged_fraction = 0.5
+        return config
+
+    def test_probed_gap_budget_gives_the_same_map(self):
+        """The probed budget only sizes the amplitudes: the system, and the map, are the same."""
+        observations = [GapProbingLazyGroundObservation(seed=i) for i in range(2)]
+        makers = [
+            MultiObservationMapMaker(observations, config=self._explicit_config(probe))
+            for probe in (False, True)
+        ]
+        splines = [[g for g in maker._gap_splines if g is not None] for maker in makers]
+        assert all(g.spacing == 4 for g in splines[0] + splines[1])  # 0.04 s at 100 Hz
+        generic, probed = ([g.budget for g in gaps] for gaps in splines)
+        assert all(p < g for p, g in zip(probed, generic, strict=True))
+        maps = [maker.make_maps() for maker in makers]
+        assert maps[1].observations is not None
+        assert maps[1].observations['over_gap_budget'].to_list() == [0, 0]
+        assert eqx.tree_equal(maps[1].map, maps[0].map, rtol=1e-8, atol=1e-8)
+
+    def test_explicit_gaps_need_the_probed_sample_rate(self):
+        class RatelessObservation(GapProbingLazyGroundObservation):
+            def probe(self, *args, **kwargs):
+                return super().probe(*args, **kwargs)._replace(sample_rate=None)
+
+        config = self._explicit_config(probe=False)
+        maker = MultiObservationMapMaker([RatelessObservation(seed=0)], config=config)
+        with pytest.raises(ValueError, match='sample rate'):
+            _ = maker._gap_splines
+
+    def test_detectors_over_the_gap_budget_are_dropped(self):
+        """An underestimating probe drops the detectors it does not fit, and counts them."""
+        observations = [
+            GapProbingLazyGroundObservation(seed=0, hide_flags=True),
+            GapProbingLazyGroundObservation(gappy=False, seed=1),
+        ]
+        config = self._explicit_config(probe=True)
+        results = MultiObservationMapMaker(observations, config=config).make_maps()
+        assert results.observations is not None and results.detectors is not None
+        n_gappy = results.observations['n_detectors'][0]
+        assert results.observations['over_gap_budget'].to_list() == [n_gappy, 0]
+        assert results.detectors['over_gap_budget'].sum() == n_gappy
+
+        expected = MultiObservationMapMaker(observations[1:], config=config).make_maps()
+        assert eqx.tree_equal(results.hit_map, expected.hit_map)
+        assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
 
     def test_detectors_flagged_above_the_threshold_are_dropped(self):
         """An observation whose detectors are all flagged above the threshold contributes nothing."""

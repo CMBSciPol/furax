@@ -517,6 +517,33 @@ class ObservationBufferShape(NamedTuple):
         return self._replace(sample_count=next_fast_len(self.sample_count, real=True))
 
 
+class SampleRanges(NamedTuple):
+    """Ranges of the samples of each detector, among its first `n_samples`."""
+
+    n_samples: int
+    """The number of samples the ranges are among."""
+    ranges: list[Int[np.ndarray, 'range 2']]
+    """Per detector, its ranges as sorted, disjoint `[start, stop)` rows."""
+
+
+class ObservationProbe(NamedTuple):
+    """What a probe of an observation reads before the observation is loaded.
+
+    Attributes:
+        shape: The sizes of the buffers the observation is read into, an upper bound.
+        sample_rate: The sample rate of the TOD as loaded, in Hz; `None` if not requested or
+            unknown.
+        good_ranges: Per detector loaded, the ranges of its good samples, those not flagged by
+            the flags the observation's loaders mask, among the samples loaded; `None` if not
+            requested or unknown. The samples loaded may be fewer than `shape.sample_count`:
+            those past them pad the buffer and are neither good nor flagged.
+    """
+
+    shape: ObservationBufferShape
+    sample_rate: float | None = None
+    good_ranges: SampleRanges | None = None
+
+
 class AbstractLazyObservation[T](ABC):
     """Deferred handle to an observation: opens its backing store only when read.
 
@@ -542,22 +569,35 @@ class AbstractLazyObservation[T](ABC):
         """Human-readable identifier, used e.g. to report observations that failed to load."""
         return type(self).__name__
 
-    def probe_shape(self, intervals: bool = False) -> ObservationBufferShape:
-        """Returns the buffer dimensions for this observation.
+    def probe(
+        self, intervals: bool = False, sample_rate: bool = False, good_ranges: bool = False
+    ) -> ObservationProbe:
+        """What the mapmaker needs to know of the observation before it is read.
 
-        The default opens the observation with a minimal field set request; subclasses may
-        override with a cheaper query (e.g., metadata only).
+        A probe reports what the observation's metadata tells, without loading its TOD; the
+        mapmaker derives the rest. The default opens the observation with a minimal field request
+        and reports no good ranges. Subclasses may override it with a cheaper query, and report
+        what costs nothing to read even when not requested.
+
+        Args:
+            intervals: Whether to count the scanning intervals.
+            sample_rate: Whether to report the sample rate.
+            good_ranges: Whether to report the good ranges, when the metadata records them.
         """
+        available = self.interface_class.AVAILABLE_READER_FIELDS
+        fields = []
+        if sample_rate and ReaderField.TIMESTAMPS in available:
+            # an interface may derive its sample rate from the timestamps
+            fields.append(ReaderField.TIMESTAMPS)
         if intervals:
-            if ReaderField.SCANNING_INTERVALS not in self.interface_class.AVAILABLE_READER_FIELDS:
+            if ReaderField.SCANNING_INTERVALS not in available:
                 msg = 'observation does not support reading scanning intervals'
                 raise RuntimeError(msg)
-            data = self.get_data([ReaderField.SCANNING_INTERVALS])
-            n_intervals = data.get_scanning_intervals().shape[0]  # ty: ignore[unresolved-attribute]
-        else:
-            data = self.get_data([])
-            n_intervals = 0
-        return ObservationBufferShape(data.n_detectors, data.n_samples, n_intervals)
+            fields.append(ReaderField.SCANNING_INTERVALS)
+        data = self.get_data(fields)
+        n_intervals = data.get_scanning_intervals().shape[0] if intervals else 0  # ty: ignore[unresolved-attribute]
+        shape = ObservationBufferShape(data.n_detectors, data.n_samples, n_intervals)
+        return ObservationProbe(shape, data.sample_rate if sample_rate else None)
 
 
 class FileBackedLazyObservation[T](AbstractLazyObservation[T]):

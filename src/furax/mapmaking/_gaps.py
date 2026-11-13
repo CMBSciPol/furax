@@ -19,10 +19,13 @@ from typing import Any, NamedTuple, Self
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jaxtyping import Array, Bool, Float, Int, PyTree
 
 from furax import AbstractLinearOperator, MaskOperator
 from furax.math.bspline import cardinal_bspline
+
+from ._observation import SampleRanges
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,18 @@ class GapSplines:
         return GapSplineOperator.create(_flagged(good, n_samples), self.spacing, self.budget, mask)
 
 
+def knot_spacing(resolution: float, sample_rate: float) -> int:
+    """The knot spacing in samples of the gap splines, from `resolution` in seconds; at least 1.
+
+    Examples:
+        >>> knot_spacing(1.25, 8.0)
+        10
+        >>> knot_spacing(0.0, 8.0)
+        1
+    """
+    return max(1, round(resolution * sample_rate))
+
+
 def gap_budget(n_samples: int, max_flagged_fraction: float) -> int:
     """A budget of amplitudes per channel that fits any mask of an observation.
 
@@ -65,6 +80,31 @@ def gap_budget(n_samples: int, max_flagged_fraction: float) -> int:
     flagged. A gap has no more amplitudes than samples.
     """
     return math.ceil(max_flagged_fraction * n_samples)
+
+
+def max_gap_amplitudes(good: SampleRanges, spacing: int, max_flagged_fraction: float) -> int:
+    """The most amplitudes the explicit gaps of a detector kept need, from the good ranges of all.
+
+    It counts on the host, from the good ranges an observation's probe reports, what
+    [`GapSplines.counts`][] counts with knots every `spacing` samples. The detectors with more
+    than `max_flagged_fraction` of their samples flagged are left out, as they are dropped, and so
+    are those without good samples, which have no gaps.
+    """
+    n = good.n_samples
+    lengths, detectors = [], []
+    for detector, ranges in enumerate(good.ranges):
+        n_good = int(np.sum(ranges[:, 1] - ranges[:, 0]))
+        if n_good == 0 or n - n_good > max_flagged_fraction * n:
+            continue
+        # the gaps lie before, between and after the good ranges
+        starts = np.concatenate([[0], ranges[:, 1]])
+        stops = np.concatenate([ranges[:, 0], [n]])
+        lengths.append((stops - starts)[stops > starts])
+        detectors.append(np.full(len(lengths[-1]), detector))
+    none = np.zeros(0, int)  # for an observation without gaps
+    *_, amplitudes = _splines(np.concatenate([none, *lengths]), spacing, np)
+    owners = np.concatenate([none, *detectors])
+    return int(np.bincount(owners, weights=amplitudes, minlength=1).max())
 
 
 class GapSplineOperator(AbstractLinearOperator):
@@ -173,8 +213,18 @@ class _GapLayout(NamedTuple):
         start = jax.lax.cummax(jnp.where(first, t, 0), axis=axis)
         end = jax.lax.cummin(jnp.where(flagged & ~after, t, n_samples - 1), axis=axis, reverse=True)
         length = end - start + 1
-        intervals = jnp.maximum(1, -(-length // spacing))
-        degree = jnp.minimum(3, intervals - 1)
+        intervals, degree, functions = _splines(length, spacing)
         per_sample = length <= intervals + degree
-        functions = jnp.minimum(length, intervals + degree)
         return cls(first, length, t - start, intervals, degree, per_sample, functions)
+
+
+def _splines[T: (Array, np.ndarray)](length: T, spacing: int, xp: Any = jnp) -> tuple[T, T, T]:
+    """The knot intervals, the degree and the number of amplitudes of gaps of `length` samples.
+
+    A gap of L samples takes n = ⌈L / r⌉ intervals and the n + p B-splines of degree
+    p = min(3, n − 1) over them, or one amplitude per sample when that is fewer. `xp` is the array
+    module: `np` on the host.
+    """
+    intervals = xp.maximum(1, -(-length // spacing))
+    degree = xp.minimum(3, intervals - 1)
+    return intervals, degree, xp.minimum(length, intervals + degree)

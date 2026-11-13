@@ -1,6 +1,6 @@
 import functools
 from dataclasses import dataclass, field
-from typing import Any, Literal, NamedTuple, Self
+from typing import Any, Final, Literal, NamedTuple, Self
 
 import jax
 import jax.numpy as jnp
@@ -30,18 +30,18 @@ from .templates.pomme import PommeProjectionOperator
 from .weight import MarginalizedWeightOperator, NestedWeightOperator, WeightOperator
 
 DROP_REASONS = ('over_flagged', 'over_gap_budget')
-"""Why a detector is dropped: each names the field of [`ObservationModel`][] marking the detectors
+"""Why a detector is dropped: each names the field of [`TileModel`][] marking the detectors
 dropped for it, and the columns that report them in `MapMakingResults`."""
 
 
 @register_dataclass
 @dataclass
-class ObservationModel:
-    """Holds the operators and data for one or more observations.
+class TileModel:
+    """The model of the TOD of one detector tile: a subset of the detectors of an observation.
 
-    When stacked via ``jax.lax.scan``, the array fields carry a leading batch
-    dimension over observations while static fields (structures, chunk sizes)
-    remain shared.
+    It holds the acquisition operator, the weight with the mask of the good samples, the noise
+    model, and the detectors dropped. Stacked over the tiles of a bucket, the array fields carry a
+    leading tile axis, while the static fields (structures, chunk sizes) are shared.
     """
 
     H: AbstractLinearOperator
@@ -82,14 +82,14 @@ class ObservationModel:
         use: Bool[Array, ''] | bool = True,
         gaps: GapSplines | None = None,
     ) -> Self:
-        """Build the model of an observation from the fields read for it.
+        """Build the model of a tile from the fields read for its detectors.
 
         Args:
-            data: The fields read for the observation.
+            data: The fields read for the tile's detectors.
             padding: Their padding widths, as returned by the reader.
             config: The mapmaking configuration.
             landscape: The landscape of the maps.
-            use: Whether the observation contributes: false for a padding tile or a failed
+            use: Whether the tile contributes: false for a padding tile or a tile of a failed
                 observation, whose samples are then all masked, and none of its detectors
                 reported dropped.
             gaps: The spline model of the gaps, when they are explicit; a detector needing more
@@ -117,7 +117,7 @@ class ObservationModel:
             inverse=True,
         )
         W: WeightOperator | NestedWeightOperator
-        if config.gaps.treatment == GapTreatment.NESTED and not config.binned:
+        if config.gap_treatment == GapTreatment.NESTED:
             # Minimum-variance correlated-noise weight; the white-noise weight preconditions its
             # linear inner solve
             white = noise_model.to_white_noise_model().inverse_operator(tod_format.structure)
@@ -139,7 +139,7 @@ class ObservationModel:
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
-        """Reader fields needed to build an [`ObservationModel`][] via [`create`][]."""
+        """Reader fields needed to build an [`TileModel`][] via [`create`][]."""
         fields: set[str] = {
             ReaderField.BORESIGHT_QUATERNIONS,
             ReaderField.DETECTOR_QUATERNIONS,
@@ -156,13 +156,13 @@ class ObservationModel:
                 fields.update({ReaderField.SAMPLE_DATA, ReaderField.HWP_ANGLES})
             else:
                 fields.add(ReaderField.NOISE_MODEL_FITS)
-        if config.gaps.treatment == GapTreatment.FILL and not config.binned:
+        if config.gap_treatment == GapTreatment.FILL:
             fields.add(ReaderField.METADATA)
         return fields
 
     @property
     def tod_format(self) -> TODFormat:
-        """The format of the observation's TOD."""
+        """The format of the tile's TOD."""
         return _tod_format(self.H)
 
     @property
@@ -208,13 +208,7 @@ class ObservationModel:
         )
 
     def diag_W(self) -> WeightOperator:
-        """Build the inverse white-noise weight for a *single* observation.
-
-        Assumes ``self`` is a single-observation model (single-observation ``noise_model`` and
-        ``tod_format``). The observation-stacked preconditioner is obtained by mapping this over
-        the observation axis in [`MultiObservationMapMaker.make_maps`][], mirroring how ``W`` is
-        stacked inside the accumulation scan.
-        """
+        """The weight of the tile under the white part of its noise, with its mask."""
         white = self.noise_model.to_white_noise_model()
         inv = _noise_operator(white, self.tod_format, self.sample_rate, inverse=True)
         return WeightOperator.create(inv, self.M)
@@ -240,7 +234,7 @@ class ObservationModel:
 def acquisition_operator(
     data: Any, config: MapMakingConfig, landscape: StokesLandscape
 ) -> AbstractLinearOperator:
-    """The acquisition operator of an observation, from the sky of `landscape` to its TOD."""
+    """The acquisition operator of a tile, from the sky of `landscape` to its TOD."""
     return build_acquisition_operator(
         landscape,
         Quaternion.from_array(data[ReaderField.BORESIGHT_QUATERNIONS]),
@@ -260,7 +254,7 @@ def _noise_model(
     tod_format: TODFormat,
     n_samples: Int[Array, ''] | int | None = None,
 ) -> tuple[PyTree[NoiseModel], Array]:
-    """Compute the noise model and sample rate for a single observation block.
+    """The noise model and the sample rate of a tile.
 
     The samples past the first `n_samples`, padding, are left out of a fit; all count without it.
     """
@@ -354,7 +348,7 @@ def _noise_operator(
     *,
     inverse: bool = True,
 ) -> AbstractLinearOperator:
-    """Build the (inverse) noise covariance operator for this block.
+    """The (inverse) noise covariance operator of a tile.
 
     ``correlation_length`` sets the Toeplitz band for correlated (atmospheric) models; it is unused
     by white-noise models and may be omitted for them.
@@ -431,51 +425,59 @@ class TemplateBundle:
         return cls(operator, ginv, ridge)
 
 
-OutKind = Literal['sum', 'stack']
-"""How the detector tiles of an observation combine one output leaf."""
+TemplateKind = Literal['templates', 'shared_templates']
+"""A kind of template amplitudes solved for with the map: a key of the unknowns of the system."""
 
-FACTORED_KINDS: dict[str, OutKind] = {'explicit': 'stack', 'common': 'sum'}
-"""The kinds of templates whose Grams are factored where their amplitudes live, and how the
-detector tiles of an observation combine their Grams and right-hand sides: stacked for the
-`'explicit'` templates, whose amplitudes are each detector's own, each Gram factored in its tile,
-and summed for the `'common'` ones, whose amplitudes are the observation's, the Gram factored once
-summed. A kind names the [`ObservationTemplates`][] field holding its templates."""
+TEMPLATES: Final = 'templates'
+"""The amplitudes of the explicit templates of each detector, among the unknowns of the system."""
+
+SHARED_TEMPLATES: Final = 'shared_templates'
+"""The amplitudes of the explicit templates the detectors of an observation share, among the
+unknowns of the system."""
+
+Holder = Literal['tile', 'observation']
+"""Where amplitudes are held: in each detector tile, for those of its detectors, or once per
+observation, for those its detectors share, their Gram and right-hand side summed over its tiles."""
+
+TEMPLATE_KINDS: dict[TemplateKind, Holder] = {TEMPLATES: 'tile', SHARED_TEMPLATES: 'observation'}
+"""The template amplitudes solved for with the map, and where they are held."""
 
 
-class TileTemplates(NamedTuple):
+class UnfactoredTemplates(NamedTuple):
     """The templates of one detector tile, as built, before their Grams are factored."""
 
     implicit: 'TemplateBundle | None'
     """The implicit templates whose amplitudes are each detector's own, factored: the weight of the
     tile needs them."""
-    operators: dict[str, TemplateOperator | None]
-    """The operator of each of `FACTORED_KINDS`, `None` for those absent."""
-    grams: dict[str, BlockGram | None]
-    """The Gram of each, assembled but not factored: the tile's share of it for the kinds whose
-    amplitudes the observation's detectors share."""
+    operators: dict[TemplateKind, TemplateOperator | None]
+    """The operator of the explicit templates of each of `TEMPLATE_KINDS`, `None` for those
+    absent."""
+    grams: dict[TemplateKind, BlockGram | None]
+    """The Gram of each, assembled but not factored: the tile's share of it for the templates the
+    observation's detectors share."""
     weighted_tod: PyTree[Array]
     """The TOD under the tile's weight, its own implicit templates marginalized."""
 
 
 @register_dataclass
 @dataclass
-class ObservationTemplates:
-    """One observation's templates, stackable across observations via ``jax.lax.scan``.
+class TileTemplates:
+    """The templates of one detector tile, their Grams factored.
 
     Active templates are partitioned by their ``explicit`` config flag when built, because the two
-    kinds enter the map-making system in different places. The explicit ones further split by who
-    sees their amplitudes: each detector alone, or the detectors of the observation in common.
+    enter the map-making system in different places: the amplitudes of the implicit ones are
+    marginalized in the weight, those of the explicit ones solved for with the map. The explicit
+    ones further split by who sees their amplitudes: each detector alone, or the detectors of the
+    observation together.
     """
 
-    explicit: TemplateBundle | None
-    """Explicit templates whose amplitudes are each detector's own, solved jointly with the map."""
-
     implicit: TemplateBundle | None
-    """Templates whose amplitudes are each detector's own, marginalised over."""
+    """Implicit templates, whose amplitudes are each detector's own, marginalized."""
 
-    common: TemplateBundle | None = None
-    """Explicit templates whose amplitudes the detectors have in common, solved jointly with the
-    map."""
+    explicit: dict[TemplateKind, TemplateBundle | None]
+    """Explicit templates, solved for with the map, by the kind of their amplitudes (see
+    `TEMPLATE_KINDS`): each detector's own, or shared by the detectors of the observation; `None`
+    for a kind absent."""
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
@@ -488,47 +490,49 @@ class ObservationTemplates:
     def from_inverses(
         cls,
         implicit: 'TemplateBundle | None',
-        operators: dict[str, TemplateOperator | None],
-        inverses: dict[str, tuple[AbstractLinearOperator, AbstractLinearOperator | None] | None],
+        operators: dict[TemplateKind, TemplateOperator | None],
+        inverses: dict[
+            TemplateKind, tuple[AbstractLinearOperator, AbstractLinearOperator | None] | None
+        ],
     ) -> Self:
-        """An observation's templates, from those of [`TileTemplates`][] and their Gram inverses.
+        """A tile's templates, from those of [`UnfactoredTemplates`][] and their Gram inverses.
 
         Args:
             implicit: The implicit templates whose amplitudes are each detector's own.
-            operators: The operator of each of `FACTORED_KINDS`, `None` for those absent.
+            operators: The operator of each of `TEMPLATE_KINDS`, `None` for those absent.
             inverses: The inverse of the Gram of each, and the ridge added, as
                 [`factor`][furax.mapmaking.templates.gram.factor] gives them.
         """
-        bundles = {}
+        explicit = {}
         for kind, operator in operators.items():
-            bundles[kind] = None
+            explicit[kind] = None
             if operator is not None:
                 inverse = inverses[kind]
                 assert inverse is not None  # every template present has its Gram factored
-                bundles[kind] = TemplateBundle(operator, *inverse)
-        return cls(implicit=implicit, **bundles)
+                explicit[kind] = TemplateBundle(operator, *inverse)
+        return cls(implicit=implicit, explicit=explicit)
 
     @staticmethod
     def assemble(
         data: Any,
         config: MapMakingConfig,
-        model: ObservationModel,
+        model: TileModel,
         tod: PyTree[Array],
         temperature: Float[Array, 'det samp'] | None = None,
-    ) -> TileTemplates:
+    ) -> UnfactoredTemplates:
         """Build one tile's templates, and weight its TOD.
 
         The implicit templates are factored here and marginalized from the weight, which needs
         their Gram inverse. The Grams of the explicit ones are only assembled: for the templates
         the observation's detectors share, the tile's share of a Gram summed over its tiles.
-        [`from_inverses`][] makes the observation's templates once they are factored. The
+        [`from_inverses`][] makes the tile's templates once they are factored. The
         templates the detectors share are taken under the marginalized weight, those of each
         detector under `W`.
 
         Args:
-            data: The fields read for the observation.
+            data: The fields read for the tile's detectors.
             config: The mapmaking configuration, whose templates are built.
-            model: The observation's model.
+            model: The tile's model.
             tod: The TOD to weight.
             temperature: The I timestream, from which the T2P template is built; by default, the
                 I stream of the sample data.
@@ -564,12 +568,12 @@ class ObservationTemplates:
             chosen = {n: t for n, t in templates.items() if t.per_detector == per_detector}
             return TemplateOperator(chosen) if chosen else None
 
-        operators = {
-            'explicit': by_detectors(explicit_templates, True),
-            'common': by_detectors(explicit_templates, False),
+        operators: dict[TemplateKind, TemplateOperator | None] = {
+            TEMPLATES: by_detectors(explicit_templates, True),
+            SHARED_TEMPLATES: by_detectors(explicit_templates, False),
         }
-        weights = {'explicit': gram_weight, 'common': weight}
-        grams = {
+        weights = {TEMPLATES: gram_weight, SHARED_TEMPLATES: weight}
+        grams: dict[TemplateKind, BlockGram | None] = {
             kind: None
             if op is None
             else template_gram(
@@ -581,13 +585,13 @@ class ObservationTemplates:
             for kind, op in operators.items()
         }
         wd = model.deprojected_weight(implicit)(tod)
-        return TileTemplates(implicit, operators, grams, wd)
+        return UnfactoredTemplates(implicit, operators, grams, wd)
 
 
 def restrict_streams(
     data: dict[str, Any], tod: Stokes, stokes: ValidStokesLiteral
 ) -> tuple[dict[str, Any], Stokes]:
-    """An observation's sample data, noise fits and TOD, restricted to the streams `stokes`.
+    """A tile's sample data, noise fits and TOD, restricted to the streams `stokes`.
 
     The reader may load more demodulated streams than the map has (see
     [`MapMakingConfig.read_stokes`][furax.mapmaking.config.MapMakingConfig.read_stokes]).

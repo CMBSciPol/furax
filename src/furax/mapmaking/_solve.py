@@ -39,7 +39,12 @@ class SystemSolution(NamedTuple):
 
 @dataclass(frozen=True)
 class MapMakingSystem:
-    """The normal system handed to the solver."""
+    """The normal system handed to the solver.
+
+    Its unknowns are a dictionary of the map, under `'map'`, and of the amplitudes solved for with
+    it, under the name of their kind (see
+    [`AMPLITUDE_KINDS`][furax.mapmaking._bucket.AMPLITUDE_KINDS]).
+    """
 
     A: AbstractLinearOperator
     """The normal operator, acting on the unknowns."""
@@ -47,9 +52,6 @@ class MapMakingSystem:
     """The right-hand side, in the same unknowns."""
     preconditioner: AbstractLinearOperator
     """Approximate inverse of `A`."""
-    has_amplitudes: bool
-    """Whether the unknowns include explicit-template amplitudes: a dictionary of the map, under
-    `'map'`, and of the amplitudes of each kind, rather than the map alone."""
     injected_b: PyTree | None = None
     """The right-hand side for the injected simulated sky, if any."""
 
@@ -92,7 +94,7 @@ class MapMakingSystem:
             )
             if checkpoints[1] is not None and response.converged:
                 converged.append(('injected', checkpoints[1]))
-            injected = response.solution['map'] if self.has_amplitudes else response.solution
+            injected = response.solution['map']
 
         # A converged solve keeps its checkpoint until the other is done too, so that a run killed
         # in between does not redo it.

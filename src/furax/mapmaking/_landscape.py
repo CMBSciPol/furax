@@ -6,45 +6,32 @@ import numpy as np
 import pixell.enmap
 import pixell.utils
 from astropy.wcs import WCS as AstropyWCS
-from jaxtyping import DTypeLike
-
-from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
-from furax.obs.stokes import ValidStokesLiteral
 
 from ._geometry import minimum_enclosing_arc
 from ._observation import AbstractLazyObservation, FileBackedLazyObservation, ReaderField
-from .config import LandscapeConfig, WCSConfig
+from .config import WCSConfig
 
 
-def build_landscape(
-    observations: Sequence[AbstractLazyObservation[Any]], config: LandscapeConfig, dtype: DTypeLike
-) -> StokesLandscape:
-    """Build the sky grid a run solves on.
+def explicit_wcs_geometry(wcs_config: WCSConfig) -> tuple[tuple[int, int], AstropyWCS]:
+    """The shape and WCS of the explicit geometry of a WCS config: a geometry file or a patch.
 
-    The grid comes from the config alone for HEALPix and for a WCS with an explicit geometry. For
-    a WCS without one, the observations are scanned for their combined footprint.
+    The config must have one (see `WCSConfig.has_geometry`).
     """
-    if config.healpix is not None:
-        return HealpixLandscape(
-            nside=config.healpix.nside,
-            stokes=config.stokes,
-            dtype=dtype,
-            nested=config.healpix.ordering == 'nest',
-        )
-    assert config.wcs is not None  # LandscapeConfig sets exactly one of healpix and wcs
-    if config.wcs.has_geometry:
-        shape, wcs = _explicit_wcs_geometry(config.wcs)
-        return WCSLandscape.from_wcs(shape, wcs, config.stokes, dtype)
-    return scan_wcs_footprint(observations, config.wcs, config.stokes, dtype)
+    if wcs_config.geometry_file is not None:
+        return pixell.enmap.read_map_geometry(wcs_config.geometry_file)
+    assert wcs_config.patch is not None  # a config with a geometry has a file or a patch
+    res = wcs_config.resolution * pixell.utils.arcmin
+    half_w = np.radians(wcs_config.patch.width / 2)
+    half_h = np.radians(wcs_config.patch.height / 2)
+    ra, dec = np.radians(wcs_config.patch.center)
+    corners = np.array([[dec - half_h, ra + half_w], [dec + half_h, ra - half_w]])
+    return pixell.enmap.geometry(pos=corners, res=res, proj=wcs_config.projection.name.lower())
 
 
 def scan_wcs_footprint(
-    observations: Sequence[AbstractLazyObservation[Any]],
-    wcs_config: WCSConfig,
-    stokes: ValidStokesLiteral,
-    dtype: DTypeLike,
-) -> WCSLandscape:
-    """Scan observations to determine the combined WCS footprint and build a WCSLandscape.
+    observations: Sequence[AbstractLazyObservation[Any]], wcs_config: WCSConfig
+) -> tuple[tuple[int, int], AstropyWCS]:
+    """Scan observations for their combined WCS footprint: its shape and WCS.
 
     Performs a preliminary pass over all observations, loading the pointing data needed
     to compute each observation's sky coverage, then combines them into a unified footprint.
@@ -92,20 +79,4 @@ def scan_wcs_footprint(
     union_box = np.array([[dec_lo, ra_hi], [dec_hi, ra_lo]])
 
     # create the final shape and WCS objects for this covering box
-    shape, wcs = pixell.enmap.geometry(pos=union_box, res=res, proj=proj)
-    return WCSLandscape.from_wcs(shape, wcs, stokes, dtype)
-
-
-def _explicit_wcs_geometry(wcs_config: WCSConfig) -> tuple[tuple[int, int], AstropyWCS]:
-    """The shape and WCS of the explicit geometry of a WCS config: a geometry file or a patch."""
-    if not wcs_config.has_geometry:
-        raise ValueError('wcs_config must specify a geometry_file or patch.')
-    if wcs_config.geometry_file is not None:
-        return pixell.enmap.read_map_geometry(wcs_config.geometry_file)
-    assert wcs_config.patch is not None  # ty assert: has_geometry guarantees patch is set here
-    res = wcs_config.resolution * pixell.utils.arcmin
-    half_w = np.radians(wcs_config.patch.width / 2)
-    half_h = np.radians(wcs_config.patch.height / 2)
-    ra, dec = np.radians(wcs_config.patch.center)
-    corners = np.array([[dec - half_h, ra + half_w], [dec + half_h, ra - half_w]])
-    return pixell.enmap.geometry(pos=corners, res=res, proj=wcs_config.projection.name.lower())
+    return pixell.enmap.geometry(pos=union_box, res=res, proj=proj)

@@ -18,6 +18,7 @@ from jaxtyping import Bool, Float64, Int64
 
 from furax.math.coords import XiEtaAngles
 
+from ._model import DROP_REASONS
 from ._observation import ObservationBufferShape
 from ._reader import ObservationRecord
 from .results import _OBSERVATIONS_SCHEMA
@@ -99,8 +100,7 @@ class ObservationCatalog:
             'name': self.names[i],
             'loaded': False,
             'n_detectors': 0,
-            'over_flagged': 0,
-            'over_gap_budget': 0,
+            **dict.fromkeys(DROP_REASONS, 0),
             'n_samples': 0,
             'probed_detectors': 0,
             'probed_samples': 0,

@@ -69,6 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `MapMakingConfig.detector_batch_size` is renamed `detector_tile_size` (#447)
 - **Breaking:** `furax.mapmaking.layout` replaces `Bucket`, `SlotLayout`, `SlotPlacement`, `partition_padded`, `padded_volume` and `unpadded_volume` with `TileBucket`, `TileLayout`, `TilePlacement` and `partition_tiles` (#447)
 - `LazyPreprocSOTODLibObservation.probe_shape` counts the detectors left by the cuts, from the preprocessing metadata, instead of those before them (#474)
+- **Breaking:** the nested gap weight applies its inner inverse by Chebyshev iteration, linear at any step count, instead of CG, and never falls back to the inner mask: `NestedConfig` loses `max_flag_fraction`, `rtol` and `atol` (#475)
+  - `NestedConfig.precondition` is removed: the solve is preconditioned by the white-noise level
 
 ### Fixed
 

@@ -1,11 +1,13 @@
 """What the mapmaker accumulates over the observations, and the normal system it makes of it.
 
-`AccumulatedModel` holds the per-bucket models and the map-domain sums of the pass over the data
-(see `_pass`). Its methods assemble from it the normal system and its block-Jacobi preconditioner.
+`AccumulatedModel` holds the per-bucket models, the hit map, and the right-hand side of the normal
+system from the pass over the data (see `_pass`). Its methods assemble from them the normal system
+and its block-Jacobi preconditioner.
 """
 
 from dataclasses import dataclass
 from functools import reduce
+from typing import Any
 
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Int64, PyTree
@@ -23,14 +25,18 @@ from .preconditioner import BJPreconditioner
 @register_dataclass
 @dataclass(frozen=True)
 class AccumulatedModel:
-    """The result of the read pass: operators and accumulated (map-domain) quantities."""
+    """The result of the read pass: its buckets, the hit map and the right-hand side."""
 
     buckets: list[BucketModel]
     """One `BucketModel` per bucket of the layout, in bucket order."""
     hit_map: Int64[Array, '...']
     """Hit map over every observation, replicated on every device."""
-    map_rhs: StokesType
-    """Map RHS over every observation, replicated on every device."""
+    rhs: dict[str, Any]
+    """The right-hand side of the normal system, keyed as its unknowns: the map RHS over the full
+    sky under `'map'`, replicated on every device, and for each kind of amplitudes present (see
+    [`AMPLITUDE_KINDS`][furax.mapmaking._bucket.AMPLITUDE_KINDS]) a list with the right-hand side
+    of each bucket, `(tile, ...)`, or `(segment, ...)` for the amplitudes the detectors of an
+    observation share."""
 
     def block_jacobi(self, binned: bool, in_structure: PyTree) -> BJPreconditioner:
         """The block-Jacobi preconditioner, from the diagonal pixel system summed over the buckets.
@@ -72,11 +78,8 @@ class AccumulatedModel:
         kinds = self.buckets[0].amplitude_kinds
 
         # The unknowns are the selected sky pixels, then, per kind of amplitudes present, one block
-        # per bucket: those held per detector tile, `(tile, ...)`, and those the detectors of an
-        # observation share, `(segment, ...)`.
-        rhs = {'map': S(self.map_rhs)} | {
-            kind: [bm.rhs(kind) for bm in self.buckets] for kind in kinds
-        }
+        # per bucket
+        rhs = self.rhs | {'map': S(self.rhs['map'])}
         structures = furax.tree.as_structure(rhs)
 
         # Joint system. Each bucket's system sees the selected pixels and its own amplitudes,
@@ -96,14 +99,17 @@ class AccumulatedModel:
         # The ridge the Gram inverses were factored with acts on the amplitudes alone, so it is
         # one term over them all, outside the passes over the TOD.
         for kind in kinds:
-            ridged = [bm.ridge(kind) for bm in self.buckets]
+            ridged = [bm.ridge(kind, s) for bm, s in zip(self.buckets, structures[kind])]
             assert all(r is None for r in ridged) or all(r is not None for r in ridged)
             if ridged[0] is not None:
                 amplitudes = BlockSelectOperator(kind, in_structure=terms[0].in_structure)
                 terms.append((amplitudes.T @ BlockDiagonalOperator(ridged) @ amplitudes).reduce())
 
         # The preconditioner of the amplitudes of each kind, block-diagonal over the buckets
-        inverses = {kind: [bm.preconditioner(kind) for bm in self.buckets] for kind in kinds}
+        inverses = {
+            kind: [bm.preconditioner(kind, s) for bm, s in zip(self.buckets, structures[kind])]
+            for kind in kinds
+        }
         M = BlockDiagonalOperator({'map': M} | inverses)
         A = AdditionOperator(terms, sequential=True)
         response = None

@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Stencil.voided`: the stencil reading no pixel for the given samples (#425)
 - Ensemble members can be grouped in segments of varying length through an `owner` index: `StackedEnsemble` leaves of stride `'segment'` hold one entry per segment, and `map_reduce` keeps outputs per segment with `'segment'` and `'segment_sum'` (#445)
 - `GapsConfig.max_flagged_fraction` drops the detectors with more of their samples flagged, counted and marked in the `over_flagged` columns of the observations and detectors tables (#479)
+- `GapTreatment.EXPLICIT` models each gap by a B-spline of degree up to 3 on intervals of `ExplicitGapsConfig.resolution` samples, whose amplitudes are solved for with the map; a detector needing more amplitudes than its bucket's budget is dropped and counted in the `over_gap_budget` columns (#480)
+- `furax.math.bspline.cardinal_bspline` evaluates the cardinal B-splines of degree 0 to 3 (#480)
 
 ### Changed
 

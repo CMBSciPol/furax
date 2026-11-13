@@ -84,6 +84,7 @@ class ObservationCatalog:
             'loaded': False,
             'n_detectors': 0,
             'over_flagged': 0,
+            'over_gap_budget': 0,
             'n_samples': 0,
             'probed_detectors': 0,
             'probed_samples': 0,

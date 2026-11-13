@@ -6,6 +6,12 @@ sky pixels, the tile's own template amplitudes and those its observation's detec
 tile's TOD, and $W'_t$ its weight (see
 [`ObservationModel.deprojected_weight`][furax.mapmaking._model.ObservationModel.deprojected_weight]).
 
+With explicit gaps, the flagged samples are modelled by the spline amplitudes of the tile's gaps,
+$C_t$: $J_t = [M_t H_t S^\top, M_t T_{e,t}, M_t T_{g,t}, C_t]$, with $M_t$ the mask of the good
+samples, under the inverse noise $N_t^{-1}$ unmasked. The map block is that of the masked weight,
+$H^\top M N^{-1} M H$; marginalizing the gap amplitudes would give the nested weight on the span of
+the splines.
+
 A bucket keeps what its tiles hold as a `BucketModel`: a stacked ensemble of its tiles, split
 over the devices, grouped in segments by observation. Each leaf is stacked per tile, per segment
 when the tiles of an observation share it (the boresight pointing, the bases and Gram inverse of
@@ -19,13 +25,17 @@ from typing import Any, Literal
 
 import jax
 from jax.tree_util import register_dataclass
-from jaxtyping import Array, PyTree
+from jaxtyping import Array, Float, PyTree
 
 from furax import AbstractLinearOperator, symmetric
 from furax.core import BlockRowOperator, Policy, StackedEnsemble, map_reduce
 from furax.obs.stokes import StokesType
 
 from ._model import FACTORED_KINDS, ObservationModel, ObservationTemplates
+from .weight import WeightOperator
+
+GAPS = 'gaps'
+"""The kind of the amplitudes of the explicit gaps among the unknowns, per tile."""
 
 
 @register_dataclass
@@ -39,6 +49,11 @@ class Tile:
     """The tile's templates, with amplitudes per detector or shared by the observation."""
     amplitude_rhs: PyTree[Array] | None
     """The right-hand side of the tile's own explicit amplitudes (None without them)."""
+    gap_rhs: Float[Array, '*channels budget'] | None = None
+    """The right-hand side of the amplitudes of the tile's explicit gaps (None without them), laid
+    out as its TOD, the budget of amplitudes of each channel in place of its samples."""
+    gap_preconditioner: Float[Array, '*channels budget'] | None = None
+    """The inverse of the diagonal of the white-noise Gram of those amplitudes."""
 
 
 @register_dataclass
@@ -61,9 +76,12 @@ class BucketModel:
     def amplitude_kinds(self) -> tuple[str, ...]:
         """The kinds of amplitudes solved for with the map, each a key of the unknowns."""
         templates = self.templates
-        if templates is None:
-            return ()
-        return tuple(kind for kind in FACTORED_KINDS if getattr(templates, kind) is not None)
+        kinds = ()
+        if templates is not None:
+            kinds = tuple(kind for kind in FACTORED_KINDS if getattr(templates, kind) is not None)
+        if self.tiles.template.gap_rhs is not None:
+            kinds += (GAPS,)
+        return kinds
 
 
 def bucket_apply(
@@ -121,9 +139,10 @@ def bucket_apply(
 def joint_operator(
     tile: Tile, selection: AbstractLinearOperator | None, kinds: tuple[str, ...]
 ) -> AbstractLinearOperator:
-    r"""$J_t = [H_t S^\top, T_{e,t}, T_{g,t}]$ of a tile, with the amplitudes asked for.
+    r"""$J_t = [H_t S^\top, T_{e,t}, T_{g,t}, C_t]$ of a tile, with the amplitudes asked for.
 
-    Its input is a dictionary: the `'map'`, and the amplitudes of each kind of `kinds`.
+    Its input is a dictionary: the `'map'`, and the amplitudes of each kind of `kinds`. With the
+    gaps among them, the other blocks are masked: the gap amplitudes stand for the flagged samples.
 
     Args:
         tile: The tile.
@@ -133,9 +152,14 @@ def joint_operator(
     H = tile.model.H if selection is None else tile.model.H @ selection.T
     blocks = {'map': H}
     for kind in kinds:
+        if kind == GAPS:
+            continue
         bundle = None if tile.templates is None else getattr(tile.templates, kind)
         assert bundle is not None
         blocks[kind] = bundle.operator
+    if GAPS in kinds:
+        blocks = {kind: tile.model.M @ block for kind, block in blocks.items()}
+        blocks[GAPS] = tile.model.gap_basis()
     return BlockRowOperator(blocks)
 
 
@@ -174,7 +198,7 @@ class BucketNormalOperator(AbstractLinearOperator):
     """$W'_t$: the weight of the system, or $W F$ without the implicit templates, or the same with
     the white part of the noise only."""
     amplitudes: bool = field(default=True, metadata={'static': True})
-    """Whether the unknowns include the amplitudes of the explicit templates."""
+    """Whether the unknowns include the amplitudes of the explicit templates and gaps."""
     policy: Policy | None = field(default=None, metadata={'static': True})
     """How the tiles are walked (see `bucket_apply`); by default that of `model.tiles`."""
 
@@ -191,18 +215,25 @@ class BucketNormalOperator(AbstractLinearOperator):
 
     def response(self, sky: StokesType) -> Any:
         r"""$\sum_t J_t^\top W'_t H_t \, s$: the right-hand side of the TOD of a sky `sky`."""
+        gaps = GAPS in self._kinds
 
         def apply(tile, sky, _own, _common):
             J = joint_operator(tile, self.selection, self._kinds)
-            return _by_owner(J.T(self._weight(tile)(tile.model.H(sky))))
+            tod = tile.model.H(sky)
+            if gaps:  # the weight is unmasked
+                tod = tile.model.M(tod)
+            return _by_owner(J.T(self._weight(tile)(tod)))
 
         return self._join(*bucket_apply(self.model, apply, sky, {}, {}, self.policy))
 
     def _weight(self, tile: Tile) -> AbstractLinearOperator:
-        if self.weight == 'system':
-            return system_weight(tile)
         model = tile.model
         W = model.diag_W() if self.weight == 'white' else model.W
+        if GAPS in self._kinds:  # N⁻¹ unmasked: the gap amplitudes stand for the flagged samples
+            assert isinstance(W, WeightOperator)
+            return W.weight
+        if self.weight == 'system':
+            return system_weight(tile)
         return (W @ model.F).reduce()
 
     @property
@@ -251,8 +282,9 @@ class MemberOperator(AbstractLinearOperator):
 def _by_owner(x: dict[str, Any]) -> tuple[Any, dict[str, Any], dict[str, Any]]:
     """The map of the unknowns `x`, and their amplitudes of each tile and of each observation.
 
-    The engine strides the two differently: per tile, and per segment.
+    The engine strides the two differently: per tile, and per segment. The amplitudes of the
+    explicit gaps are per tile.
     """
-    own = {kind: v for kind, v in x.items() if kind != 'map' and FACTORED_KINDS[kind] == 'stack'}
-    common = {kind: v for kind, v in x.items() if kind != 'map' and FACTORED_KINDS[kind] == 'sum'}
+    common = {kind: v for kind, v in x.items() if FACTORED_KINDS.get(kind) == 'sum'}
+    own = {kind: v for kind, v in x.items() if kind != 'map' and kind not in common}
     return x['map'], own, common

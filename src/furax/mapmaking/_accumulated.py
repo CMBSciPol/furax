@@ -20,12 +20,13 @@ from furax.core import (
     AdditionOperator,
     BlockDiagonalOperator,
     BlockSelectOperator,
+    DiagonalOperator,
     StackedEnsemble,
     lift,
 )
 from furax.obs.stokes import StokesType
 
-from ._bucket import BucketModel, BucketNormalOperator, MemberOperator, Tile, segment_ensemble
+from ._bucket import GAPS, BucketModel, BucketNormalOperator, MemberOperator, Tile, segment_ensemble
 from ._model import DROP_REASONS, FACTORED_KINDS, TemplateBundle
 from ._solve import MapMakingSystem
 from .layout import TilePlacement
@@ -86,7 +87,7 @@ class AccumulatedModel:
         # Restrict BJ preconditioner to selected pixels
         M = (S @ BJ.I @ S.T).reduce()
 
-        # Explicit templates are configured for the run, so every bucket carries them or none.
+        # Explicit templates and gaps are configured for the run, so every bucket has them or none.
         kinds = self.buckets[0].amplitude_kinds
 
         if not kinds:
@@ -126,6 +127,14 @@ class AccumulatedModel:
         ridges: dict[str, list[AbstractLinearOperator | None]] = {kind: [] for kind in kinds}
         for b, bm in enumerate(self.buckets):
             for kind in kinds:
+                if kind == GAPS:
+                    # the inverse of the diagonal of the white-noise Gram of the gap amplitudes
+                    jacobi = bm.tiles.stacked.gap_preconditioner
+                    inverses[kind].append(
+                        DiagonalOperator(jacobi, in_structure=structures[kind][b])
+                    )
+                    ridges[kind].append(None)
+                    continue
                 inverse, ridge = _gram_inverse(bm, kind, structures[kind][b])
                 inverses[kind].append(inverse)
                 ridges[kind].append(ridge)
@@ -143,7 +152,11 @@ class AccumulatedModel:
             # declared stacked over the tiles, the right-hand sides of each tile's own amplitudes
             # are wholly per tile
             kind: [
-                bm.tiles.stacked.amplitude_rhs if FACTORED_KINDS[kind] == 'stack' else bm.common_rhs
+                bm.tiles.stacked.gap_rhs
+                if kind == GAPS
+                else bm.tiles.stacked.amplitude_rhs
+                if FACTORED_KINDS[kind] == 'stack'
+                else bm.common_rhs
                 for bm in self.buckets
             ]
             for kind in kinds
@@ -228,11 +241,13 @@ class AccumulatedModel:
         }
 
 
-def _amplitude_structure(bm: BucketModel, kind: str) -> dict[str, jax.ShapeDtypeStruct]:
+def _amplitude_structure(bm: BucketModel, kind: str) -> PyTree[jax.ShapeDtypeStruct]:
     """The amplitudes of a kind of a bucket.
 
     Those of each tile alone are `(tile, ...)`, those of each observation `(segment, ...)`.
     """
+    if kind == GAPS:
+        return furax.tree.as_structure(bm.tiles.stacked.gap_rhs)
     assert bm.templates is not None
     bundle = getattr(bm.templates, kind)
     assert bundle is not None

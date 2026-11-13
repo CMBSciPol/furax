@@ -8,6 +8,7 @@ exercised too, and compare against a single-process run of the same configuratio
 """
 
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -18,7 +19,6 @@ import pytest
 N_SAMPLES = (512, 640, 1536, 768, 1024)  # five observations, no two of a kind
 N_DETS = 4
 N_HARMONICS = 2
-PORT_BASE = 54500
 
 
 def _run_mapmaker(out_path: Path, *, max_buckets: int) -> None:
@@ -79,7 +79,14 @@ def _child(proc_id: int, n_proc: int, port: int, n_local: int, out: str, max_buc
     _run_mapmaker(Path(out), max_buckets=max_buckets)
 
 
-def _spawn(n_proc: int, n_local: int, port: int, out: Path, max_buckets: int) -> None:
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(('localhost', 0))
+        return sock.getsockname()[1]
+
+
+def _spawn(n_proc: int, n_local: int, out: Path, max_buckets: int) -> None:
+    port = _free_port()
     root = Path(__file__).resolve().parents[2]  # the children import `tests.mapmaking.helpers`
     env = {**os.environ, 'PYTHONPATH': str(root)}
     args = [str(n_proc), str(port), str(n_local), str(out), str(max_buckets)]
@@ -102,7 +109,7 @@ def _spawn(n_proc: int, n_local: int, port: int, out: Path, max_buckets: int) ->
 def reference(tmp_path_factory: pytest.TempPathFactory) -> dict[str, np.ndarray]:
     """The single-process products, one bucket, computed in a child so the backend is CPU."""
     out = tmp_path_factory.mktemp('reference') / 'single.npz'
-    _spawn(1, 1, PORT_BASE, out, max_buckets=1)
+    _spawn(1, 1, out, max_buckets=1)
     return dict(np.load(out))
 
 
@@ -120,7 +127,7 @@ def test_multi_process_matches_single_process(
     tmp_path: Path,
 ) -> None:
     out = tmp_path / 'multi.npz'
-    _spawn(n_proc, n_local, PORT_BASE + 10 * n_proc + n_local, out, max_buckets)
+    _spawn(n_proc, n_local, out, max_buckets)
     result = dict(np.load(out))
     np.testing.assert_array_equal(result['hit_map'], reference['hit_map'])
     assert np.count_nonzero(result['hit_map']) > 1

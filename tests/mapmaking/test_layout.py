@@ -219,6 +219,9 @@ def test_to_observation_order_concatenates_the_tiles(detector_axis, tile_size):
     np.testing.assert_array_equal(layout.to_observation_order(per_segment), reference[:, :, 0, 0])
     with pytest.raises(ValueError, match='expected 2 arrays'):
         layout.to_observation_order(per_tile[:1], detector_axis=detector_axis)
+    with pytest.raises(ValueError, match='detectors of a tile'):
+        doubled = [np.repeat(t, 2, axis=detector_axis) for t in per_tile]
+        layout.to_observation_order(doubled, detector_axis=detector_axis)
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ from furax.mapmaking.config import (
     AzimuthSynchronousConfig,
     BinsConfig,
     CommonModeConfig,
+    ExplicitGapsConfig,
     GapsConfig,
     GapTreatment,
     HealpixConfig,
@@ -175,6 +176,8 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
         ),
         (lambda: NestedConfig(inner_steps=-1), 'inner_steps'),
         (lambda: GapsConfig(max_flagged_fraction=0.0), 'max_flagged_fraction'),
+        (lambda: GapsConfig(treatment=GapTreatment.EXPLICIT), 'max_flagged_fraction'),
+        (lambda: ExplicitGapsConfig(resolution=0), 'resolution'),
     ],
     ids=[
         'max_buckets',
@@ -191,6 +194,8 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
         'azimuth-two-alternatives',
         'inner_steps',
         'max_flagged_fraction',
+        'explicit-without-threshold',
+        'resolution',
     ],
 )
 def test_rejects_out_of_range_values(make, match):
@@ -239,7 +244,7 @@ def test_correlated_weight_with_templates_rejects_gap_filling():
         'detector_tile_size': 0,  # gap treatments other than the inner mask need every detector
         'templates': TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)),
     }
-    with pytest.raises(ValueError, match='inner_mask or nested'):
+    with pytest.raises(ValueError, match='inner_mask, nested or explicit'):
         MapMakingConfig(**options, gaps=GapsConfig(treatment=GapTreatment.FILL))
     MapMakingConfig(**options, gaps=GapsConfig(treatment=GapTreatment.NESTED))
 

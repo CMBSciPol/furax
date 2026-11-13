@@ -598,6 +598,10 @@ class TileLayout:
             An array of shape `(n_observations, ...)` in observation order. Trailing axes may
             differ between observations, each padded to its own tiles or bucket, so they are
             zero-padded to the largest.
+
+        Raises:
+            ValueError: If there is not one array per bucket, or if `detector_axis` does not hold
+                the detectors of a tile.
         """
         if len(per_bucket) != len(self.buckets):
             raise ValueError(f'expected {len(self.buckets)} arrays, got {len(per_bucket)}')
@@ -610,6 +614,12 @@ class TileLayout:
                     rows[int(observation)] = values[segment]
                     continue
                 axis = detector_axis % values.ndim - 1  # in the entries, after the tile axis
+                if (n := values.shape[axis + 1]) != bucket.tile_size:
+                    msg = (
+                        f'axis {detector_axis} has {n} entries, '
+                        f'not the {bucket.tile_size} detectors of a tile'
+                    )
+                    raise ValueError(msg)
                 tiles = [values[t] for t in bucket.tiles_of(segment)]
                 rows[int(observation)] = np.concatenate(tiles, axis=axis)
         held = list(rows.values())

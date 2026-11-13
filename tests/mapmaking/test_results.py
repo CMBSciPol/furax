@@ -160,6 +160,7 @@ def test_extras_roundtrip(tmp_path):
                 'loaded': [True, False],
                 'n_detectors': [2, 0],
                 'over_flagged': [1, 0],
+                'over_gap_budget': [0, 0],
                 'n_samples': [100, 0],
                 'probed_detectors': [2, 0],
                 'probed_samples': [100, 0],

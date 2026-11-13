@@ -843,7 +843,8 @@ def lift(f: Callable[..., PyTree[Any]], *ensembles: Ensemble) -> Ensemble:
         *ensembles: The members, all list or all stacked, of one size.
 
     Returns:
-        The ensemble of `f`'s outputs, with `f`'s non-array leaves shared.
+        The ensemble of `f`'s outputs, with the leaves that do not come from the members, such as
+            the arrays `f` closes over, shared.
     """
     if not ensembles:
         raise ValueError('lift needs at least one ensemble')
@@ -908,9 +909,10 @@ def _lift_structural(
     """`f` applied once to abstract members, the output leaves matched to the inputs by identity.
 
     A structural `f` passes its members' array leaves through untouched, so every array leaf of
-    its output is one of the sentinel inputs: the output ensemble reuses the stacked arrays with
-    their strides and member axes. Any computed array leaf, or any error on abstract leaves,
-    falls back to None.
+    its output is one of the sentinel inputs, or a constant -- an array `f` closes over -- which
+    no computation on the sentinels can produce: the output ensemble reuses the stacked arrays
+    with their strides and member axes, and shares the constants. Any computed array leaf, or any
+    error on abstract leaves, falls back to None.
     """
     sources: dict[int, tuple[Array, Stride, int | None]] = {}
     members = []
@@ -939,9 +941,10 @@ def _lift_structural(
             stacked.append(source)
             strides.append(stride)
             axes.append(axis)
-        elif isinstance(leaf, jax.ShapeDtypeStruct) or _is_array(leaf):
+        elif isinstance(leaf, jax.ShapeDtypeStruct):
             return None  # a computed array leaf: f is not structural
         else:
+            # a constant, such as an array closed over by f: the same for every member
             stacked.append(leaf)
             strides.append(None)
             axes.append(None)
@@ -1680,11 +1683,12 @@ def _per_leaf(treedef: PyTreeDef, values: PyTree[Any]) -> list[Any]:
     """`values` as one entry per leaf of a tree of structure `treedef`.
 
     `values` is a single value for every leaf, the canonical flat tuple of one value per leaf, or
-    a pytree with the structure `treedef`. In the latter, a None where the tree has a leaf is
-    that leaf's value, and a None subtree of the tree holds no leaf, so no value.
+    a pytree whose structure is a prefix of `treedef`: a value where the tree has a subtree is
+    that of each of its leaves. A None where the tree has a leaf or a subtree is a value, and a
+    None subtree of the tree holds no leaf, so no value.
 
     Raises:
-        ValueError: If `values` is a pytree whose structure is not `treedef`.
+        ValueError: If `values` is a pytree whose structure is not a prefix of `treedef`.
     """
     if _is_single_value(values):
         return [values] * treedef.num_leaves
@@ -1697,7 +1701,8 @@ def _per_leaf(treedef: PyTreeDef, values: PyTree[Any]) -> list[Any]:
     )
     if is_canonical:
         return list(values)
-    return treedef.flatten_up_to(values)
+    tree = jax.tree.unflatten(treedef, [0] * treedef.num_leaves)
+    return treedef.flatten_up_to(jax.tree.broadcast(values, tree, is_leaf=lambda v: v is None))
 
 
 def _is_single_value(value: Any) -> bool:

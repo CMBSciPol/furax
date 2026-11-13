@@ -465,6 +465,16 @@ def test_lift_keeps_the_leaves_and_strides_of_a_structural_function():
     assert rearranged.strides == (2, 1)
 
 
+def test_lift_shares_the_arrays_a_structural_function_closes_over():
+    xs = _xs()
+    shared = jnp.arange(float(N_SAMPS))
+    paired = lift(lambda m: (m, shared), StackedEnsemble(N, xs))
+    assert isinstance(paired, StackedEnsemble)
+    assert paired.stacked[0] is xs and paired.stacked[1] is shared  # nothing copied or stacked
+    assert paired.strides == (1, None)
+    assert_allclose(paired.fetch(2)[1], shared)
+
+
 def _holding_none() -> StackedEnsemble:
     xs, by_2 = _xs(), jnp.ones((N // 2, N_SAMPS))
     return StackedEnsemble(
@@ -853,7 +863,7 @@ class TestSharded:
 
     def test_hand_built_policy_evaluates_without_the_ambient_mesh(self):
         # a policy built directly with the axis, without `shard` -- the pattern of
-        # `bucket_apply` and of the mapmaker -- carries no mesh: the engine reads it from
+        # `bucket_normal` and of the mapmaker -- carries no mesh: the engine reads it from
         # the laid-out leaves
         reference, _ = map_reduce(
             _apply, _stacked(), {'sum': 'sum', 'stack': 1, 'shared': None}, 3.0

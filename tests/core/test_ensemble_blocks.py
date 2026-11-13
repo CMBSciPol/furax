@@ -9,8 +9,10 @@ import jax.numpy as jnp
 import lineax as lx
 import numpy as np
 import pytest
+from jax.sharding import PartitionSpec as P
 from numpy.testing import assert_allclose
 
+import furax
 from furax import DiagonalOperator, HomothetyOperator
 from furax.core import (
     AdditionOperator,
@@ -315,3 +317,101 @@ def test_lineax_solve_over_an_ensemble():
     solver = lx.CG(rtol=1e-12, atol=1e-12, max_steps=100)
     got = operator.I(solver=solver)(b)
     assert_allclose(got, x, atol=1e-10)
+
+
+# A sum whose members each read the whole map, their own amplitudes and those of their segment
+OWNER = np.array([0, 0, 1, 2, 2, 2])
+STRIDES = {'map': None, 'own': 1, 'seg': 'segment'}
+
+
+def _joint(n: int = len(OWNER), owner: np.ndarray = OWNER) -> StackedEnsemble:
+    """The joint operators $J_i$, from `{'map', 'own', 'seg'}` to the TOD of member i."""
+    k = jax.random.split(jax.random.key(0), 3)
+    segments = int(owner.max()) + 1
+    diagonals = {
+        'map': jax.random.normal(k[0], (n, M)),
+        'own': jax.random.normal(k[1], (n, M)),
+        'seg': jax.random.normal(k[2], (segments, M)),
+    }
+    tiles = StackedEnsemble(n, diagonals, STRIDES | {'map': 1}, owner=jnp.asarray(owner))
+    joint = lift(
+        lambda d: BlockRowOperator({key: DiagonalOperator(v) for key, v in d.items()}), tiles
+    )
+    assert isinstance(joint, StackedEnsemble)
+    return joint
+
+
+def _unknowns(n: int = len(OWNER), segments: int = int(OWNER.max()) + 1) -> dict[str, jax.Array]:
+    k = jax.random.split(jax.random.key(1), 3)
+    return {
+        'map': jax.random.normal(k[0], (M,)),
+        'own': jax.random.normal(k[1], (n, M)),
+        'seg': jax.random.normal(k[2], (segments, M)),
+    }
+
+
+def test_strided_sum_applies_each_member_to_its_parts():
+    joint = _joint()
+    normal = AdditionOperator(lift(lambda J: J.T @ J, joint), in_strides=STRIDES)
+    x = _unknowns()
+    expected = jax.tree.map(jnp.zeros_like, x)
+    for i, s in enumerate(OWNER):
+        J = joint.fetch(i)
+        y = (J.T @ J)({'map': x['map'], 'own': x['own'][i], 'seg': x['seg'][s]})
+        expected['map'] += y['map']
+        expected['own'] = expected['own'].at[i].set(y['own'])
+        expected['seg'] = expected['seg'].at[s].add(y['seg'])
+    assert normal.in_structure == normal.out_structure == furax.tree.as_structure(x)
+    jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-12), normal(x), expected)
+
+
+def test_strided_sum_transposes_with_its_strides():
+    # non-square: the unknowns to the TOD of each member, stacked
+    op = AdditionOperator(_joint(), in_strides=STRIDES, out_strides=1)
+    assert op.out_structure.shape == (len(OWNER), M)
+    assert op.T.in_strides == op.out_strides and op.T.out_strides == op.in_strides
+    assert_allclose(op.T.as_matrix(), op.as_matrix().T, rtol=1e-12)
+    assert_allclose((op.T @ op).as_matrix(), op.as_matrix().T @ op.as_matrix(), rtol=1e-12)
+
+
+def test_strided_sum_tags_need_the_same_strides_on_both_sides():
+    members = _ensemble('stacked')
+    assert AdditionOperator(members, in_strides=1).is_symmetric
+    assert not AdditionOperator(members, in_strides=1, out_strides=None).is_symmetric
+
+
+@pytest.mark.parametrize(
+    ('operands', 'strides', 'match'),
+    [
+        (lambda: _ensemble('stacked'), 2, 'None, 1 or "segment"'),
+        (lambda: _ensemble('stacked'), 'segment', 'grouped in segments'),
+        (
+            lambda: [HomothetyOperator(2.0, in_structure=jax.ShapeDtypeStruct((M,), jnp.float64))],
+            1,
+            'an ensemble of operands',
+        ),
+    ],
+    ids=['stride', 'segment', 'not-an-ensemble'],
+)
+def test_strided_sum_rejects_invalid_strides(operands, strides, match):
+    with pytest.raises(ValueError, match=match):
+        AdditionOperator(operands(), in_strides=strides)
+
+
+@pytest.mark.distributed
+def test_strided_sum_over_a_sharded_ensemble():
+    n_devices = jax.device_count()
+    owner = np.arange(2 * n_devices) // 2  # a segment of two members per device
+    joint = _joint(len(owner), owner)
+    normal = AdditionOperator(lift(lambda J: J.T @ J, joint), in_strides=STRIDES)
+    x = _unknowns(len(owner), n_devices)
+    expected = normal(x)
+    mesh = jax.make_mesh((n_devices,), ('obs',))
+    with jax.set_mesh(mesh):
+        sharded = AdditionOperator(lift(lambda J: J.T @ J, joint.shard('obs')), in_strides=STRIDES)
+        # the strided amplitudes are laid out with their members, the map held by every device
+        laid_out = {'own', 'seg'}
+        x = {k: jax.device_put(v, P('obs') if k in laid_out else P()) for k, v in x.items()}
+        got = sharded(x)
+    assert got['own'].sharding.spec[0] == got['seg'].sharding.spec[0] == 'obs'
+    jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-12), got, expected)

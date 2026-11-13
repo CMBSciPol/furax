@@ -187,7 +187,9 @@ class Ensemble(ABC):
     def fetch(self, i: Int[Array, ''] | int) -> PyTree[Any]:
         """Member `i`."""
 
-    def zip(self, x: PyTree[Any], axes: PyTree[int | None] = 0) -> 'Ensemble':
+    def zip(
+        self, x: PyTree[Any], axes: PyTree[int | None] = 0, strides: PyTree[Stride] = 1
+    ) -> 'Ensemble':
         """The members paired with their slices of a stacked pytree.
 
         Member i becomes the pair `(member, x[i])`: the array leaves of `x` carry a member axis
@@ -195,6 +197,10 @@ class Ensemble(ABC):
         places it per leaf of `x`, a single value or an aligned pytree, so an input whose
         natural layout puts the member dimension elsewhere is sliced in place. The block
         composites use it to hand each block its own slice of the input.
+
+        `strides`, a single value or an aligned pytree, says how each leaf of `x` is read (see
+        [`Stride`][furax.core.Stride]): a leaf of stride None is handed whole to every member,
+        one of stride `'segment'` has an entry per segment.
 
         Only the resident ensembles support it: the members of a [`HostEnsemble`][] are read on
         the fly, they cannot be rebuilt into pairs.
@@ -313,9 +319,13 @@ class ListEnsemble(Ensemble):
         selected = jax.lax.switch(i, [lambda a=a: list(a) for a in arrays])
         return _rebuild(treedef, leaves, is_array, selected)
 
-    def zip(self, x: PyTree[Any], axes: PyTree[int | None] = 0) -> 'ListEnsemble':
+    def zip(
+        self, x: PyTree[Any], axes: PyTree[int | None] = 0, strides: PyTree[Stride] = 1
+    ) -> 'ListEnsemble':
         x_leaves, x_def = jax.tree.flatten(x)
-        x_strides = _normalized_strides(x_leaves, x_def, 1)
+        x_strides = _normalized_strides(x_leaves, x_def, strides)
+        if any(s not in (None, 1) for s in x_strides):
+            raise ValueError('the members of a ListEnsemble read their input whole or sliced')
         x_axes = _normalized_axes(x_leaves, x_def, x_strides, axes)
         members = [
             (
@@ -480,9 +490,11 @@ class StackedEnsemble(Ensemble):
         ]
         return jax.tree.unflatten(jax.tree.structure(self.stacked), picked)
 
-    def zip(self, x: PyTree[Any], axes: PyTree[int | None] = 0) -> 'StackedEnsemble':
+    def zip(
+        self, x: PyTree[Any], axes: PyTree[int | None] = 0, strides: PyTree[Stride] = 1
+    ) -> 'StackedEnsemble':
         x_leaves, x_def = jax.tree.flatten(x)
-        x_strides = _normalized_strides(x_leaves, x_def, 1)
+        x_strides = _normalized_strides(x_leaves, x_def, strides)
         x_axes = _normalized_axes(x_leaves, x_def, x_strides, axes)
         return StackedEnsemble(
             self.size,

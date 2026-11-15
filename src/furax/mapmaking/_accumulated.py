@@ -1,16 +1,13 @@
 """What the mapmaker accumulates over the observations, and what it makes of it.
 
 `AccumulatedModel` holds the per-bucket models and the map-domain sums of the pass over the data.
-Its methods assemble from it the normal system and its block-Jacobi preconditioner, and unpack the
-noise parameters and template amplitudes into observation order.
+Its methods assemble from it the normal system and its block-Jacobi preconditioner.
 """
 
 from dataclasses import dataclass
 from functools import reduce
-from typing import Any
 
 import jax
-import numpy as np
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Int64, PyTree
 
@@ -27,9 +24,8 @@ from furax.core import (
 from furax.obs.stokes import StokesType
 
 from ._bucket import GAPS, BucketModel, BucketNormalOperator, MemberOperator, Tile, segment_ensemble
-from ._model import DROP_REASONS, FACTORED_KINDS, TemplateBundle
+from ._model import FACTORED_KINDS, TemplateBundle
 from ._solve import MapMakingSystem
-from .layout import TilePlacement
 from .preconditioner import BJPreconditioner
 
 
@@ -168,78 +164,6 @@ class AccumulatedModel:
             response = reduce(furax.tree.add, responses)
         return MapMakingSystem(A, rhs, M, has_amplitudes=True, injected_b=response)
 
-    def template_amplitudes(
-        self, x: dict[str, PyTree[Array]], placement: TilePlacement
-    ) -> dict[str, np.ndarray]:
-        """The explicit-template amplitudes solved for, per observation, from the unknowns `x`.
-
-        Every device holds the same replicated copy after the gather, so the host array is
-        complete on every process; then back to observation order.
-        """
-        amplitudes = {}
-        if (own := x.get('explicit')) is not None:
-            templates = self.buckets[0].templates
-            assert templates is not None and templates.explicit is not None
-            explicit = templates.explicit
-            per_bucket = [placement.gather(a) for a in own]
-            for name in per_bucket[0]:
-                # the detector axis follows the stream axis, if any (see `Template`), after the
-                # tile axis
-                axis = 1 + explicit.operator.templates[name].per.index('det')
-                amplitudes[name] = placement.layout.to_observation_order(
-                    [a[name] for a in per_bucket], detector_axis=axis
-                )
-        if (common := x.get('common')) is not None:  # one set per segment, no detector axis
-            amplitudes |= jax.tree.map(
-                lambda *leaves: placement.layout.to_observation_order(leaves),
-                *[placement.gather(a) for a in common],
-            )
-        return amplitudes
-
-    def detector_drops(self, placement: TilePlacement) -> dict[str, np.ndarray]:
-        """Per detector, whether it was dropped, by reason (see [`DROP_REASONS`][]).
-
-        Each array is `(n_observations, detector)`, in observation order, its detector axis
-        padded with `False`.
-        """
-        drops = {}
-        for reason in DROP_REASONS:
-            per_bucket = []
-            for bm in self.buckets:
-                flags = lift(lambda tile, reason=reason: getattr(tile.model, reason), bm.tiles)
-                assert isinstance(flags, StackedEnsemble)
-                values = placement.gather(flags.stacked)
-                if flags.strides[0] is None:  # the same in every tile, as when none is dropped
-                    values = np.broadcast_to(values, (bm.tiles.size, *values.shape))
-                per_bucket.append(values)
-            drops[reason] = placement.layout.to_observation_order(per_bucket, detector_axis=-1)
-        return drops
-
-    def noise_parameters(self, placement: TilePlacement) -> dict[str, np.ndarray]:
-        """The noise model parameters of every detector, in observation order.
-
-        Each parameter is `(n_observations, [stream,] detector)`, its detector axis padded.
-        """
-        per_bucket = []
-        for bm in self.buckets:
-            # the parameters of the detectors are held per tile: `(tile, ..., detector)`
-            noise = lift(lambda tile: tile.model.noise_model, bm.tiles)
-            assert isinstance(noise, StackedEnsemble)
-            leaves, _ = jax.tree_util.tree_flatten_with_path(placement.gather(noise.stacked))
-            per_bucket.append(
-                {
-                    _parameter_name(path): leaf
-                    for (path, leaf), stride in zip(leaves, noise.strides, strict=True)
-                    if stride == 1
-                }
-            )
-        return {
-            name: placement.layout.to_observation_order(
-                [p[name] for p in per_bucket], detector_axis=-1
-            )
-            for name in per_bucket[0]
-        }
-
 
 def _amplitude_structure(bm: BucketModel, kind: str) -> PyTree[jax.ShapeDtypeStruct]:
     """The amplitudes of a kind of a bucket.
@@ -284,8 +208,3 @@ def _gram_inverse(
     inverse = member('gram_inverse')
     assert inverse is not None
     return inverse, member('ridge')
-
-
-def _parameter_name(path: tuple[Any, ...]) -> str:
-    """The name of a leaf of a noise model, from its path: `sigma`, or `<key>/sigma` if nested."""
-    return '/'.join(str(getattr(k, 'name', getattr(k, 'key', k))) for k in path)

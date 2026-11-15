@@ -35,7 +35,7 @@ def provenance() -> dict[str, Any]:
         'host': socket.gethostname(),
         'processes': jax.process_count(),
         'devices': jax.device_count(),
-        'platform': jax.devices()[0].platform,
+        'platform': jax.default_backend(),
     }
 
 

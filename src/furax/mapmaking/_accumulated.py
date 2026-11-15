@@ -1,6 +1,6 @@
 """What the mapmaker accumulates over the observations, and the normal system it makes of it.
 
-`AccumulatedModel` holds the per-bucket models, the hit map, and the right-hand side of the normal
+`AccumulatedModel` holds the tiles of each bucket, the hit map, and the right-hand side of the normal
 system from the pass over the data (see `_pass`). Its methods assemble from them the normal system
 and its block-Jacobi preconditioner.
 """
@@ -14,10 +14,10 @@ from jaxtyping import Array, Int64, PyTree
 
 import furax.tree
 from furax import AbstractLinearOperator, IdentityOperator
-from furax.core import AdditionOperator, BlockDiagonalOperator, BlockSelectOperator
+from furax.core import AdditionOperator, BlockDiagonalOperator, BlockSelectOperator, StackedEnsemble
 from furax.obs.stokes import StokesType
 
-from ._bucket import BucketModel, BucketNormalOperator
+from ._bucket import BucketNormalOperator, amplitude_kinds, preconditioner, ridge
 from ._solve import MapMakingSystem
 from .preconditioner import BJPreconditioner
 
@@ -27,8 +27,8 @@ from .preconditioner import BJPreconditioner
 class AccumulatedModel:
     """The result of the read pass: its buckets, the hit map and the right-hand side."""
 
-    buckets: list[BucketModel]
-    """One `BucketModel` per bucket of the layout, in bucket order."""
+    buckets: list[StackedEnsemble]
+    """The [`Tile`][furax.mapmaking._bucket.Tile]s of each bucket of the layout, in bucket order."""
     hit_map: Int64[Array, '...']
     """Hit map over every observation, replicated on every device."""
     rhs: dict[str, Any]
@@ -47,8 +47,8 @@ class AccumulatedModel:
         unknowns = {'map': in_structure}
         E = BlockSelectOperator('map', in_structure=unknowns)
         terms = [
-            BucketNormalOperator(bm, None, weight, amplitudes=False, in_structure=unknowns)
-            for bm in self.buckets
+            BucketNormalOperator(tiles, None, weight, amplitudes=False, in_structure=unknowns)
+            for tiles in self.buckets
         ]
         return BJPreconditioner.create(
             (E @ AdditionOperator(terms, sequential=True) @ E.T).reduce()
@@ -75,7 +75,7 @@ class AccumulatedModel:
         M = (S @ BJ.I @ S.T).reduce()
 
         # Explicit templates and gaps are configured for the run, so every bucket has them or none.
-        kinds = self.buckets[0].amplitude_kinds
+        kinds = amplitude_kinds(self.buckets[0])
 
         # The unknowns are the selected sky pixels, then, per kind of amplitudes present, one block
         # per bucket
@@ -85,9 +85,9 @@ class AccumulatedModel:
         # Joint system. Each bucket's system sees the selected pixels and its own amplitudes,
         # picked out of the lists and embedded back by `E`.
         terms, responses = [], []
-        for b, bm in enumerate(self.buckets):
+        for b, tiles in enumerate(self.buckets):
             in_structure = {'map': S.out_structure} | {kind: structures[kind][b] for kind in kinds}
-            normal = BucketNormalOperator(bm, S, in_structure=in_structure)
+            normal = BucketNormalOperator(tiles, S, in_structure=in_structure)
             picks = {kind: BlockSelectOperator(b, in_structure=structures[kind]) for kind in kinds}
             E = BlockDiagonalOperator(
                 {'map': IdentityOperator(in_structure=S.out_structure)} | picks
@@ -99,7 +99,7 @@ class AccumulatedModel:
         # The ridge the Gram inverses were factored with acts on the amplitudes alone, so it is
         # one term over them all, outside the passes over the TOD.
         for kind in kinds:
-            ridged = [bm.ridge(kind, s) for bm, s in zip(self.buckets, structures[kind])]
+            ridged = [ridge(t, kind, s) for t, s in zip(self.buckets, structures[kind])]
             assert all(r is None for r in ridged) or all(r is not None for r in ridged)
             if ridged[0] is not None:
                 amplitudes = BlockSelectOperator(kind, in_structure=terms[0].in_structure)
@@ -107,7 +107,7 @@ class AccumulatedModel:
 
         # The preconditioner of the amplitudes of each kind, block-diagonal over the buckets
         inverses = {
-            kind: [bm.preconditioner(kind, s) for bm, s in zip(self.buckets, structures[kind])]
+            kind: [preconditioner(t, kind, s) for t, s in zip(self.buckets, structures[kind])]
             for kind in kinds
         }
         M = BlockDiagonalOperator({'map': M} | inverses)

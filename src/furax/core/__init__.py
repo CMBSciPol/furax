@@ -29,6 +29,7 @@ from ._blocks import (
     BlockRowOperator,
     BlockSelectOperator,
 )
+from ._deferred import DeferredOperator
 from ._dense import DenseBlockDiagonalOperator
 from ._diagonal import BroadcastDiagonalOperator, DiagonalOperator
 from ._ensembles import (
@@ -81,6 +82,7 @@ __all__ = [
     'BlockDiagonalOperator',
     'BlockColumnOperator',
     'BlockSelectOperator',
+    'DeferredOperator',
     'DenseBlockDiagonalOperator',
     'BroadcastDiagonalOperator',
     'DiagonalOperator',

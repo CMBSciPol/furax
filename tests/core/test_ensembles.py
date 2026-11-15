@@ -962,3 +962,11 @@ class TestSharded:
         ensemble = StackedEnsemble(N, {'o': _offsets()}, 'segment', owner=owner)
         with jax.set_mesh(self._pair_mesh()), pytest.raises(ValueError, match='own segments'):
             ensemble.shard('obs')
+
+    def test_shard_places_an_array_held_twice_once(self):
+        xs = _xs()
+        ensemble = StackedEnsemble(N, {'a': xs, 'b': xs})
+        with jax.set_mesh(self._mesh()):
+            sharded = ensemble.shard('obs')
+        assert sharded.stacked['a'] is sharded.stacked['b']
+        assert sharded.stacked['a'].sharding.spec == P('obs')

@@ -328,12 +328,17 @@ def test_stacked_leaves_match_their_strides():
 
 
 def test_zip_pairs_each_member_with_its_slice():
-    v = jnp.arange(float(N))
+    v, pairs, c = jnp.arange(float(N)), jnp.arange(float(N // 2)), jnp.ones(3)
+    x, strides = {'v': v, 'p': pairs, 'c': c}, {'v': 1, 'p': 2, 'c': None}
     for ensemble in (_stacked(), _list()):
-        member, entry = ensemble.zip({'v': v}).fetch(2)
+        member, entry = ensemble.zip(x, strides=strides).fetch(2)
         assert_allclose(member['x'], _xs()[2])
         assert_allclose(member['t'], _shared())
         assert_allclose(entry['v'], v[2])
+        assert_allclose(entry['p'], pairs[1])  # members 2 and 3 share the second entry
+        assert_allclose(entry['c'], c)
+    with pytest.raises(ValueError, match='owner index'):
+        _list().zip(v, strides='segment')
     with pytest.raises(NotImplementedError, match='zipped'):
         _host().zip({'v': v})
 
@@ -565,6 +570,17 @@ def test_strides_and_axes_may_hold_none_subtrees(build, expected):
 def test_strides_misaligned_with_the_stacked_pytree_are_rejected(strides):
     with pytest.raises(ValueError, match='strides must be a single value or a pytree'):
         StackedEnsemble(N, {'x': _xs(), 'b': jnp.ones((N // 2, N_SAMPS))}, strides)
+
+
+def test_strides_and_axes_may_be_a_prefix_of_the_stacked_pytree():
+    # a single value where the pytree has a subtree applies to each of its leaves
+    pair = (jnp.ones((N // 2, N_SAMPS)), jnp.zeros((N_SAMPS, N // 2)))
+    ensemble = StackedEnsemble(
+        N, {'x': _xs(), 'pair': pair}, {'x': 1, 'pair': 2}, {'x': 0, 'pair': (0, 1)}
+    )
+    assert ensemble.strides == (2, 2, 1) and ensemble.axes == (0, 1, 0)
+    zipped = ensemble.zip({'y': (_xs(), _xs().T)}, axes={'y': (0, 1)}, strides=1)
+    assert_allclose(zipped.fetch(3)[1]['y'][1], _xs()[3])
 
 
 def test_lifted_operators_with_an_unset_field_apply_through_the_engine():

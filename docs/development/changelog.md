@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax.math.bspline.cardinal_bspline` evaluates the cardinal B-splines of degree 0 to 3 (#480)
 - `ObservationProbe.good_ranges` reports the good ranges of the samples of an observation before it is read, from which the mapmaker sizes the amplitudes of the explicit gaps under `ExplicitGapsConfig.probe`; `LazyPreprocSOTODLibObservation` reads them from the preprocessing metadata (#481)
 - `StackedEnsemble.by_segment` views an ensemble grouped in segments as one member per segment (#507)
+- `AdditionOperator` over an ensemble takes `in_strides` and `out_strides`, so that each member reads and writes only its own entries (stride 1) or those of its segment (`'segment'`) of a leaf (#498)
+- `Ensemble.zip` takes `strides`, to hand a leaf whole to every member or per segment (#498)
+- The strides and member axes of an ensemble may be given as a prefix of the pytree they describe, one value for a whole subtree (#498)
 
 ### Changed
 

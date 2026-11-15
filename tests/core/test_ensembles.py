@@ -11,7 +11,7 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 from numpy.testing import assert_allclose
 
-from furax import DiagonalOperator
+from furax import BlockRowOperator, DiagonalOperator
 from furax.core import (
     CompositionOperator,
     HostEnsemble,
@@ -580,17 +580,17 @@ def test_lift_checks_the_sizes():
         lift(lambda a, b: a, _list(), ListEnsemble([{'x': jnp.zeros(N_SAMPS)}]))
 
 
-def test_lift_falls_back_when_the_constructor_indexes_with_a_member_leaf():
+def test_lift_keeps_the_index_array_of_an_index_operator():
     x = jnp.arange(float(N_SAMPS))
     structure = jax.ShapeDtypeStruct((N_SAMPS,), x.dtype)
     pointings = jnp.array([[0, 2, 4], [1, 3, 0]])
-    # IndexOperator's constructor indexes with the member leaf to derive its output structure,
-    # which the structural probe's abstract sentinels cannot do: lift vectorizes instead.
+    # IndexOperator's constructor indexes with the member leaf to derive its output structure
     operators = lift(
         lambda m: IndexOperator(m['p'], in_structure=structure),
         StackedEnsemble(2, {'p': pointings}),
     )
     assert isinstance(operators, StackedEnsemble)
+    assert jax.tree.leaves(operators.stacked)[0] is pointings
     out, _ = map_reduce(lambda op, v: op(v), operators, 1, x)
     assert_allclose(out, x[pointings])
 
@@ -731,20 +731,103 @@ def test_segment_ensembles_are_validated(build, match):
         build()
 
 
-def test_lift_keeps_the_segment_leaves_of_a_structural_function():
+_SHARED = jnp.ones(N_SAMPS)
+
+
+@pytest.mark.parametrize(
+    ('f', 'kept', 'strides'),
+    [
+        (lambda m: (m['o'], m['x']), ['o', 'x'], ('segment', 1)),
+        (lambda m: DiagonalOperator(m['o']), ['o'], ('segment',)),
+        (
+            lambda m: BlockRowOperator([DiagonalOperator(m['x']), DiagonalOperator(m['o'])]),
+            ['x', 'o'],
+            (1, 'segment'),
+        ),
+        (
+            lambda m: (DiagonalOperator(m['x']) @ DiagonalOperator(m['o'])).T,
+            ['o', 'x'],
+            ('segment', 1),
+        ),
+        (lambda m: (m['o'], _SHARED), ['o', None], ('segment', None)),
+    ],
+    ids=['rearranged', 'diagonal', 'block-row', 'composition-transpose', 'closed-over'],
+)
+def test_lift_keeps_the_arrays_a_structural_function_passes_through(f, kept, strides):
     ensemble = _segmented()
-    rearranged = lift(lambda m: (m['o'], m['x']), ensemble)
-    assert isinstance(rearranged, StackedEnsemble)
-    assert rearranged.strides == ('segment', 1)
-    assert rearranged.owner is ensemble.owner
-    assert_allclose(rearranged.fetch(4)[0], _offsets()[OWNER[4]])
+    lifted = lift(f, ensemble)
+    assert isinstance(lifted, StackedEnsemble)
+    sources = [_SHARED if key is None else ensemble.stacked[key] for key in kept]
+    # the arrays are reused, not copied
+    assert all(a is b for a, b in zip(jax.tree.leaves(lifted.stacked), sources, strict=True))
+    assert lifted.strides == strides
+    assert lifted.owner is ensemble.owner
+    jax.tree.map(assert_allclose, lifted.fetch(4), f(ensemble.fetch(4)))
 
 
-def test_lift_gathers_the_segment_leaves_of_a_computed_function():
-    lifted = lift(lambda m: m['x'] + m['o'], _segmented())
+@pytest.mark.parametrize(
+    'f',
+    [lambda m: DiagonalOperator(2 * m['o']), lambda m: m['x'] + m['o']],
+    ids=['operator', 'array'],
+)
+def test_lift_gathers_the_segment_leaves_of_a_computed_function(f):
+    ensemble = _segmented()
+    lifted = lift(f, ensemble)
     assert isinstance(lifted, StackedEnsemble)
     assert lifted.strides == (1,)
-    assert_allclose(lifted.stacked, _segment_expected()['member'])
+    jax.tree.map(assert_allclose, lifted.fetch(4), f(ensemble.fetch(4)))
+
+
+def test_lift_vectorizes_only_the_computed_arrays():
+    # beside a computed array, a passed-through segment leaf and a shared array keep their strides
+    ensemble = _segmented()
+
+    def f(m):
+        return 2 * m['x'], m['o'], _SHARED
+
+    lifted = lift(f, ensemble)
+    assert lifted.strides == (1, 'segment', None)
+    assert lifted.stacked[1] is ensemble.stacked['o']
+    assert lifted.stacked[2] is _SHARED
+    jax.tree.map(assert_allclose, lifted.fetch(4), f(ensemble.fetch(4)))
+
+
+@pytest.mark.parametrize(
+    'f, n',
+    [
+        (lambda m: m['x'][: int(m['n'])], 3),
+        (lambda m: m['x'][: int(m['n'] + 1)], 4),
+        (lambda m: m['x'][: 3 if bool(m['n'] > 0) else 1], 3),
+    ],
+    ids=['leaf', 'computed', 'condition'],
+)
+def test_lift_reads_a_shared_leaf_concretely(f, n):
+    ensemble = StackedEnsemble(N, {'x': _xs(), 'n': jnp.array(3)}, {'x': 1, 'n': None})
+    assert_allclose(lift(f, ensemble).stacked, _xs()[:, :n])
+
+
+def test_lift_shares_an_array_computed_from_shared_leaves():
+    ensemble = StackedEnsemble(N, {'x': _xs(), 't': _shared()}, {'x': 1, 't': None})
+    lifted = lift(lambda m: (m['x'], 2 * m['t']), ensemble)
+    assert lifted.strides == (1, None)
+    assert_allclose(lifted.stacked[1], 2 * _shared())
+
+
+@pytest.mark.parametrize(
+    'f', [lambda op: None, lambda op: (), lambda op: op.I @ op], ids=['none', 'tuple', 'identity']
+)
+def test_lift_of_an_output_without_leaves(f):
+    operators = lift(lambda m: DiagonalOperator(m), StackedEnsemble(N, _xs()))
+    lifted = lift(f, operators)
+    assert lifted.stacked == f(operators.fetch(0))
+    assert lifted.strides == ()
+
+
+def test_lift_does_not_leak_its_trace():
+    operators = lift(lambda m: DiagonalOperator(m), StackedEnsemble(N, _xs()))
+    with jax.checking_leaks():
+        lift(lambda op: op.T, operators)
+        lift(lambda op: 2 * op.diagonal, operators)
 
 
 def test_lift_of_ensembles_sharing_their_owner_runs_under_jit():
@@ -787,6 +870,21 @@ def test_lift_rejects_ensembles_in_different_segments():
 class TestSharded:
     def _mesh(self):
         return jax.make_mesh((jax.device_count(),), ('obs',))
+
+    @pytest.mark.parametrize(
+        'f, scale',
+        [(lambda m: DiagonalOperator(m['x']), 1), (lambda m: DiagonalOperator(2 * m['x']), 2)],
+        ids=['structural', 'computed'],
+    )
+    def test_lift(self, f, scale):
+        # the member values are checked on the stacked diagonals: a member cannot be fetched
+        # from an array laid out over the devices
+        with jax.set_mesh(self._mesh()):
+            ensemble = StackedEnsemble(N, {'x': _xs()}).shard('obs')
+            lifted = lift(f, ensemble)
+        (diagonals,) = jax.tree.leaves(lifted.stacked)
+        assert (diagonals is ensemble.stacked['x']) == (scale == 1)
+        assert_allclose(diagonals, scale * _xs())
 
     def test_sharded_matches_single_device(self):
         reference, _ = map_reduce(

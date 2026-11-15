@@ -80,7 +80,7 @@ def test_reader_rebases_timestamps_before_the_float32_cast() -> None:
 def test_mapmaker_readers_use_config_dtype(double_precision: bool, expected_dtype) -> None:
     config = healpix_config(nside=8, double_precision=double_precision)
     maker = MultiObservationMapMaker([FakeLazyObservation()], config=config)
-    (reader,) = maker.get_readers(REQUIRED_FIELDS)
+    (reader,) = maker.build_readers(REQUIRED_FIELDS)
     assert reader.dtype == expected_dtype
     for field in REQUIRED_FIELDS:
         # the TOD is always read in float32

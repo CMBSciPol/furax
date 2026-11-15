@@ -15,6 +15,7 @@ from jaxtyping import Array, Bool, Float, Int64, Integer
 import furax.linalg
 import furax.tree
 from furax.core import HostEnsemble, IndexOperator, Policy, map_reduce
+from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.stokes import StokesType
 from furax.profiling import format_bytes
 
@@ -24,8 +25,8 @@ from ._bucket import BucketModel
 from ._catalog import ObservationCatalog, ProbeRecord, Read, detector_table, gather_rows
 from ._gaps import GapSplines, gap_budget, knot_spacing, max_gap_amplitudes
 from ._injection import load_sky
-from ._landscape import build_landscape
-from ._model import ObservationModel, ObservationTemplates
+from ._landscape import explicit_wcs_geometry, scan_wcs_footprint
+from ._model import TileModel, TileTemplates
 from ._observation import (
     AbstractLazyObservation,
     ObservationBufferShape,
@@ -51,16 +52,10 @@ class MultiObservationMapMaker[T]:
         config: MapMakingConfig | None = None,
     ) -> None:
         self.observations = observations
-        self.config = config or MapMakingConfig()  # use defaults if not provided
-        self.landscape = build_landscape(
-            self.observations, self.config.landscape, self.config.dtype
-        )
-        # Build the readers once, up front: they only need the probe shapes (no mesh context)
-        rhs_fields = {ReaderField.METADATA, ReaderField.SAMPLE_DATA}
-        model_fields = ObservationModel.required_reader_fields(self.config)
-        template_fields = ObservationTemplates.required_reader_fields(self.config)
-        self.reader_fields = model_fields | rhs_fields | template_fields
-        self.readers = self.get_readers(self.reader_fields)
+        self.config = config or MapMakingConfig()
+        # Build the landscape and readers up front, outside a mesh context
+        self.landscape = self.build_landscape()
+        self.readers = self.build_readers(self.reader_fields)
 
     def run(self, out_dir: str | Path, resume: bool = False) -> MapMakingResults:
         """Runs the mapmaker and return results after saving them to the given directory.
@@ -72,7 +67,7 @@ class MultiObservationMapMaker[T]:
             out_dir: Directory of the products, and of the checkpoints of the solves.
             resume: Resume the solves from the checkpoints in `out_dir`, if any.
         """
-        # Only process 0 writes, and so only process 0 spends the git calls on the provenance
+        # Rank 0 alone saves the configuration and run provenance (versions etc.)
         is_writer = jax.process_index() == 0
         out_dir = Path(out_dir).resolve()
         if is_writer:
@@ -81,12 +76,10 @@ class MultiObservationMapMaker[T]:
             write_json(out_dir / PROVENANCE_FILE, provenance())
             logger.info(f'Saved mapmaking configuration and provenance to {out_dir}')
 
-        # Loaded now, once the run is on record, so that a bad injection fails before the passes
-        # over the data, and shows in the output directory
-        _ = self.sky
+        self._log_layout()
         results = self.make_maps(checkpoint_dir=out_dir, resume=resume)
 
-        # Save outputs on process 0 only (all processes hold the same maps)
+        # Rank 0 saves the replicated outputs
         if is_writer:
             results.save(out_dir)
             logger.info(f'Saved results to {out_dir}')
@@ -109,12 +102,17 @@ class MultiObservationMapMaker[T]:
             resume: Start the solves from the checkpoints in `checkpoint_dir`, if any. A checkpoint
                 of a system of other shapes, e.g. from other observations, is ignored.
         """
-        self._log_layout()
+        # Loaded before the passes over the data, so that a bad injection fails early
+        injected_sky = self._load_injected_sky()
+        is_response = (
+            self.config.injection is not None
+            and self.config.injection.mode == InjectionMode.RESPONSE
+        )
 
         with jax.set_mesh(self.placement.mesh):
             # Single read pass, so each observation is read/preprocessed exactly once.
             start = time.perf_counter()
-            acc = self.build_model_and_accumulate()
+            acc = self.build_model_and_accumulate(None if is_response else injected_sky)
             jax.block_until_ready(acc)
             logger.info(f'Finished the pass over the data in {time.perf_counter() - start:.0f} s')
 
@@ -155,8 +153,7 @@ class MultiObservationMapMaker[T]:
                 f'{valid_pixels.size} total)'
             )
 
-            response_sky = None if self._scanned_sky is not None else self.sky
-            system = acc.build_system(S, BJ, response_sky)
+            system = acc.build_system(S, BJ, injected_sky if is_response else None)
             if (two_level := self.config.solver.two_level) is not None:
                 system = system.deflate(two_level)
             solved = system.solve(
@@ -165,10 +162,8 @@ class MultiObservationMapMaker[T]:
                 None if checkpoint_dir is None else Path(checkpoint_dir),
                 resume,
             )
-            sky, amplitudes = solved.x, None
-            if system.has_amplitudes:
-                sky = solved.x['map']
-                amplitudes = _report.template_amplitudes(acc.buckets, solved.x, self.placement)
+            sky = solved.x['map']
+            amplitudes = _report.template_amplitudes(acc.buckets, solved.x, self.placement) or None
 
         # Built only now, so that their copies are not held through the solve
         return MapMakingResults(
@@ -189,11 +184,14 @@ class MultiObservationMapMaker[T]:
             ),
         )
 
-    def build_model_and_accumulate(self) -> AccumulatedModel:
+    def build_model_and_accumulate(self, scanned_sky: StokesType | None = None) -> AccumulatedModel:
         """Build the model and accumulate the hit map and map RHS in one pass over the data.
 
         Padding tiles and failed observations are gated out using a zero-mask, so they drop from
         the system.
+
+        Args:
+            scanned_sky: The simulated sky to scan into the TOD, if any.
 
         This method must run under `jax.set_mesh(self.placement.mesh)`.
         """
@@ -202,15 +200,15 @@ class MultiObservationMapMaker[T]:
         # The sky to scan in is an argument of the kernels, held by every device for this pass
         # only, rather than a constant compiled into them
         sky = None
-        if (scanned := self._scanned_sky) is not None:
-            sky = self.placement.broadcast(scanned)
+        if scanned_sky is not None:
+            sky = self.placement.broadcast(scanned_sky)
         bucket_models = []
         for b, reader in enumerate(self.readers):
-            hits, rhs, bucket_model = self._accumulate_bucket(b, reader, sky)
+            hits, rhs, model = self._accumulate_bucket(b, reader, sky)
             hit_map = hit_map + hits
             map_rhs = furax.tree.add(map_rhs, rhs)
-            bucket_models.append(bucket_model)
-        return AccumulatedModel(buckets=tuple(bucket_models), hit_map=hit_map, map_rhs=map_rhs)
+            bucket_models.append(model)
+        return AccumulatedModel(buckets=bucket_models, hit_map=hit_map, map_rhs=map_rhs)
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -229,7 +227,29 @@ class MultiObservationMapMaker[T]:
 
         return valid
 
-    def get_readers(self, required_fields: Collection[str]) -> tuple[ObservationReader[T], ...]:
+    def build_landscape(self) -> StokesLandscape:
+        """Build the sky grid a run solves on.
+
+        The grid comes from the config alone for HEALPix and for a WCS with an explicit geometry. For
+        a WCS without one, the observations are scanned for their combined footprint.
+        """
+        landscape = self.config.landscape
+        stokes, dtype = landscape.stokes, self.config.dtype
+        if (hp := landscape.healpix) is not None:
+            return HealpixLandscape(
+                nside=hp.nside,
+                stokes=stokes,
+                dtype=dtype,
+                nested=hp.ordering == 'nest',
+            )
+        assert landscape.wcs is not None  # LandscapeConfig sets exactly one of healpix and wcs
+        if landscape.wcs.has_geometry:
+            shape, wcs = explicit_wcs_geometry(landscape.wcs)
+        else:
+            shape, wcs = scan_wcs_footprint(self.observations, landscape.wcs)
+        return WCSLandscape.from_wcs(shape, wcs, stokes, dtype)
+
+    def build_readers(self, required_fields: Collection[str]) -> list[ObservationReader[T]]:
         """Build one reader per bucket, over that bucket's observations only.
 
         A reader reads its bucket's observations in the order of their indices, into buffers of
@@ -237,7 +257,7 @@ class MultiObservationMapMaker[T]:
         """
         shapes = self._buffer_shapes
         failed = self._catalog.probe_failed
-        return tuple(
+        return [
             ObservationReader.from_observations(
                 [self.observations[i] for i in bucket.observations],
                 requested_fields=required_fields,
@@ -248,7 +268,14 @@ class MultiObservationMapMaker[T]:
                 known_failures=np.flatnonzero(failed[bucket.observations]).tolist(),
             )
             for bucket in self.layout.buckets
-        )
+        ]
+
+    @property
+    def reader_fields(self) -> set[str]:
+        rhs_fields = {ReaderField.METADATA, ReaderField.SAMPLE_DATA}
+        model_fields = TileModel.required_reader_fields(self.config)
+        template_fields = TileTemplates.required_reader_fields(self.config)
+        return model_fields | rhs_fields | template_fields
 
     @property
     def n_observations(self) -> int:
@@ -351,9 +378,8 @@ class MultiObservationMapMaker[T]:
                 local[int(bucket.observations[k])] = error
         return gather_rows(local)
 
-    @cached_property
-    def sky(self) -> StokesType | None:
-        """The simulated sky, if one is injected.
+    def _load_injected_sky(self) -> StokesType | None:
+        """Load the simulated sky, if one is injected.
 
         A sky scanned into the TOD has the Stokes components that are read; one solved for as a
         response, those of the map.
@@ -363,14 +389,6 @@ class MultiObservationMapMaker[T]:
         if injection.mode == InjectionMode.RESPONSE:
             return load_sky(injection, self.landscape)
         return load_sky(injection, self.landscape.with_stokes(self.config.read_stokes))
-
-    @property
-    def _scanned_sky(self) -> StokesType | None:
-        """The simulated sky scanned into the TOD, if any."""
-        injection = self.config.injection
-        if injection is None or injection.mode == InjectionMode.RESPONSE:
-            return None
-        return self.sky
 
     def _accumulate_bucket(
         self, bucket_index: int, reader: ObservationReader[T], sky: StokesType | None
@@ -412,8 +430,8 @@ class MultiObservationMapMaker[T]:
         )
         kernel = tile_kernel(self.fit_config, self.landscape, self._gap_splines[bucket_index])
         out, resolved = map_reduce(kernel, ensemble, TILE_REDUCTIONS, sky)
-        model = bucket_model(bucket, out, resolved, self.placement, self.fit_config)
-        return out['hits'], out['map'], model
+        model = bucket_model(out, resolved, bucket, self.placement, self.fit_config)
+        return out.hits, out.map_rhs, model
 
     @cached_property
     def _prefetches_reads(self) -> bool:
@@ -553,7 +571,7 @@ class MultiObservationMapMaker[T]:
     @property
     def _explicit_gaps(self) -> bool:
         """Whether the gaps are explicit, their amplitudes solved for with the map."""
-        return self.config.gaps.treatment == GapTreatment.EXPLICIT and not self.config.binned
+        return self.config.gap_treatment == GapTreatment.EXPLICIT
 
 
 def _excluded_message(failures: list[tuple[str, str]], limit: int = 5) -> str:

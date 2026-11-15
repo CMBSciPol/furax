@@ -1317,6 +1317,14 @@ class MapMakingConfig:
         return self.weighting.diagonal_matrix
 
     @property
+    def gap_treatment(self) -> GapTreatment:
+        """The treatment the gaps get: `gaps.treatment`, or the inner mask under a diagonal weight.
+
+        Under a diagonal weight, the samples do not couple: masking the gaps is all they need.
+        """
+        return GapTreatment.INNER_MASK if self.binned else self.gaps.treatment
+
+    @property
     def demodulated(self) -> bool:
         """True when using demodulated TODs (sotodlib-specific)."""
         return self.sotodlib.demodulated if self.sotodlib is not None else False

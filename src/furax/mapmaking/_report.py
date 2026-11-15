@@ -16,35 +16,36 @@ from jaxtyping import Array, PyTree
 from furax.core import StackedEnsemble, lift
 
 from ._bucket import BucketModel
-from ._model import DROP_REASONS
+from ._model import DROP_REASONS, SHARED_TEMPLATES, TEMPLATES
 from .layout import TilePlacement
 
 
 def template_amplitudes(
     buckets: Sequence[BucketModel], x: dict[str, PyTree[Array]], placement: TilePlacement
 ) -> dict[str, np.ndarray]:
-    """The explicit-template amplitudes solved for, per observation, from the unknowns `x`.
+    """The template amplitudes solved for, by template, per observation, from the unknowns `x`.
 
     Every device holds the same replicated copy after the gather, so the host array is
     complete on every process; then back to observation order.
     """
     amplitudes = {}
-    if (own := x.get('explicit')) is not None:
+    if (per_detector := x.get(TEMPLATES)) is not None:
         templates = buckets[0].templates
-        assert templates is not None and templates.explicit is not None
-        explicit = templates.explicit
-        per_bucket = [placement.gather(a) for a in own]
+        bundle = None if templates is None else templates.explicit[TEMPLATES]
+        assert bundle is not None
+        operator = bundle.operator
+        per_bucket = [placement.gather(a) for a in per_detector]
         for name in per_bucket[0]:
             # the detector axis follows the stream axis, if any (see `Template`), after the
             # tile axis
-            axis = 1 + explicit.operator.templates[name].per.index('det')
+            axis = 1 + operator.templates[name].per.index('det')
             amplitudes[name] = placement.layout.to_observation_order(
                 [a[name] for a in per_bucket], detector_axis=axis
             )
-    if (common := x.get('common')) is not None:  # one set per segment, no detector axis
+    if (shared := x.get(SHARED_TEMPLATES)) is not None:  # one set per segment, no detector axis
         amplitudes |= jax.tree.map(
             lambda *leaves: placement.layout.to_observation_order(leaves),
-            *[placement.gather(a) for a in common],
+            *[placement.gather(a) for a in shared],
         )
     return amplitudes
 
@@ -57,18 +58,23 @@ def detector_drops(
     Each array is `(n_observations, detector)`, in observation order, its detector axis
     padded with `False`.
     """
-    drops = {}
-    for reason in DROP_REASONS:
-        per_bucket = []
-        for bm in buckets:
-            flags = lift(lambda tile, reason=reason: getattr(tile.model, reason), bm.tiles)
-            assert isinstance(flags, StackedEnsemble)
-            values = placement.gather(flags.stacked)
-            if flags.strides[0] is None:  # the same in every tile, as when none is dropped
-                values = np.broadcast_to(values, (bm.tiles.size, *values.shape))
-            per_bucket.append(values)
-        drops[reason] = placement.layout.to_observation_order(per_bucket, detector_axis=-1)
-    return drops
+    per_bucket = []
+    for bm in buckets:
+        flags = lift(lambda tile: {r: getattr(tile.model, r) for r in DROP_REASONS}, bm.tiles)
+        assert isinstance(flags, StackedEnsemble)
+        leaves, treedef = jax.tree.flatten(placement.gather(flags.stacked))
+        # a flag the same in every tile, as when none is dropped, is held once
+        leaves = [
+            v if stride == 1 else np.broadcast_to(v, (bm.tiles.size, *v.shape))
+            for v, stride in zip(leaves, flags.strides, strict=True)
+        ]
+        per_bucket.append(jax.tree.unflatten(treedef, leaves))
+    return {
+        reason: placement.layout.to_observation_order(
+            [flags[reason] for flags in per_bucket], detector_axis=-1
+        )
+        for reason in DROP_REASONS
+    }
 
 
 def noise_parameters(

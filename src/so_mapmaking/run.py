@@ -215,9 +215,9 @@ def run(
         logger.info(f'Found {len(observations)} observations')
 
         try:
-            maker = MultiObservationMapMaker(observations, config=config)
+            maker = MultiObservationMapMaker(config)
             logger.info('Loaded config and set up mapmaker')
-            maker.run(outdir, resume=resume)
+            maker.run(observations, outdir, resume=resume)
         except Exception as e:
             logger.exception('Mapmaking failed')
             # Any process may be the one that fails, and the others may then never return

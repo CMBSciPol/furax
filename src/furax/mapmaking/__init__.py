@@ -13,7 +13,7 @@ from ._observation import (
 from ._reader import ObservationReader
 from .config import MapMakingConfig
 from .gap_filling import gap_fill
-from .mapmaker import MultiObservationMapMaker
+from .mapmaker import MapMakingRun, MultiObservationMapMaker
 from .preconditioner import BJPreconditioner, make_two_level_preconditioner
 from .results import MapMakingResults
 
@@ -31,6 +31,7 @@ __all__ = [
     'ReaderField',
     'MapMakingConfig',
     'MapMakingResults',
+    'MapMakingRun',
     'MultiObservationMapMaker',
     'ObservationBufferShape',
     'ObservationProbe',

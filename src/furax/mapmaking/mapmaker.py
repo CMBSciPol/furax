@@ -44,27 +44,35 @@ from .templates import required_reader_fields
 logger = logging.getLogger(__name__)
 
 
-class MultiObservationMapMaker[T]:
-    """Class for mapping multiple observations together."""
+class MultiObservationMapMaker:
+    """Maps observations together under one configuration.
 
-    def __init__(
+    A mapmaker is defined by its configuration alone: the same instance can make maps of
+    different datasets through successive calls of [`run`][furax.mapmaking.MultiObservationMapMaker.run]
+    or [`make_maps`][furax.mapmaking.MultiObservationMapMaker.make_maps].
+
+    Examples:
+        >>> maker = MultiObservationMapMaker(config)
+        >>> maker.run(observations, 'maps/season1')
+        >>> maker.run(other_observations, 'maps/season2')
+    """
+
+    def __init__(self, config: MapMakingConfig | None = None) -> None:
+        self.config = config or MapMakingConfig()
+
+    def run[T](
         self,
         observations: Sequence[AbstractLazyObservation[T]],
-        config: MapMakingConfig | None = None,
-    ) -> None:
-        self.observations = observations
-        self.config = config or MapMakingConfig()
-        # Build the landscape and readers up front, outside a mesh context
-        self.landscape = self.build_landscape()
-        self.readers = self.build_readers(self.reader_fields)
-
-    def run(self, out_dir: str | Path, resume: bool = False) -> MapMakingResults:
-        """Runs the mapmaker and return results after saving them to the given directory.
+        out_dir: str | Path,
+        resume: bool = False,
+    ) -> MapMakingResults:
+        """Maps the observations and returns the results after saving them to the given directory.
 
         The configuration and the provenance are written to `out_dir` before the maps are
         computed.
 
         Args:
+            observations: The observations to map together.
             out_dir: Directory of the products, and of the checkpoints of the solves.
             resume: Resume the solves from the checkpoints in `out_dir`, if any.
         """
@@ -77,8 +85,9 @@ class MultiObservationMapMaker[T]:
             write_json(out_dir / PROVENANCE_FILE, provenance())
             logger.info(f'Saved mapmaking configuration and provenance to {out_dir}')
 
-        self._log_layout()
-        results = self.make_maps(checkpoint_dir=out_dir, resume=resume)
+        prepared = self.prepare(observations)
+        prepared._log_layout()
+        results = prepared.make_maps(checkpoint_dir=out_dir, resume=resume)
 
         # Rank 0 saves the replicated outputs
         if is_writer:
@@ -89,6 +98,40 @@ class MultiObservationMapMaker[T]:
         mhu.sync_global_devices('mapmaker.run.save_done')
 
         return results
+
+    def make_maps[T](
+        self,
+        observations: Sequence[AbstractLazyObservation[T]],
+        checkpoint_dir: str | Path | None = None,
+        resume: bool = False,
+    ) -> MapMakingResults:
+        """Computes the maps and other products of the observations, without saving them.
+
+        See [`MapMakingRun.make_maps`][furax.mapmaking.MapMakingRun.make_maps] for the arguments.
+        """
+        return self.prepare(observations).make_maps(checkpoint_dir, resume)
+
+    def prepare[T](self, observations: Sequence[AbstractLazyObservation[T]]) -> 'MapMakingRun[T]':
+        """Probes the observations and lays them out over the devices, ready to be mapped."""
+        return MapMakingRun(observations, self.config)
+
+
+class MapMakingRun[T]:
+    """One dataset under one configuration: probed, laid out over the devices, ready to solve.
+
+    Built by [`MultiObservationMapMaker.prepare`][furax.mapmaking.MultiObservationMapMaker.prepare].
+    """
+
+    def __init__(
+        self,
+        observations: Sequence[AbstractLazyObservation[T]],
+        config: MapMakingConfig,
+    ) -> None:
+        self.observations = observations
+        self.config = config
+        # Build the landscape and readers up front, outside a mesh context
+        self.landscape = self.build_landscape()
+        self.readers = self.build_readers(self.reader_fields)
 
     def make_maps(
         self, checkpoint_dir: str | Path | None = None, resume: bool = False

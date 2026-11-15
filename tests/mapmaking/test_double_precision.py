@@ -79,7 +79,7 @@ def test_reader_rebases_timestamps_before_the_float32_cast() -> None:
 )
 def test_mapmaker_readers_use_config_dtype(double_precision: bool, expected_dtype) -> None:
     config = healpix_config(nside=8, double_precision=double_precision)
-    maker = MultiObservationMapMaker([FakeLazyObservation()], config=config)
+    maker = MultiObservationMapMaker(config).prepare([FakeLazyObservation()])
     (reader,) = maker.build_readers(REQUIRED_FIELDS)
     assert reader.dtype == expected_dtype
     for field in REQUIRED_FIELDS:
@@ -98,8 +98,8 @@ def test_float32_tod_accumulates_like_float64(detector_tile_size: int) -> None:
         weighting=WeightingConfig(fitting=NoiseFitConfig(nperseg=256)),
         detector_tile_size=detector_tile_size,
     )
-    maker = MultiObservationMapMaker(observations, config=config)
-    reference = MultiObservationMapMaker(observations, config=config)
+    maker = MultiObservationMapMaker(config).prepare(observations)
+    reference = MultiObservationMapMaker(config).prepare(observations)
     # like the mapmaker's own readers, read into buffers of whole tiles
     (bucket,) = reference.layout.buckets
     shapes = [shape.whole_tiles(bucket.tile_size) for shape in reference._probe_shapes]
@@ -129,7 +129,7 @@ def _check_float32_run() -> None:
         cond_cut=0.0,
         solver=SolverConfig(rtol=1e-6, atol=0, max_steps=10),
     )
-    results = MultiObservationMapMaker([FakeLazyObservation()], config=config).make_maps()
+    results = MultiObservationMapMaker(config).make_maps([FakeLazyObservation()])
     assert jax.tree.leaves(results.map)[0].dtype == jnp.float32
     assert results.icov.dtype == jnp.float32
 

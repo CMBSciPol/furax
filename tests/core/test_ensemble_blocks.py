@@ -13,6 +13,7 @@ from numpy.testing import assert_allclose
 
 from furax import DiagonalOperator, HomothetyOperator
 from furax.core import (
+    AbstractLinearOperator,
     AdditionOperator,
     BlockColumnOperator,
     BlockDiagonalOperator,
@@ -133,7 +134,7 @@ class TestMemberAxis:
         assert_allclose(inverse(diagonal(_xs().T)), _xs().T, atol=1e-12)
 
     def test_as_matrix(self, representation):
-        # the member entries interleave in the flattened space: built from the basis
+        # the member entries interleave in the flattened space
         diagonal = BlockDiagonalOperator(_ensemble(representation), axes=1)
         x = _xs().T
         assert_allclose(diagonal.as_matrix() @ x.ravel(), diagonal(x).ravel())
@@ -155,6 +156,37 @@ def test_blocks_with_different_axes_do_not_reduce():
     reduced = (left @ right).reduce()
     assert not isinstance(reduced, BlockDiagonalOperator)
     assert_allclose(reduced(_diagonals()[:4].T), left(right(_diagonals()[:4].T)))
+
+
+@pytest.mark.parametrize('cls', [BlockRowOperator, BlockColumnOperator, BlockDiagonalOperator])
+@pytest.mark.parametrize('pytree_members', [False, True])
+@pytest.mark.parametrize('axes', [0, 1])
+def test_as_matrix_follows_the_leaf_major_flattening(cls, pytree_members, axes):
+    # each leaf of a stacked side carries the member axis: with several leaves per member, the
+    # flattened side is not member by member
+    if pytree_members:
+        diagonals = StackedEnsemble(N, {'a': _diagonals(), 'b': 2 * _diagonals()}, 1)
+        members = lift(
+            lambda m: BlockRowOperator(
+                {'a': DiagonalOperator(m['a']), 'b': DiagonalOperator(m['b'])}
+            ),
+            diagonals,
+        )
+    else:
+        members = _ensemble('stacked')
+    if cls is BlockColumnOperator:
+        members = lift(lambda op: op.T, members)
+    operator = cls(members, axes=axes)
+    assert_allclose(operator.as_matrix(), AbstractLinearOperator.as_matrix(operator))
+
+
+@pytest.mark.parametrize('cls', [BlockRowOperator, BlockColumnOperator, BlockDiagonalOperator])
+def test_as_matrix_agrees_with_mv_on_padded_members(cls):
+    # a block row sums over the members and skips the padded ones; the stacked outputs of the
+    # other composites keep them
+    padded = dataclasses.replace(_ensemble('stacked'), valid=jnp.arange(N) < N - 2)
+    operator = cls(padded)
+    assert_allclose(operator.as_matrix(), AbstractLinearOperator.as_matrix(operator))
 
 
 def test_axes_need_an_ensemble():
@@ -278,13 +310,17 @@ def test_composites_close_a_sharded_ensemble():
 
 
 @pytest.mark.distributed
-def test_addition_as_matrix_over_a_sharded_ensemble():
+@pytest.mark.parametrize(
+    'cls', [AdditionOperator, BlockRowOperator, BlockColumnOperator, BlockDiagonalOperator]
+)
+def test_as_matrix_over_a_sharded_ensemble(cls):
     n = jax.device_count()
     diagonals = jnp.arange(float(n * M)).reshape(n, M) + 1.0
     ensemble = lift(lambda m: DiagonalOperator(m['d']), StackedEnsemble(n, {'d': diagonals}, 1))
+    expected = cls(ensemble).as_matrix()
     with jax.set_mesh(jax.make_mesh((n,), ('obs',))):
-        matrix = AdditionOperator(ensemble.shard('obs')).as_matrix()
-    assert_allclose(matrix, np.diag(diagonals.sum(axis=0)))
+        matrix = cls(ensemble.shard('obs')).as_matrix()
+    assert_allclose(matrix, expected)
 
 
 @pytest.mark.distributed

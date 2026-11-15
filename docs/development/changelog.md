@@ -107,6 +107,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The strides and axes of `StackedEnsemble`, `HostEnsemble` and `Ensemble.zip` can follow a pytree holding `None`, and `lift` accepts functions whose output holds `None` (#486)
 - `xieta_to_quat`, formerly `XiEtaAngles.to_quaternion`, has finite derivatives at the boresight (#509)
 - `AdditionOperator.as_matrix()` over an `Ensemble` leaves out the padded members, and accepts a sharded ensemble (#502)
+- `as_matrix()` of `BlockRowOperator`, `BlockColumnOperator` and `BlockDiagonalOperator` over an `Ensemble` whose members take or return a pytree with several leaves no longer permutes the columns or rows (#495)
+- `as_matrix()` of `BlockRowOperator` over an `Ensemble` leaves out the padded members, and the block composites accept a sharded ensemble (#495)
 
 ## [0.17.2] - 2026-10-30
 

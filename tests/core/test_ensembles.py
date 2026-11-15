@@ -465,6 +465,16 @@ def test_lift_keeps_the_leaves_and_strides_of_a_structural_function():
     assert rearranged.strides == (2, 1)
 
 
+def test_lift_shares_the_arrays_a_structural_function_closes_over():
+    xs = _xs()
+    shared = jnp.arange(float(N_SAMPS))
+    paired = lift(lambda m: (m, shared), StackedEnsemble(N, xs))
+    assert isinstance(paired, StackedEnsemble)
+    assert paired.stacked[0] is xs and paired.stacked[1] is shared  # nothing copied or stacked
+    assert paired.strides == (1, None)
+    assert_allclose(paired.fetch(2)[1], shared)
+
+
 def _holding_none() -> StackedEnsemble:
     xs, by_2 = _xs(), jnp.ones((N // 2, N_SAMPS))
     return StackedEnsemble(
@@ -545,6 +555,17 @@ def test_strides_and_axes_may_hold_none_subtrees(build, expected):
 def test_strides_misaligned_with_the_stacked_pytree_are_rejected(strides):
     with pytest.raises(ValueError, match='strides must be a single value or a pytree'):
         StackedEnsemble(N, {'x': _xs(), 'b': jnp.ones((N // 2, N_SAMPS))}, strides)
+
+
+def test_strides_and_axes_may_be_a_prefix_of_the_stacked_pytree():
+    # a single value where the pytree has a subtree applies to each of its leaves
+    pair = (jnp.ones((N // 2, N_SAMPS)), jnp.zeros((N_SAMPS, N // 2)))
+    ensemble = StackedEnsemble(
+        N, {'x': _xs(), 'pair': pair}, {'x': 1, 'pair': 2}, {'x': 0, 'pair': (0, 1)}
+    )
+    assert ensemble.strides == (2, 2, 1) and ensemble.axes == (0, 1, 0)
+    zipped = ensemble.zip({'y': (_xs(), _xs().T)}, axes={'y': (0, 1)}, strides=1)
+    assert_allclose(zipped.fetch(3)[1]['y'][1], _xs()[3])
 
 
 def test_lifted_operators_with_an_unset_field_apply_through_the_engine():

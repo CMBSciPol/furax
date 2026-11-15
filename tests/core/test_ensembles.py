@@ -11,7 +11,7 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 from numpy.testing import assert_allclose
 
-from furax import DiagonalOperator
+from furax import BlockRowOperator, DiagonalOperator
 from furax.core import (
     CompositionOperator,
     HostEnsemble,
@@ -601,17 +601,17 @@ def test_lift_checks_the_sizes():
         lift(lambda a, b: a, _list(), ListEnsemble([{'x': jnp.zeros(N_SAMPS)}]))
 
 
-def test_lift_falls_back_when_the_constructor_indexes_with_a_member_leaf():
+def test_lift_keeps_the_index_array_of_an_index_operator():
     x = jnp.arange(float(N_SAMPS))
     structure = jax.ShapeDtypeStruct((N_SAMPS,), x.dtype)
     pointings = jnp.array([[0, 2, 4], [1, 3, 0]])
-    # IndexOperator's constructor indexes with the member leaf to derive its output structure,
-    # which the structural probe's abstract sentinels cannot do: lift vectorizes instead.
+    # IndexOperator's constructor indexes with the member leaf to derive its output structure
     operators = lift(
         lambda m: IndexOperator(m['p'], in_structure=structure),
         StackedEnsemble(2, {'p': pointings}),
     )
     assert isinstance(operators, StackedEnsemble)
+    assert jax.tree.leaves(operators.stacked)[0] is pointings
     out, _ = map_reduce(lambda op, v: op(v), operators, 1, x)
     assert_allclose(out, x[pointings])
 
@@ -752,20 +752,59 @@ def test_segment_ensembles_are_validated(build, match):
         build()
 
 
-def test_lift_keeps_the_segment_leaves_of_a_structural_function():
+_SHARED = jnp.ones(N_SAMPS)
+
+
+@pytest.mark.parametrize(
+    ('f', 'kept', 'strides'),
+    [
+        (lambda m: (m['o'], m['x']), ['o', 'x'], ('segment', 1)),
+        (lambda m: DiagonalOperator(m['o']), ['o'], ('segment',)),
+        (
+            lambda m: BlockRowOperator([DiagonalOperator(m['x']), DiagonalOperator(m['o'])]),
+            ['x', 'o'],
+            (1, 'segment'),
+        ),
+        (
+            lambda m: (DiagonalOperator(m['x']) @ DiagonalOperator(m['o'])).T,
+            ['o', 'x'],
+            ('segment', 1),
+        ),
+        (lambda m: (m['o'], _SHARED), ['o', None], ('segment', None)),
+    ],
+    ids=['rearranged', 'diagonal', 'block-row', 'composition-transpose', 'closed-over'],
+)
+def test_lift_keeps_the_arrays_a_structural_function_passes_through(f, kept, strides):
     ensemble = _segmented()
-    rearranged = lift(lambda m: (m['o'], m['x']), ensemble)
-    assert isinstance(rearranged, StackedEnsemble)
-    assert rearranged.strides == ('segment', 1)
-    assert rearranged.owner is ensemble.owner
-    assert_allclose(rearranged.fetch(4)[0], _offsets()[OWNER[4]])
+    lifted = lift(f, ensemble)
+    assert isinstance(lifted, StackedEnsemble)
+    sources = [_SHARED if key is None else ensemble.stacked[key] for key in kept]
+    # the arrays are reused, not copied
+    assert all(a is b for a, b in zip(jax.tree.leaves(lifted.stacked), sources, strict=True))
+    assert lifted.strides == strides
+    assert lifted.owner is ensemble.owner
+    member = {'x': _xs()[4], 'o': _offsets()[OWNER[4]]}
+    jax.tree.map(assert_allclose, lifted.fetch(4), f(member))
 
 
-def test_lift_gathers_the_segment_leaves_of_a_computed_function():
-    lifted = lift(lambda m: m['x'] + m['o'], _segmented())
+@pytest.mark.parametrize(
+    'f',
+    [lambda m: DiagonalOperator(2 * m['o']), lambda m: m['x'] + m['o']],
+    ids=['operator', 'array'],
+)
+def test_lift_gathers_the_segment_leaves_of_a_computed_function(f):
+    lifted = lift(f, _segmented())
     assert isinstance(lifted, StackedEnsemble)
     assert lifted.strides == (1,)
-    assert_allclose(lifted.stacked, _segment_expected()['member'])
+    member = {'x': _xs()[4], 'o': _offsets()[OWNER[4]]}
+    jax.tree.map(assert_allclose, lifted.fetch(4), f(member))
+
+
+def test_lift_reads_a_shared_leaf_concretely():
+    n = 3
+    ensemble = StackedEnsemble(N, {'x': _xs(), 'n': jnp.array(n)}, {'x': 1, 'n': None})
+    lifted = lift(lambda m: m['x'][: int(m['n'])], ensemble)
+    assert_allclose(lifted.stacked, _xs()[:, :n])
 
 
 def test_lift_of_ensembles_sharing_their_owner_runs_under_jit():

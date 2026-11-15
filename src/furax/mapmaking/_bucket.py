@@ -8,7 +8,8 @@ amplitudes. $J_t = [H_t S^\top, T_t, T_{s,t}, C_t]$ maps them to the tile's TOD,
 weight (see
 [`TileModel.deprojected_weight`][furax.mapmaking._model.TileModel.deprojected_weight]).
 The right-hand side $\sum_t J_t^\top W'_t d_t$ has the same keys: the map RHS, the template RHS,
-and the gap RHS.
+and the gap RHS. It is computed once, in the pass over the data, and held apart from the tiles
+(see [`AccumulatedModel.rhs`][furax.mapmaking._accumulated.AccumulatedModel.rhs]).
 
 With explicit gaps, the flagged samples are modelled by the spline amplitudes of the tile's gaps,
 $C_t$: $J_t = [M_t H_t S^\top, M_t T_t, M_t T_{s,t}, C_t]$, with $M_t$ the mask of the good
@@ -31,12 +32,11 @@ import jax
 from jax.tree_util import register_dataclass
 from jaxtyping import Array, Float, PyTree
 
-import furax.tree
 from furax import AbstractLinearOperator, DiagonalOperator, symmetric
 from furax.core import BlockRowOperator, Policy, StackedEnsemble, lift, map_reduce
 from furax.obs.stokes import StokesType
 
-from ._model import SHARED_TEMPLATES, TEMPLATE_KINDS, Holder, TemplateKind, TileModel, TileTemplates
+from ._model import TEMPLATE_KINDS, Holder, TemplateKind, TileModel, TileTemplates
 from .weight import WeightOperator
 
 GAPS: Final = 'gaps'
@@ -59,14 +59,10 @@ class Tile:
     """The tile's acquisition operator, weight and noise model."""
     templates: TileTemplates | None
     """The tile's templates, with amplitudes per detector or shared by the observation."""
-    template_rhs: PyTree[Array] | None
-    r"""The template RHS $T_t^\top W'_t d_t$ of the template amplitudes of the tile's detectors
-    (None without them)."""
-    gap_rhs: Float[Array, '*channels budget'] | None = None
-    r"""The gap RHS $C_t^\top N_t^{-1} M_t d_t$ (None without explicit gaps), laid out as the TOD,
-    the budget of amplitudes of each channel in place of its samples."""
     gap_preconditioner: Float[Array, '*channels budget'] | None = None
-    """The inverse of the diagonal of the white-noise Gram of the gap amplitudes."""
+    """The inverse of the diagonal of the white-noise Gram of the gap amplitudes (None without
+    explicit gaps), laid out as the TOD, the budget of amplitudes of each channel in place of its
+    samples."""
 
     def operator(self, kind: AmplitudeKind) -> AbstractLinearOperator:
         """The operator from the amplitudes of `kind` to the TOD: $T_t$, $T_{s,t}$ or $C_t$."""
@@ -84,10 +80,7 @@ class BucketModel:
 
     tiles: StackedEnsemble
     """The [`Tile`][]s, one member per tile, grouped in segments by observation and laid out
-    over the devices; the right-hand sides of their amplitudes are stacked per tile."""
-    shared_template_rhs: PyTree[Array] | None
-    """The template RHS of the template amplitudes each observation's detectors share,
-    `(segment, ...)` (None without them)."""
+    over the devices."""
 
     @property
     def templates(self) -> TileTemplates | None:
@@ -104,46 +97,38 @@ class BucketModel:
         kinds = ()
         if templates is not None:
             kinds = tuple(kind for kind in TEMPLATE_KINDS if templates.explicit[kind] is not None)
-        if self.tiles.template.gap_rhs is not None:
+        if self.tiles.template.model.gaps is not None:
             kinds += (GAPS,)
         return kinds
 
-    def rhs(self, kind: AmplitudeKind) -> PyTree[Array]:
-        """The right-hand side of the amplitudes of `kind`.
-
-        It is `(tile, ...)`, or `(segment, ...)` for the template amplitudes the detectors of an
-        observation share.
-        """
-        if kind == SHARED_TEMPLATES:
-            return self.shared_template_rhs
-        return self.tiles.stacked.gap_rhs if kind == GAPS else self.tiles.stacked.template_rhs
-
-    def preconditioner(self, kind: AmplitudeKind) -> AbstractLinearOperator:
-        """The preconditioner of the amplitudes of `kind`.
+    def preconditioner(self, kind: AmplitudeKind, structure: PyTree) -> AbstractLinearOperator:
+        """The preconditioner of the amplitudes of `kind`, whose structure is `structure`.
 
         The template amplitudes are preconditioned by the inverse of their Gram, each tile's for
         those of its detectors and each observation's for those they share, the gap amplitudes by
         the inverse of the diagonal of their white-noise Gram.
         """
         if kind == GAPS:
-            structure = furax.tree.as_structure(self.rhs(kind))
             return DiagonalOperator(self.tiles.stacked.gap_preconditioner, in_structure=structure)
-        inverse = self._template_operator(kind, 'gram_inverse')
+        inverse = self._template_operator(kind, 'gram_inverse', structure)
         assert inverse is not None
         return inverse
 
-    def ridge(self, kind: AmplitudeKind) -> AbstractLinearOperator | None:
+    def ridge(self, kind: AmplitudeKind, structure: PyTree) -> AbstractLinearOperator | None:
         """The ridge the Gram of the amplitudes of `kind` was factored with, a term of the system.
 
         `None` without regularization, and for the gap amplitudes.
         """
-        return None if kind == GAPS else self._template_operator(kind, 'ridge')
+        return None if kind == GAPS else self._template_operator(kind, 'ridge', structure)
 
-    def _template_operator(self, kind: TemplateKind, part: str) -> AbstractLinearOperator | None:
+    def _template_operator(
+        self, kind: TemplateKind, part: str, structure: PyTree
+    ) -> AbstractLinearOperator | None:
         """An operator of the templates of `kind`, on their amplitudes; `None` if absent.
 
         `part` is a field of [`TemplateBundle`][furax.mapmaking._model.TemplateBundle], whose
-        operator is held per tile, or per observation for the shared templates.
+        operator is held per tile, or per observation for the shared templates. The amplitudes
+        are `(tile, ...)`, or `(segment, ...)` for those the detectors of an observation share.
         """
 
         def bundle(tile: Tile) -> Any:
@@ -157,7 +142,7 @@ class BucketModel:
         assert isinstance(operators, StackedEnsemble)
         if AMPLITUDE_KINDS[kind] == 'observation':
             operators = segment_ensemble(operators)
-        return MemberOperator(operators, in_structure=furax.tree.as_structure(self.rhs(kind)))
+        return MemberOperator(operators, in_structure=structure)
 
 
 def bucket_apply(

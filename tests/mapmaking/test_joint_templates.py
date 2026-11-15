@@ -131,7 +131,7 @@ def test_spline_drift_has_amplitudes_per_detector_and_knot():
     cfg = _config(TemplatesConfig(spline_drift=spline))
     acc = accumulate(MultiObservationMapMaker(_ground_obs(), config=cfg))
     # (tile, det, knot): one tile per observation, 1024 // 128 knots, plus 2
-    assert acc.buckets[0].tiles.stacked.template_rhs['spline_drift'].shape == (2, 8, 10)
+    assert acc.rhs[TEMPLATES][0]['spline_drift'].shape == (2, 8, 10)
 
 
 @pytest.mark.parametrize(
@@ -336,14 +336,14 @@ def test_several_observations_per_device_match_single_observations(monkeypatch, 
 
     assert_allclose(together.hit_map, sum(acc.hit_map for acc in alone))
     assert_allclose(
-        together.map_rhs.data, sum(acc.map_rhs.data for acc in alone), rtol=1e-12, atol=1e-12
+        together.rhs['map'].data, sum(acc.rhs['map'].data for acc in alone), rtol=1e-12, atol=1e-12
     )
     # (tile, ...), with one tile per observation
-    template_rhs = np.asarray(together.buckets[0].tiles.stacked.template_rhs['hwp_synchronous'])
+    template_rhs = np.asarray(together.rhs[TEMPLATES][0]['hwp_synchronous'])
     for observation, acc in enumerate(alone):
         (segment,) = np.flatnonzero(bucket.segment_observations == observation)
         (tile,) = bucket.tiles_of(segment)
-        alone_rhs = acc.buckets[0].tiles.stacked.template_rhs['hwp_synchronous']
+        alone_rhs = acc.rhs[TEMPLATES][0]['hwp_synchronous']
         assert_allclose(template_rhs[tile], np.asarray(alone_rhs)[0])
 
 

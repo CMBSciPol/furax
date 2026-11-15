@@ -187,7 +187,9 @@ class Ensemble(ABC):
     def fetch(self, i: Int[Array, ''] | int) -> PyTree[Any]:
         """Member `i`."""
 
-    def zip(self, x: PyTree[Any], axes: PyTree[int | None] = 0) -> 'Ensemble':
+    def zip(
+        self, x: PyTree[Any], axes: PyTree[int | None] = 0, strides: PyTree[Stride] = 1
+    ) -> 'Ensemble':
         """The members paired with their slices of a stacked pytree.
 
         Member i becomes the pair `(member, x[i])`: the array leaves of `x` carry a member axis
@@ -195,6 +197,10 @@ class Ensemble(ABC):
         places it per leaf of `x`, a single value or an aligned pytree, so an input whose
         natural layout puts the member dimension elsewhere is sliced in place. The block
         composites use it to hand each block its own slice of the input.
+
+        `strides`, a single value or an aligned pytree, says how each leaf of `x` is read (see
+        [`Stride`][furax.core.Stride]): a leaf of stride None is handed whole to every member,
+        one of stride `'segment'` has an entry per segment.
 
         Only the resident ensembles support it: the members of a [`HostEnsemble`][] are read on
         the fly, they cannot be rebuilt into pairs.
@@ -313,9 +319,13 @@ class ListEnsemble(Ensemble):
         selected = jax.lax.switch(i, [lambda a=a: list(a) for a in arrays])
         return _rebuild(treedef, leaves, is_array, selected)
 
-    def zip(self, x: PyTree[Any], axes: PyTree[int | None] = 0) -> 'ListEnsemble':
+    def zip(
+        self, x: PyTree[Any], axes: PyTree[int | None] = 0, strides: PyTree[Stride] = 1
+    ) -> 'ListEnsemble':
         x_leaves, x_def = jax.tree.flatten(x)
-        x_strides = _normalized_strides(x_leaves, x_def, 1)
+        x_strides = _normalized_strides(x_leaves, x_def, strides)
+        if any(s not in (None, 1) for s in x_strides):
+            raise ValueError('the members of a ListEnsemble read their input whole or sliced')
         x_axes = _normalized_axes(x_leaves, x_def, x_strides, axes)
         members = [
             (
@@ -480,9 +490,11 @@ class StackedEnsemble(Ensemble):
         ]
         return jax.tree.unflatten(jax.tree.structure(self.stacked), picked)
 
-    def zip(self, x: PyTree[Any], axes: PyTree[int | None] = 0) -> 'StackedEnsemble':
+    def zip(
+        self, x: PyTree[Any], axes: PyTree[int | None] = 0, strides: PyTree[Stride] = 1
+    ) -> 'StackedEnsemble':
         x_leaves, x_def = jax.tree.flatten(x)
-        x_strides = _normalized_strides(x_leaves, x_def, 1)
+        x_strides = _normalized_strides(x_leaves, x_def, strides)
         x_axes = _normalized_axes(x_leaves, x_def, x_strides, axes)
         return StackedEnsemble(
             self.size,
@@ -682,10 +694,7 @@ class HostEnsemble(Ensemble):
         leaves, treedef = jax.tree.flatten(self.template)
         strides = _normalized_strides(leaves, treedef, self.strides, is_member=_is_abstract)
         object.__setattr__(self, 'strides', strides)
-        if any(s not in (1, 'segment', None) for s in strides):
-            raise ValueError(f"the strides of a host ensemble are 1 or 'segment', got {strides}")
-        if 'segment' in strides and self.owner is None:
-            raise ValueError("a 'segment' leaf needs an owner index")
+        _check_strides(strides, grouped=self.owner is not None)
         _check_segments(self.owner, self.segments, self.size, 1)
 
     @property
@@ -838,7 +847,8 @@ def lift(f: Callable[..., PyTree[Any]], *ensembles: Ensemble) -> Ensemble:
         *ensembles: The members, all list or all stacked, of one size.
 
     Returns:
-        The ensemble of `f`'s outputs, with `f`'s non-array leaves shared.
+        The ensemble of `f`'s outputs, with the leaves that do not come from the members, such as
+            the arrays `f` closes over, shared.
     """
     if not ensembles:
         raise ValueError('lift needs at least one ensemble')
@@ -903,9 +913,10 @@ def _lift_structural(
     """`f` applied once to abstract members, the output leaves matched to the inputs by identity.
 
     A structural `f` passes its members' array leaves through untouched, so every array leaf of
-    its output is one of the sentinel inputs: the output ensemble reuses the stacked arrays with
-    their strides and member axes. Any computed array leaf, or any error on abstract leaves,
-    falls back to None.
+    its output is one of the sentinel inputs, or a constant -- an array `f` closes over -- which
+    no computation on the sentinels can produce: the output ensemble reuses the stacked arrays
+    with their strides and member axes, and shares the constants. Any computed array leaf, or any
+    error on abstract leaves, falls back to None.
     """
     sources: dict[int, tuple[Array, Stride, int | None]] = {}
     members = []
@@ -934,9 +945,10 @@ def _lift_structural(
             stacked.append(source)
             strides.append(stride)
             axes.append(axis)
-        elif isinstance(leaf, jax.ShapeDtypeStruct) or _is_array(leaf):
+        elif isinstance(leaf, jax.ShapeDtypeStruct):
             return None  # a computed array leaf: f is not structural
         else:
+            # a constant, such as an array closed over by f: the same for every member
             stacked.append(leaf)
             strides.append(None)
             axes.append(None)
@@ -1636,6 +1648,59 @@ def _abstract(leaf: Any) -> Any:
     return leaf
 
 
+def _canonical_strides(
+    structure: PyTree[jax.ShapeDtypeStruct], strides: PyTree[Stride], ensemble: Ensemble
+) -> tuple[Stride, ...] | None:
+    """One stride per leaf of `structure`, or None if every member reads or sums it whole.
+
+    Raises:
+        ValueError: If a stride is not None, 1 or `'segment'`, or is `'segment'` on an ensemble
+            without segments.
+    """
+    flat = tuple(_per_leaf(jax.tree.structure(structure), strides, 'strides'))
+    _check_strides(flat, grouped=ensemble.segments is not None)
+    return None if all(s is None for s in flat) else flat
+
+
+def _check_strides(strides: tuple[Stride, ...], grouped: bool) -> None:
+    """Check that the strides are None, 1 or `'segment'`, the latter on grouped members only."""
+    for s in strides:
+        if s not in (None, 1, 'segment') or isinstance(s, bool):
+            raise ValueError(f'stride {s!r}: the strides are None, 1 or "segment"')
+        if s == 'segment' and not grouped:
+            raise ValueError(
+                'a stride "segment" needs an owner index, grouping the members in segments'
+            )
+
+
+def _strided_structure(
+    structure: PyTree[jax.ShapeDtypeStruct], strides: tuple[Stride, ...] | None, ensemble: Ensemble
+) -> PyTree[jax.ShapeDtypeStruct]:
+    """A member's structure, with an entry per member or per segment on the strided leaves."""
+    if strides is None:
+        return structure
+
+    def stacked(leaf, stride):
+        if stride is None:
+            return leaf
+        entries = _stack_length(stride, ensemble.size, ensemble.segments)
+        return jax.ShapeDtypeStruct((entries, *leaf.shape), leaf.dtype)
+
+    leaves, treedef = jax.tree.flatten(structure)
+    return jax.tree.unflatten(treedef, [stacked(leaf, s) for leaf, s in zip(leaves, strides)])
+
+
+def _reductions(
+    structure: PyTree[jax.ShapeDtypeStruct], strides: tuple[Stride, ...] | None
+) -> PyTree[Literal['sum', 'segment_sum'] | Stride]:
+    """How the engine combines the outputs of the members on each leaf of `structure`."""
+    if strides is None:
+        return 'sum'
+    treedef = jax.tree.structure(structure)
+    dual = {None: 'sum', 1: 1, 'segment': 'segment_sum'}
+    return jax.tree.unflatten(treedef, [dual[s] for s in strides])
+
+
 def _normalized_strides(
     leaves: list[Any],
     treedef: PyTreeDef,
@@ -1675,11 +1740,12 @@ def _per_leaf(treedef: PyTreeDef, values: PyTree[Any], name: str) -> list[Any]:
     """`values` as one entry per leaf of a tree of structure `treedef`.
 
     `values` is a single value for every leaf, the canonical flat tuple of one value per leaf, or
-    a pytree with the structure `treedef`. In the latter, a None where the tree has a leaf is
-    that leaf's value, and a None subtree of the tree holds no leaf, so no value.
+    a pytree whose structure is a prefix of `treedef`: a value where the tree has a subtree is
+    that of each of its leaves. A None where the tree has a leaf or a subtree is a value, and a
+    None subtree of the tree holds no leaf, so no value.
 
     Raises:
-        ValueError: If `values` is a pytree whose structure is not `treedef`.
+        ValueError: If `values` is a pytree whose structure is not a prefix of `treedef`.
     """
     if _is_single_value(values):
         return [values] * treedef.num_leaves
@@ -1692,10 +1758,15 @@ def _per_leaf(treedef: PyTreeDef, values: PyTree[Any], name: str) -> list[Any]:
     )
     if is_canonical:
         return list(values)
+    tree = jax.tree.unflatten(treedef, [0] * treedef.num_leaves)
     try:
-        return treedef.flatten_up_to(values)
+        broadcast = jax.tree.broadcast(values, tree, is_leaf=lambda v: v is None)
+        return treedef.flatten_up_to(broadcast)
     except ValueError as error:
-        msg = f'{name} must be a single value or a pytree with the structure {treedef}: {error}'
+        msg = (
+            f'{name} must be a single value or a pytree whose structure is a prefix of '
+            f'{treedef}: {error}'
+        )
         raise ValueError(msg) from None
 
 

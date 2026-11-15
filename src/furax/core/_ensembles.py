@@ -818,12 +818,12 @@ def lift(f: Callable[..., PyTree[Any]], *ensembles: Ensemble) -> Ensemble:
     """Member-wise `f` over ensembles of the same size: the algebra of ensembles.
 
     For list ensembles, `f` is applied to the member pytrees. For stacked ensembles, a
-    **structural** `f` -- one that only rearranges its members' leaves, such as composing or
-    transposing operators -- is detected by tracking leaf identity, and the output ensemble reuses
-    the input arrays with their strides, at no cost. Otherwise `f` is vectorized by `jax.vmap`
-    over the member axis, stride-s and segment leaves expanded to one entry per member, and the
-    output leaves come back with stride 1. Stacked ensembles grouped in segments must share their
-    owner index, which the output keeps.
+    **structural** `f` -- one that only rearranges its members' leaves, such as building,
+    composing or transposing operators -- is detected by tracing `f` on one abstract member, and
+    the output ensemble reuses the input arrays with their strides, at no cost. Otherwise `f` is
+    vectorized by `jax.vmap` over the member axis, stride-s and segment leaves expanded to one
+    entry per member, and the output leaves come back with stride 1. Stacked ensembles grouped in
+    segments must share their owner index, which the output keeps.
 
     Args:
         f: From one member per ensemble to a pytree: an operator constructor, a composition,
@@ -849,93 +849,70 @@ def lift(f: Callable[..., PyTree[Any]], *ensembles: Ensemble) -> Ensemble:
 
 
 def _lift_stacked(f: Callable[..., PyTree[Any]], ensembles: Sequence[StackedEnsemble]) -> Ensemble:
-    structural = _lift_structural(f, ensembles)
-    if structural is not None:
-        return structural
-    size = ensembles[0].size
+    """`f` traced once on the templates, its output arrays matched to the traced inputs.
 
-    def on_members(flats: list[list[Any]]) -> list[Array]:
-        members = [
-            jax.tree.unflatten(jax.tree.structure(e.stacked), flat)
-            for e, flat in zip(ensembles, flats)
-        ]
-        return [leaf for leaf in jax.tree.leaves(f(*members)) if _is_array(leaf)]
-
-    flats, in_axes = [], []
+    The strided leaves are the inputs of the trace, the shared ones stay concrete. A structural
+    `f` passes its members' array leaves through untouched, so every array leaf of its output is
+    one of the inputs, or a concrete array: the output ensemble reuses the stacked arrays with
+    their strides and member axes, and shares the concrete ones. Otherwise the trace is vectorized
+    over the member axis.
+    """
+    sources: list[tuple[Array, Stride, int | None]] = []
+    abstract: list[jax.ShapeDtypeStruct] = []
+    templates = []
     for e in ensembles:
         leaves, strides = e._leaves_and_strides()
-        flats.append(
-            [
-                leaf if s is None else _expanded(leaf, s, size, e.owner, a)
-                for leaf, s, a in zip(leaves, strides, e.axes)
+        template = jax.tree.leaves(e.template)
+        flags = [s is not None for s in strides]
+        templates.append((jax.tree.structure(e.stacked), template, flags))
+        abstract += [leaf for leaf, flag in zip(template, flags) if flag]
+        sources += [(leaf, s, a) for leaf, s, a in zip(leaves, strides, e.axes) if s is not None]
+    out_parts: list[Any] = []
+
+    def traced(*arrays: Array) -> list[Array]:
+        it = iter(arrays)
+        members = [
+            _rebuild(treedef, template, flags, [next(it) for _ in range(sum(flags))])
+            for treedef, template, flags in templates
+        ]
+        leaves, treedef = jax.tree.flatten(f(*members))
+        out_parts[:] = [leaves, treedef]
+        return [leaf for leaf in leaves if isinstance(leaf, jax.Array)]
+
+    closed = jax.make_jaxpr(traced)(*abstract)
+    out_leaves, out_treedef = out_parts
+    is_array = [isinstance(leaf, jax.Array) for leaf in out_leaves]
+    jaxpr = closed.jaxpr
+    known = dict(zip(jaxpr.invars, sources)) | {
+        var: (const, None, None) for var, const in zip(jaxpr.constvars, closed.consts)
+    }
+    # a literal is a computed output, such as a constant scalar
+    out_vars = iter(None if isinstance(v, JaxprLiteral) else v for v in jaxpr.outvars)
+    entries = [
+        known.get(next(out_vars)) if flag else (leaf, None, None)
+        for leaf, flag in zip(out_leaves, is_array)
+    ]
+    size = ensembles[0].size
+    if all(entry is not None for entry in entries):
+        stacked, strides, axes = zip(*entries)
+    else:  # a computed array leaf: f is not structural, vectorize it on expanded leaves
+        expanded = [
+            _expanded(leaf, s, size, e.owner, a)
+            for e in ensembles
+            for leaf, s, a in zip(*e._leaves_and_strides(), e.axes)
+            if s is not None
+        ]
+        in_axes = tuple(a for _, _, a in sources)
+        outputs = iter(jax.vmap(jaxpr_as_fun(closed), in_axes=in_axes)(*expanded))
+        stacked, strides, axes = zip(
+            *[
+                (next(outputs), 1, 0) if flag else (leaf, None, None)
+                for leaf, flag in zip(out_leaves, is_array)
             ]
         )
-        in_axes.append(list(e.axes))  # the canonical axes are None exactly on the shared leaves
-    out_arrays = jax.vmap(on_members, in_axes=(in_axes,))(flats)
-
-    member0 = f(*(e.fetch(0) for e in ensembles))
-    out_leaves, out_treedef = jax.tree.flatten(member0)
-    is_array = [_is_array(leaf) for leaf in out_leaves]
-    stacked = _rebuild(out_treedef, out_leaves, is_array, list(out_arrays))
-    strides = jax.tree.unflatten(out_treedef, [1 if flag else None for flag in is_array])
     owner, segments = _common_owner(ensembles)
     return StackedEnsemble(
         size,
-        stacked,
-        strides,
-        valid=ensembles[0].valid,
-        policy=ensembles[0].policy,
-        owner=owner,
-        segments=segments,
-    )
-
-
-def _lift_structural(
-    f: Callable[..., PyTree[Any]], ensembles: Sequence[StackedEnsemble]
-) -> StackedEnsemble | None:
-    """`f` applied once to abstract members, the output leaves matched to the inputs by identity.
-
-    A structural `f` passes its members' array leaves through untouched, so every array leaf of
-    its output is one of the sentinel inputs: the output ensemble reuses the stacked arrays with
-    their strides and member axes. Any computed array leaf, or any error on abstract leaves,
-    falls back to None.
-    """
-    sources: dict[int, tuple[Array, Stride, int | None]] = {}
-    members = []
-    for e in ensembles:
-        leaves, strides = e._leaves_and_strides()
-        sentinels = []
-        for leaf, s, a in zip(leaves, strides, e.axes):
-            if _is_array(leaf):
-                shape = leaf.shape if s is None else leaf.shape[:a] + leaf.shape[a + 1 :]
-                sentinel = jax.ShapeDtypeStruct(shape, leaf.dtype)
-                sources[id(sentinel)] = (leaf, s, a)
-                sentinels.append(sentinel)
-            else:
-                sentinels.append(leaf)
-        members.append(jax.tree.unflatten(jax.tree.structure(e.stacked), sentinels))
-    try:
-        out = f(*members)
-    except (AttributeError, IndexError, TypeError, ValueError):
-        # f computes on its leaves, which the abstract sentinels cannot do: not structural.
-        return None
-    out_leaves, out_treedef = jax.tree.flatten(out)
-    stacked, strides, axes = [], [], []
-    for leaf in out_leaves:
-        if id(leaf) in sources:
-            source, stride, axis = sources[id(leaf)]
-            stacked.append(source)
-            strides.append(stride)
-            axes.append(axis)
-        elif isinstance(leaf, jax.ShapeDtypeStruct) or _is_array(leaf):
-            return None  # a computed array leaf: f is not structural
-        else:
-            stacked.append(leaf)
-            strides.append(None)
-            axes.append(None)
-    owner, segments = _common_owner(ensembles)
-    return StackedEnsemble(
-        ensembles[0].size,
         jax.tree.unflatten(out_treedef, stacked),
         jax.tree.unflatten(out_treedef, strides),
         axes=jax.tree.unflatten(out_treedef, axes),

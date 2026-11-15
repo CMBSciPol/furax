@@ -13,6 +13,7 @@ from numpy.testing import assert_allclose
 
 from furax import DiagonalOperator, HomothetyOperator
 from furax.core import (
+    AbstractLinearOperator,
     AdditionOperator,
     BlockColumnOperator,
     BlockDiagonalOperator,
@@ -126,7 +127,7 @@ class TestMemberAxis:
         assert_allclose(inverse(diagonal(_xs().T)), _xs().T, atol=1e-12)
 
     def test_as_matrix(self, representation):
-        # the member entries interleave in the flattened space: built from the basis
+        # the member entries interleave in the flattened space
         diagonal = BlockDiagonalOperator(_ensemble(representation), axes=1)
         x = _xs().T
         assert_allclose(diagonal.as_matrix() @ x.ravel(), diagonal(x).ravel())
@@ -148,6 +149,28 @@ def test_blocks_with_different_axes_do_not_reduce():
     reduced = (left @ right).reduce()
     assert not isinstance(reduced, BlockDiagonalOperator)
     assert_allclose(reduced(_diagonals()[:4].T), left(right(_diagonals()[:4].T)))
+
+
+@pytest.mark.parametrize('cls', [BlockRowOperator, BlockColumnOperator, BlockDiagonalOperator])
+@pytest.mark.parametrize('pytree_members', [False, True])
+@pytest.mark.parametrize('axes', [0, 1])
+def test_as_matrix_follows_the_leaf_major_flattening(cls, pytree_members, axes):
+    # each leaf of a stacked side carries the member axis: with several leaves per member, the
+    # flattened side is not member by member
+    if pytree_members:
+        diagonals = StackedEnsemble(N, {'a': _diagonals(), 'b': 2 * _diagonals()}, 1)
+        members = lift(
+            lambda m: BlockRowOperator(
+                {'a': DiagonalOperator(m['a']), 'b': DiagonalOperator(m['b'])}
+            ),
+            diagonals,
+        )
+    else:
+        members = _ensemble('stacked')
+    if cls is BlockColumnOperator:
+        members = lift(lambda op: op.T, members)
+    operator = cls(members, axes=axes)
+    assert_allclose(operator.as_matrix(), AbstractLinearOperator.as_matrix(operator))
 
 
 def test_axes_need_an_ensemble():

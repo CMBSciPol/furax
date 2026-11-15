@@ -8,9 +8,9 @@ import jax
 import jax.numpy as jnp
 import jax.scipy.linalg as jsl
 from jax import Array
-from jaxtyping import Inexact, PyTree
+from jaxtyping import Inexact, Int, PyTree
 
-from ..tree import add
+from ..tree import add, ravel, unravel
 from ._base import (
     AbstractLinearOperator,
     AdditionOperator,
@@ -71,6 +71,32 @@ class AbstractBlockOperator(AbstractLinearOperator, ABC):
     def _ensemble_out_structure(self, member: AbstractLinearOperator) -> PyTree[Any]:
         """The output structure of the composite over an ensemble, from one member's."""
         return _stacked_structure(member.out_structure, self.blocks.size, self.axes)
+
+    def _ensemble_as_matrix(
+        self, rows: Int[Array, 'n a'], columns: Int[Array, 'n b']
+    ) -> Inexact[Array, 'p q']:
+        """The dense matrix over an ensemble, each member's matrix scattered to its positions.
+
+        Row i of `rows` and `columns` holds where the output and input entries of member i sit in
+        the flattened composite.
+        """
+        blocks = map_reduce(lambda op: op.as_matrix(), self.blocks, 1)[0]
+        matrix = jnp.zeros((self.out_size, self.in_size), blocks.dtype)
+        return matrix.at[rows[:, :, None], columns[:, None, :]].set(blocks)
+
+    def _member_positions(self, stacked: PyTree[jax.ShapeDtypeStruct]) -> Int[Array, 'n m']:
+        """The positions of each member's entries in a flattened stacked side, one row per member.
+
+        Each array leaf of a stacked side carries the member axis, so the flattened side runs leaf
+        by leaf, and the entries of a member are scattered across it.
+        """
+        size = sum(leaf.size for leaf in jax.tree.leaves(stacked))
+        positions = unravel(stacked, jnp.arange(size))
+        return ravel(jax.tree.map(lambda p: jnp.moveaxis(p, self.axes, 0), positions), batch_ndim=1)
+
+    def _shared_positions(self, size: int) -> Int[Array, 'n m']:
+        """The positions on a side every member covers whole, one row per member."""
+        return jnp.broadcast_to(jnp.arange(size), (self.blocks.size, size))
 
     @property
     def block_leaves(self) -> list[AbstractLinearOperator]:
@@ -178,8 +204,10 @@ class BlockRowOperator(AbstractBlockOperator):
         return self.block_leaves[0].out_structure
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        if self.axes:
-            return super().as_matrix()  # the member columns interleave: build from the basis
+        if isinstance(self.blocks, Ensemble):
+            return self._ensemble_as_matrix(
+                self._shared_positions(self.out_size), self._member_positions(self.in_structure)
+            )
         return jnp.hstack([op.as_matrix() for op in self.block_leaves])
 
 
@@ -253,8 +281,11 @@ class BlockDiagonalOperator(AbstractBlockOperator):
         return BlockDiagonalOperator(self._tree_map(lambda op: op.I))
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        if self.axes:
-            return super().as_matrix()  # the member blocks interleave: build from the basis
+        if isinstance(self.blocks, Ensemble):
+            return self._ensemble_as_matrix(
+                self._member_positions(self.out_structure),
+                self._member_positions(self.in_structure),
+            )
         return jsl.block_diag(*[op.as_matrix() for op in self.block_leaves])
 
     def reduce(self) -> AbstractLinearOperator:
@@ -340,8 +371,10 @@ class BlockColumnOperator(AbstractBlockOperator):
         return member.in_structure  # every member takes the input whole
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
-        if self.axes:
-            return super().as_matrix()  # the member rows interleave: build from the basis
+        if isinstance(self.blocks, Ensemble):
+            return self._ensemble_as_matrix(
+                self._member_positions(self.out_structure), self._shared_positions(self.in_size)
+            )
         return jnp.vstack([op.as_matrix() for op in self.block_leaves])
 
 

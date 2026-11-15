@@ -19,7 +19,7 @@ from furax.mapmaking import (
     AbstractGroundObservation,
     AbstractLazyObservation,
     AbstractObservation,
-    MultiObservationMapMaker,
+    MapMakingRun,
     ObservationBufferShape,
     ObservationProbe,
     SampleRanges,
@@ -169,7 +169,7 @@ class FakeLazyObservation(AbstractLazyObservation[None]):
     """File-free lazy synthetic observation.
 
     Accepted anywhere a real ``AbstractLazyObservation`` is (e.g.
-    ``MultiObservationMapMaker([...])`` or
+    ``MultiObservationMapMaker(config).make_maps([...])`` or
     ``ObservationReader.from_observations([...])``). Only the on-the-fly pointing
     path with a healpix landscape is supported. ``kwargs`` are forwarded to
     :class:`FakeObservation` (``n_dets``, ``n_samples``,
@@ -334,13 +334,13 @@ def healpix_config(
     )
 
 
-def accumulate(maker: MultiObservationMapMaker) -> AccumulatedModel:
+def accumulate(maker: MapMakingRun) -> AccumulatedModel:
     """Build the model of each bucket of ``maker`` and accumulate its system, on its mesh."""
     with jax.set_mesh(maker.placement.mesh):
         return maker.build_model_and_accumulate()
 
 
-def probe_normal_system(maker: MultiObservationMapMaker, seed: int = 0) -> tuple[dict, dict]:
+def probe_normal_system(maker: MapMakingRun, seed: int = 0) -> tuple[dict, dict]:
     """The action of the normal system of `maker` on a random vector, and its right-hand side.
 
     The system is the one `make_maps` hands to the solver, in the same blocks: the sky under

@@ -68,7 +68,7 @@ def sky(tmp_path):
 
 
 def _run(config):
-    return MultiObservationMapMaker(_observations(), config=config).make_maps()
+    return MultiObservationMapMaker(config).make_maps(_observations())
 
 
 def _well_observed(result):
@@ -123,7 +123,7 @@ def test_a_sky_on_another_pixelization_is_rejected(tmp_path):
     hp.write_map(str(path), np.zeros((3, hp.nside2npix(2 * NSIDE))), overwrite=True)
     config = _config(InjectionConfig(str(path)))
     with pytest.raises(ValueError, match='pixelization of the landscape'):
-        MultiObservationMapMaker(_observations(), config=config).make_maps()
+        MultiObservationMapMaker(config).make_maps(_observations())
 
 
 def test_replacing_the_data_needs_weights_that_are_not_fit_from_them():
@@ -154,13 +154,11 @@ def test_a_run_killed_in_the_solve_of_the_sky_resumes_after_the_data_solve(
 
     monkeypatch.setattr(solve, 'cg', killed_in_the_second_solve)
     with pytest.raises(KeyboardInterrupt):
-        MultiObservationMapMaker(_observations(), config=config).make_maps(outdir)
+        MultiObservationMapMaker(config).make_maps(_observations(), outdir)
     assert (outdir / 'checkpoint.npz').exists()
 
     monkeypatch.setattr(solve, 'cg', cg)
-    resumed = MultiObservationMapMaker(_observations(), config=config).make_maps(
-        outdir, resume=True
-    )
+    resumed = MultiObservationMapMaker(config).make_maps(_observations(), outdir, resume=True)
     assert resumed.solver_stats['resumed_after'] > 0
     assert not list(Path(outdir).glob('checkpoint*'))
 
@@ -265,9 +263,7 @@ def test_the_response_through_a_t2p_template_is_the_same_in_detector_batches(sky
     templates = TemplatesConfig(t2p=T2PConfig())
     config = _demodulated_config(InjectionConfig(path, mode=InjectionMode.RESPONSE), templates)
     whole, batched = [
-        MultiObservationMapMaker(
-            _observations(), config=replace(config, detector_tile_size=b)
-        ).make_maps()
+        MultiObservationMapMaker(replace(config, detector_tile_size=b)).make_maps(_observations())
         for b in (0, 4)
     ]
     observed = _well_observed(whole)

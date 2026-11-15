@@ -33,7 +33,7 @@ from furax.mapmaking.config import (
     WeightingConfig,
     WeightingMode,
 )
-from furax.mapmaking.mapmaker import MultiObservationMapMaker
+from furax.mapmaking.mapmaker import MapMakingRun, MultiObservationMapMaker
 from tests.mapmaking.helpers import (
     FakeLazyGroundObservation,
     FakeLazyObservation,
@@ -89,8 +89,8 @@ def test_explicit_and_implicit_give_the_same_map(observations, template):
     # Marginalising the amplitudes (implicit deprojection) is exactly equivalent to solving
     # them jointly and discarding them: the recovered map must match.
     obs = observations()
-    explicit = MultiObservationMapMaker(obs, config=_config(template(True))).make_maps()
-    implicit = MultiObservationMapMaker(obs, config=_config(template(False))).make_maps()
+    explicit = MultiObservationMapMaker(_config(template(True))).make_maps(obs)
+    implicit = MultiObservationMapMaker(_config(template(False))).make_maps(obs)
     assert_same_map(explicit, implicit, rtol=1e-4, atol=1e-6)
     assert explicit.solver_stats['num_steps'] >= 1
     # only the explicit amplitudes are solved for, one set per observation and detector
@@ -108,7 +108,8 @@ def test_mixed_explicit_and_implicit():
             azimuth_synchronous=_azimuth_spline(6, False),
         )
     )
-    templates = accumulate(MultiObservationMapMaker(_ground_obs(), config=cfg)).buckets[0].template
+    acc = accumulate(MultiObservationMapMaker(cfg).prepare(_ground_obs()))
+    templates = acc.buckets[0].template
     assert list(templates.explicit[TEMPLATES].operator.templates) == ['hwp_synchronous']
     assert list(templates.implicit.operator.templates) == ['azimuth_synchronous']
 
@@ -116,11 +117,11 @@ def test_mixed_explicit_and_implicit():
 def test_two_level_preconditioner_with_explicit_templates():
     cfg = _config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)))
     cfg.solver = SolverConfig(rtol=1e-8, max_steps=1500)
-    expected = MultiObservationMapMaker(_hwp_obs(), config=cfg).make_maps()
+    expected = MultiObservationMapMaker(cfg).make_maps(_hwp_obs())
     expected_amplitudes = expected.template_amplitudes['hwp_synchronous']
     for spectrum in ('preconditioned', 'system'):
         cfg.solver.two_level = TwoLevelConfig(rank=4, spectrum=spectrum, tol=1e-8, max_restarts=50)
-        res = MultiObservationMapMaker(_hwp_obs(), config=cfg).make_maps()
+        res = MultiObservationMapMaker(cfg).make_maps(_hwp_obs())
         assert_allclose(res.map.data, expected.map.data, rtol=1e-6, atol=1e-8)
         amplitudes = res.template_amplitudes['hwp_synchronous']
         assert_allclose(amplitudes, expected_amplitudes, rtol=1e-6, atol=1e-8)
@@ -129,7 +130,7 @@ def test_two_level_preconditioner_with_explicit_templates():
 def test_spline_drift_has_amplitudes_per_detector_and_knot():
     spline = SplineDriftConfig(samples_per_knot=128, explicit=True)
     cfg = _config(TemplatesConfig(spline_drift=spline))
-    acc = accumulate(MultiObservationMapMaker(_ground_obs(), config=cfg))
+    acc = accumulate(MultiObservationMapMaker(cfg).prepare(_ground_obs()))
     # (tile, det, knot): one tile per observation, 1024 // 128 knots, plus 2
     assert acc.rhs[TEMPLATES][0]['spline_drift'].shape == (2, 8, 10)
 
@@ -157,7 +158,7 @@ def test_demodulated_streams_fitted_alike_form_one_template(name, option, templa
         template.samples_per_knot = option
     else:
         template.n_knots = option
-    acc = accumulate(MultiObservationMapMaker(_ground_obs(), config=cfg))
+    acc = accumulate(MultiObservationMapMaker(cfg).prepare(_ground_obs()))
     operator = acc.buckets[0].template.implicit.operator
     assert {key: t.streams for key, t in operator.templates.items()} == templates
 
@@ -166,8 +167,8 @@ def _detector_batch_systems(cfg: MapMakingConfig, observations=_ground_obs, **ob
     """The normal system of a run with the detectors processed whole, then in batches."""
     return [
         probe_normal_system(
-            MultiObservationMapMaker(
-                observations(n_dets=7, **obs_kwargs), config=replace(cfg, detector_tile_size=batch)
+            MultiObservationMapMaker(replace(cfg, detector_tile_size=batch)).prepare(
+                observations(n_dets=7, **obs_kwargs)
             )
         )
         for batch in (0, 3)
@@ -214,9 +215,9 @@ def test_padded_detectors_are_left_out_of_the_results():
     cfg = _config(templates)
     n_dets = 7
     whole, batched = [
-        MultiObservationMapMaker(
-            _hwp_obs(n_dets=n_dets), config=replace(cfg, detector_tile_size=batch)
-        ).make_maps()
+        MultiObservationMapMaker(replace(cfg, detector_tile_size=batch)).make_maps(
+            _hwp_obs(n_dets=n_dets)
+        )
         for batch in (0, 3)
     ]
     assert_frame_equal(batched.detectors, whole.detectors, rel_tol=1e-10)
@@ -260,7 +261,7 @@ def test_observations_of_different_widths_give_the_same_system_in_tiles():
 
     whole, tiled = [
         probe_normal_system(
-            MultiObservationMapMaker(observations(), config=replace(cfg, detector_tile_size=size))
+            MultiObservationMapMaker(replace(cfg, detector_tile_size=size)).prepare(observations())
         )
         for size in (0, 2)
     ]
@@ -302,9 +303,7 @@ def test_quadrupolar_templates_give_the_same_system_in_detector_batches(template
 )
 def test_amplitudes_shared_by_detectors_are_returned_per_observation(name, templates):
     cfg = _quadrupolar_config(templates)
-    maps = MultiObservationMapMaker(
-        _ground_obs(n_dets=7, focal_plane_radius=0.2), config=cfg
-    ).make_maps()
+    maps = MultiObservationMapMaker(cfg).make_maps(_ground_obs(n_dets=7, focal_plane_radius=0.2))
     amplitudes = maps.template_amplitudes[name]
     assert jnp.all(jnp.isfinite(amplitudes)) and jnp.max(jnp.abs(amplitudes)) > 0
     assert amplitudes.shape[0] == 2  # one set of amplitudes per observation
@@ -313,8 +312,8 @@ def test_amplitudes_shared_by_detectors_are_returned_per_observation(name, templ
 @pytest.mark.parametrize(('batch', 'n_buffered'), [(0, 8), (64, 8), (3, 9)])
 def test_only_observations_larger_than_a_batch_are_padded(batch, n_buffered):
     # 8 detectors: a batch of 64 holds them all, unpadded; batches of 3 need a ninth
-    maker = MultiObservationMapMaker(
-        _hwp_obs(), config=replace(_config(None), detector_tile_size=batch)
+    maker = MultiObservationMapMaker(replace(_config(None), detector_tile_size=batch)).prepare(
+        _hwp_obs()
     )
     assert maker.readers[0].out_structure[ReaderField.DETECTOR_QUATERNIONS].shape[0] == n_buffered
 
@@ -324,15 +323,15 @@ def test_several_observations_per_device_match_single_observations(monkeypatch, 
     # More observations than devices: each device accumulates several, one round at a time,
     # reading the next round after the current one or, as with a GPU, while it computes.
     # Each observation's sums and outputs must be those of a run over it alone.
-    monkeypatch.setattr(MultiObservationMapMaker, '_prefetches_reads', prefetch)
+    monkeypatch.setattr(MapMakingRun, '_prefetches_reads', prefetch)
     cfg = _config(TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=True)))
     observations = _hwp_obs(n_obs=10)
 
-    maker = MultiObservationMapMaker(observations, config=cfg)
+    maker = MultiObservationMapMaker(cfg).prepare(observations)
     together = accumulate(maker)
     (bucket,) = maker.layout.buckets
     assert bucket.tiles_per_device >= 2
-    alone = [accumulate(MultiObservationMapMaker([obs], config=cfg)) for obs in observations]
+    alone = [accumulate(MultiObservationMapMaker(cfg).prepare([obs])) for obs in observations]
 
     assert_allclose(together.hit_map, sum(acc.hit_map for acc in alone))
     assert_allclose(
@@ -368,8 +367,8 @@ def test_pomme_explicit_and_implicit_give_the_same_map():
         return TemplatesConfig(hwp_synchronous=HWPSynchronousConfig(2, explicit=explicit))
 
     obs = _hwp_obs()
-    explicit = MultiObservationMapMaker(obs, config=_pomme_config(template(True))).make_maps()
-    implicit = MultiObservationMapMaker(obs, config=_pomme_config(template(False))).make_maps()
+    explicit = MultiObservationMapMaker(_pomme_config(template(True))).make_maps(obs)
+    implicit = MultiObservationMapMaker(_pomme_config(template(False))).make_maps(obs)
     assert_same_map(explicit, implicit, rtol=1e-4, atol=1e-6)
 
 
@@ -386,7 +385,7 @@ def test_explicit_and_implicit_agree_under_a_ridge(batch):
         config.templates.regularization = 1e-3  # large enough to tell the two systems apart
         config = replace(config, detector_tile_size=batch)
         observations = _ground_obs(n_obs=1, n_dets=2, n_samples=256)
-        return MultiObservationMapMaker(observations, config=config).make_maps()
+        return MultiObservationMapMaker(config).make_maps(observations)
 
     explicit, implicit = run(True), run(False)
     assert_same_map(explicit, implicit, rtol=1e-4, atol=1e-6)

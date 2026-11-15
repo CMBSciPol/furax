@@ -87,7 +87,7 @@ def test_interface_observations_are_mapped(
     # each interface reach it, on both pixelizations and with either pointing interpolation.
     observations = _observations(name, demodulated)
     config = _config(landscape_type, stokes, demodulated, interpolation=interpolation)
-    maker = MultiObservationMapMaker(observations, config=config)
+    maker = MultiObservationMapMaker(config).prepare(observations)
     results = maker.make_maps()
     n_stokes = len(stokes)
     assert results.hit_map.shape == maker.landscape.shape
@@ -102,7 +102,7 @@ def test_interface_observations_are_mapped(
 @pytest.mark.parametrize('stokes', STOKES_TYPES)
 def test_model_matches_the_reader_and_the_landscape(stokes, demodulated):
     observations = [FakeLazyObservation(seed=i) for i in range(2)]
-    maker = MultiObservationMapMaker(observations, config=_config('healpix', stokes, demodulated))
+    maker = MultiObservationMapMaker(_config('healpix', stokes, demodulated)).prepare(observations)
     (bucket,) = maker.layout.buckets
     (reader,) = maker.readers
     assert reader.count == len(observations)
@@ -129,7 +129,7 @@ def test_failed_observation_is_excluded(demodulated):
     # observation (contributing nothing, no NaN), and report it.
     config = _config('healpix', 'IQU', demodulated=demodulated)
     mixed = [FakeLazyObservation(seed=0), FailingLazyObservation(seed=1)]
-    maker = MultiObservationMapMaker(mixed, config=config)
+    maker = MultiObservationMapMaker(config).prepare(mixed)
     with furax_records(logging.WARNING) as records:
         results = maker.make_maps()
 
@@ -166,9 +166,23 @@ def test_failed_observation_is_excluded(demodulated):
 
     # the failed observation contributes nothing -> identical to mapping only the good one
     good_only = [FakeLazyObservation(seed=0)]
-    expected = MultiObservationMapMaker(good_only, config=config).make_maps()
+    expected = MultiObservationMapMaker(config).make_maps(good_only)
     assert eqx.tree_equal(results.hit_map, expected.hit_map)
     assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
+
+
+def test_one_mapmaker_maps_successive_datasets():
+    config = _config('healpix', 'IQU', identity_noise=True)
+    datasets = [
+        [FakeLazyObservation(seed=0)],
+        [FakeLazyObservation(seed=1), FakeLazyObservation(seed=2)],
+    ]
+    maker = MultiObservationMapMaker(config)
+    for observations in datasets:
+        results = maker.make_maps(observations)
+        expected = MultiObservationMapMaker(config).make_maps(observations)
+        assert eqx.tree_equal(results.hit_map, expected.hit_map)
+        assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
 
 
 class TestBuckets:
@@ -196,7 +210,7 @@ class TestBuckets:
     @pytest.mark.parametrize('max_buckets', [1, 2, 3])
     def test_layout_follows_config(self, max_buckets):
         config = _config('healpix', 'IQU', max_buckets=max_buckets)
-        maker = MultiObservationMapMaker(self._observations(), config=config)
+        maker = MultiObservationMapMaker(config).prepare(self._observations())
         layout = maker.layout
         assert 1 <= len(layout.buckets) <= max_buckets
         covered = sorted(int(i) for b in layout.buckets for i in b.observations)
@@ -217,8 +231,8 @@ class TestBuckets:
         observations = self._observations()
         one = _config('healpix', stokes, identity_noise=True)
         many = _config('healpix', stokes, identity_noise=True, max_buckets=3)
-        one_result = MultiObservationMapMaker(observations, config=one).make_maps()
-        many_result = MultiObservationMapMaker(observations, config=many).make_maps()
+        one_result = MultiObservationMapMaker(one).make_maps(observations)
+        many_result = MultiObservationMapMaker(many).make_maps(observations)
         assert eqx.tree_equal(one_result.hit_map, many_result.hit_map)
         assert eqx.tree_equal(one_result.map, many_result.map, rtol=1e-10, atol=1e-12)
         assert eqx.tree_equal(one_result.icov, many_result.icov, rtol=1e-10, atol=1e-12)
@@ -229,10 +243,10 @@ class TestBuckets:
         observations = self._observations()
         one = _config('healpix', 'I', max_buckets=1, nperseg=1024)
         many = _config('healpix', 'I', max_buckets=3, nperseg=1024)
-        maker = MultiObservationMapMaker(observations, config=one)
+        maker = MultiObservationMapMaker(one).prepare(observations)
         assert maker.fit_config.weighting.fitting.nperseg == min(self.N_SAMPLES)
         one_result = maker.make_maps()
-        many_result = MultiObservationMapMaker(observations, config=many).make_maps()
+        many_result = MultiObservationMapMaker(many).make_maps(observations)
         assert eqx.tree_equal(one_result.hit_map, many_result.hit_map)
         assert eqx.tree_equal(one_result.icov, many_result.icov, rtol=1e-10, atol=1e-12)
         assert eqx.tree_equal(one_result.map, many_result.map, rtol=1e-10, atol=1e-12)
@@ -242,9 +256,9 @@ class TestBuckets:
         config = _config('healpix', 'IQU', max_buckets=3)
         observations = self._observations()
         observations[0] = FailingLazyObservation(seed=0, n_samples=self.N_SAMPLES[0])
-        results = MultiObservationMapMaker(observations, config=config).make_maps()
+        results = MultiObservationMapMaker(config).make_maps(observations)
         assert results.failed_observations == ['failing_obs']
-        expected = MultiObservationMapMaker(observations[1:], config=config).make_maps()
+        expected = MultiObservationMapMaker(config).make_maps(observations[1:])
         assert eqx.tree_equal(results.hit_map, expected.hit_map)
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
 
@@ -255,7 +269,7 @@ class TestBuckets:
             GappyLazyGroundObservation(seed=1, n_samples=128),
             GappyLazyGroundObservation(seed=2, n_samples=256),
         ]
-        maker = MultiObservationMapMaker(observations, config=config)
+        maker = MultiObservationMapMaker(config).prepare(observations)
         shapes = maker._probe_shapes
         assert maker._catalog.probe_failed.tolist() == [True, False, False]
         assert shapes[0] == shapes[2]
@@ -269,7 +283,7 @@ class TestBuckets:
         config = _config('healpix', 'IQU', max_buckets=2)
         config.fft_friendly_sample_count = True
         observations = [FakeLazyObservation(seed=i, n_samples=n) for i, n in enumerate((97, 121))]
-        maker = MultiObservationMapMaker(observations, config=config)
+        maker = MultiObservationMapMaker(config).prepare(observations)
         assert [shape.sample_count for shape in maker._probe_shapes] == [97, 121]
         for bucket, reader in zip(maker.layout.buckets, maker.readers, strict=True):
             n_samples = bucket.envelope.sample_count
@@ -281,7 +295,7 @@ class TestBuckets:
         config = _config('healpix', 'I', nperseg=1024)
         config.fft_friendly_sample_count = True
         observations = [FakeLazyObservation(seed=0, n_samples=97)]
-        maker = MultiObservationMapMaker(observations, config=config)
+        maker = MultiObservationMapMaker(config).prepare(observations)
         assert maker.layout.buckets[0].envelope.sample_count == 100
         assert maker.fit_config.weighting.fitting.nperseg == 97
 
@@ -289,7 +303,7 @@ class TestBuckets:
         config = self._correlated_config(correlation_length=64)
         observations = [GappyLazyGroundObservation(seed=0, n_samples=32)]
         observations.extend(GappyLazyGroundObservation(seed=i, n_samples=256) for i in (1, 2))
-        maker = MultiObservationMapMaker(observations, config=config)
+        maker = MultiObservationMapMaker(config).prepare(observations)
         assert min(bucket.envelope.sample_count for bucket in maker.layout.buckets) >= 2 * 64 - 1
         accumulate(maker)
 
@@ -297,7 +311,7 @@ class TestBuckets:
         config = _config('healpix', 'QU', pomme_tau=64, max_buckets=3)
         observations = [FakeLazyObservation(seed=0, n_samples=32)]
         observations.extend(FakeLazyObservation(seed=i, n_samples=256) for i in (1, 2))
-        maker = MultiObservationMapMaker(observations, config=config)
+        maker = MultiObservationMapMaker(config).prepare(observations)
         assert min(bucket.envelope.sample_count for bucket in maker.layout.buckets) >= 64
         accumulate(maker)
 
@@ -309,7 +323,7 @@ def test_two_level_preconditioner_solves_the_same_system():
     )
     config.solver = SolverConfig(rtol=1e-10, max_steps=500)
     observations = [GappyLazyGroundObservation(seed=i, n_samples=256) for i in range(2)]
-    expected = MultiObservationMapMaker(observations, config=config).make_maps()
+    expected = MultiObservationMapMaker(config).make_maps(observations)
     for spectrum, which in [
         ('preconditioned', 'small'),
         ('system', 'small'),
@@ -318,7 +332,7 @@ def test_two_level_preconditioner_solves_the_same_system():
         config.solver.two_level = TwoLevelConfig(
             rank=4, which=which, spectrum=spectrum, tol=1e-8, max_restarts=50
         )
-        results = MultiObservationMapMaker(observations, config=config).make_maps()
+        results = MultiObservationMapMaker(config).make_maps(observations)
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-8), (spectrum, which)
 
 
@@ -329,19 +343,17 @@ def test_solve_resumes_from_its_checkpoint(tmp_path: Path):
     )
     config.solver = SolverConfig(rtol=1e-10, max_steps=500)
     observations = [GappyLazyGroundObservation(seed=i, n_samples=256) for i in range(2)]
-    expected = MultiObservationMapMaker(observations, config=config).make_maps()
+    expected = MultiObservationMapMaker(config).make_maps(observations)
     assert expected.solver_stats['num_steps'] > 6
 
     # a solve that runs out of steps saves its last iterate...
     config.solver = SolverConfig(rtol=1e-10, max_steps=6, checkpoint_every=4)
-    stopped = MultiObservationMapMaker(observations, config=config).make_maps(tmp_path)
+    stopped = MultiObservationMapMaker(config).make_maps(observations, tmp_path)
     assert not stopped.solver_stats['converged']
     assert int(np.load(tmp_path / 'checkpoint.npz')['n_steps']) == 6
 
     # ...which a resume with the same budget leaves as it is
-    unchanged = MultiObservationMapMaker(observations, config=config).make_maps(
-        tmp_path, resume=True
-    )
+    unchanged = MultiObservationMapMaker(config).make_maps(observations, tmp_path, resume=True)
     assert unchanged.solver_stats['resumed_after'] == 6
     assert unchanged.solver_stats['num_steps'] == 6
     assert len(unchanged.solver_stats['residuals']) == 1  # no step taken in this run
@@ -349,7 +361,7 @@ def test_solve_resumes_from_its_checkpoint(tmp_path: Path):
 
     # ...which a solve with more steps resumes, deleting it once converged
     config.solver = SolverConfig(rtol=1e-10, max_steps=500, checkpoint_every=4)
-    maker = MultiObservationMapMaker(observations, config=config)
+    maker = MultiObservationMapMaker(config).prepare(observations)
     resumed = maker.make_maps(tmp_path, resume=True)
     assert resumed.solver_stats['converged']
     assert resumed.solver_stats['resumed_after'] == 6
@@ -413,12 +425,12 @@ def _config(
 
 def test_nested_healpix_gives_the_ring_map():
     observations = _observations('sotodlib')
-    ring = MultiObservationMapMaker(
-        observations, config=_config('healpix', 'IQU', identity_noise=True)
-    ).make_maps()
+    ring = MultiObservationMapMaker(_config('healpix', 'IQU', identity_noise=True)).make_maps(
+        observations
+    )
     nested = MultiObservationMapMaker(
-        observations, config=_config('healpix', 'IQU', identity_noise=True, ordering='nest')
-    ).make_maps()
+        _config('healpix', 'IQU', identity_noise=True, ordering='nest')
+    ).make_maps(observations)
     assert np.array_equal(
         hp.reorder(np.asarray(nested.hit_map), n2r=True), np.asarray(ring.hit_map)
     )
@@ -451,7 +463,7 @@ class TestGapTreatmentMapMaker:
         """The full solve completes and yields a finite map over gappy observations."""
         observations = [GappyLazyGroundObservation(seed=i) for i in range(2)]
         config = self._config(GapTreatment.FILL)
-        results = MultiObservationMapMaker(observations, config=config).make_maps()
+        results = MultiObservationMapMaker(config).make_maps(observations)
         assert all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(results.map))
         assert bool(jnp.all(jnp.isfinite(results.icov)))
         assert jnp.all(results.hit_map >= 0)
@@ -480,7 +492,7 @@ class TestGapTreatmentMapMaker:
             config.gaps.nested = NestedConfig(inner_steps=200)
             config.gaps.explicit = ExplicitGapsConfig(resolution=0.0)
             config.gaps.max_flagged_fraction = 0.5
-            results = MultiObservationMapMaker(observations, config=config).make_maps()
+            results = MultiObservationMapMaker(config).make_maps(observations)
             assert results.observations is not None
             assert results.observations['over_gap_budget'].to_list() == [0, 0]
             maps.append(results.map.data)
@@ -498,7 +510,7 @@ class TestGapTreatmentMapMaker:
         """The probed budget only sizes the amplitudes: the system, and the map, are the same."""
         observations = [GapProbingLazyGroundObservation(seed=i) for i in range(2)]
         makers = [
-            MultiObservationMapMaker(observations, config=self._explicit_config(probe))
+            MultiObservationMapMaker(self._explicit_config(probe)).prepare(observations)
             for probe in (False, True)
         ]
         splines = [[g for g in maker._gap_splines if g is not None] for maker in makers]
@@ -516,7 +528,7 @@ class TestGapTreatmentMapMaker:
                 return super().probe(*args, **kwargs)._replace(sample_rate=None)
 
         config = self._explicit_config(probe=False)
-        maker = MultiObservationMapMaker([RatelessObservation(seed=0)], config=config)
+        maker = MultiObservationMapMaker(config).prepare([RatelessObservation(seed=0)])
         with pytest.raises(ValueError, match='sample rate'):
             _ = maker._gap_splines
 
@@ -527,13 +539,13 @@ class TestGapTreatmentMapMaker:
             GapProbingLazyGroundObservation(gappy=False, seed=1),
         ]
         config = self._explicit_config(probe=True)
-        results = MultiObservationMapMaker(observations, config=config).make_maps()
+        results = MultiObservationMapMaker(config).make_maps(observations)
         assert results.observations is not None and results.detectors is not None
         n_gappy = results.observations['n_detectors'][0]
         assert results.observations['over_gap_budget'].to_list() == [n_gappy, 0]
         assert results.detectors['over_gap_budget'].sum() == n_gappy
 
-        expected = MultiObservationMapMaker(observations[1:], config=config).make_maps()
+        expected = MultiObservationMapMaker(config).make_maps(observations[1:])
         assert eqx.tree_equal(results.hit_map, expected.hit_map)
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
 
@@ -542,13 +554,13 @@ class TestGapTreatmentMapMaker:
         config = self._config(GapTreatment.NESTED)
         config.gaps.max_flagged_fraction = 0.1  # the gappy observation flags 15% of its samples
         mixed = [GappyLazyGroundObservation(seed=0), FakeLazyGroundObservation(seed=1)]
-        results = MultiObservationMapMaker(mixed, config=config).make_maps()
+        results = MultiObservationMapMaker(config).make_maps(mixed)
         assert results.observations is not None and results.detectors is not None
         n_gappy = results.observations['n_detectors'][0]
         assert results.observations['over_flagged'].to_list() == [n_gappy, 0]
         assert results.detectors['over_flagged'].sum() == n_gappy
 
-        expected = MultiObservationMapMaker([mixed[1]], config=config).make_maps()
+        expected = MultiObservationMapMaker(config).make_maps([mixed[1]])
         assert eqx.tree_equal(results.hit_map, expected.hit_map)
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)
 
@@ -556,11 +568,11 @@ class TestGapTreatmentMapMaker:
         """The ``real & valid`` gate: a failed load is read as filler and never gap-filled."""
         config = self._config(GapTreatment.FILL)
         mixed = [GappyLazyGroundObservation(seed=0), FailingLazyObservation(seed=1)]
-        results = MultiObservationMapMaker(mixed, config=config).make_maps()
+        results = MultiObservationMapMaker(config).make_maps(mixed)
         assert results.failed_observations == ['failing_obs']
         assert all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(results.map))
 
         good_only = [GappyLazyGroundObservation(seed=0)]
-        expected = MultiObservationMapMaker(good_only, config=config).make_maps()
+        expected = MultiObservationMapMaker(config).make_maps(good_only)
         assert eqx.tree_equal(results.hit_map, expected.hit_map)
         assert eqx.tree_equal(results.map, expected.map, rtol=1e-6, atol=1e-6)

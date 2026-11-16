@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Ensemble.zip` takes `strides`, to hand a leaf whole to every member or per segment (#498)
 - The strides and member axes of an ensemble may be given as a prefix of the pytree they describe, one value for a whole subtree (#498)
 - `DeferredOperator(build, *members)`, the operator `build(*members)` built when applied: lifted over a `StackedEnsemble`, it keeps the ensemble's arrays at their strides (#499)
+- `AdditionOperator` over a list of operands takes `in_strides` and `out_strides`, None or 1: where 1, the vector holds a list with one entry per operand, which reads and writes its own (#503)
 
 ### Changed
 

@@ -385,13 +385,8 @@ def test_strided_sum_tags_need_the_same_strides_on_both_sides():
     [
         (lambda: _ensemble('stacked'), 2, 'None, 1 or "segment"'),
         (lambda: _ensemble('stacked'), 'segment', 'owner index'),
-        (
-            lambda: [HomothetyOperator(2.0, in_structure=jax.ShapeDtypeStruct((M,), jnp.float64))],
-            1,
-            'an ensemble of operands',
-        ),
     ],
-    ids=['stride', 'segment', 'not-an-ensemble'],
+    ids=['stride', 'segment'],
 )
 def test_strided_sum_rejects_invalid_strides(operands, strides, match):
     with pytest.raises(ValueError, match=match):

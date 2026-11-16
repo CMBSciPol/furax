@@ -6,7 +6,7 @@ import pytest
 from numpy.testing import assert_allclose
 
 from furax.core import DenseBlockDiagonalOperator, StackedEnsemble
-from furax.mapmaking._bucket import MemberOperator, segment_ensemble
+from furax.mapmaking._bucket import MemberOperator
 
 N = 3
 OWNER = np.array([0, 0, 1, 2])  # four tiles of three observations
@@ -37,13 +37,5 @@ def test_member_operator_over_the_segments_of_the_tiles():
     blocks = jr.normal(k[0], (OWNER.max() + 1, N, N))
     x = jr.normal(k[1], (OWNER.max() + 1, N))
     tiles = StackedEnsemble(len(OWNER), _dense(blocks), 'segment', owner=jnp.asarray(OWNER))
-    op = MemberOperator(
-        segment_ensemble(tiles), in_structure=jax.ShapeDtypeStruct(x.shape, x.dtype)
-    )
+    op = MemberOperator(tiles.by_segment(), in_structure=jax.ShapeDtypeStruct(x.shape, x.dtype))
     assert_allclose(op(x), jnp.einsum('...ij,...j->...i', blocks, x), rtol=1e-12)
-    with pytest.raises(ValueError, match='varies with the tile'):
-        segment_ensemble(
-            StackedEnsemble(
-                len(OWNER), jnp.ones((len(OWNER), N)), owner=jnp.asarray(OWNER), segments=3
-            )
-        )

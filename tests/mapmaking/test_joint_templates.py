@@ -7,14 +7,17 @@ Backed by the file-free synthetic observations (no sotodlib/toast, no fixtures):
 
 from dataclasses import replace
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 from polars.testing import assert_frame_equal
 
+from furax.core import StackedEnsemble
 from furax.mapmaking import ReaderField
-from furax.mapmaking._model import TEMPLATES
+from furax.mapmaking._bucket import bucket_map_normal, bucket_normal
+from furax.mapmaking._tile import TEMPLATES
 from furax.mapmaking.config import (
     AzimuthSynchronousConfig,
     CommonModeConfig,
@@ -108,8 +111,8 @@ def test_mixed_explicit_and_implicit():
             azimuth_synchronous=_azimuth_spline(6, False),
         )
     )
-    acc = accumulate(MultiObservationMapMaker(cfg).prepare(_ground_obs()))
-    templates = acc.buckets[0].template
+    buckets, _ = accumulate(MultiObservationMapMaker(cfg).prepare(_ground_obs()))
+    templates = buckets[0].template
     assert list(templates.explicit[TEMPLATES].operator.templates) == ['hwp_synchronous']
     assert list(templates.implicit.operator.templates) == ['azimuth_synchronous']
 
@@ -130,9 +133,9 @@ def test_two_level_preconditioner_with_explicit_templates():
 def test_spline_drift_has_amplitudes_per_detector_and_knot():
     spline = SplineDriftConfig(samples_per_knot=128, explicit=True)
     cfg = _config(TemplatesConfig(spline_drift=spline))
-    acc = accumulate(MultiObservationMapMaker(cfg).prepare(_ground_obs()))
+    _, totals = accumulate(MultiObservationMapMaker(cfg).prepare(_ground_obs()))
     # (tile, det, knot): one tile per observation, 1024 // 128 knots, plus 2
-    assert acc.rhs[TEMPLATES][0]['spline_drift'].shape == (2, 8, 10)
+    assert totals.rhs[TEMPLATES][0]['spline_drift'].shape == (2, 8, 10)
 
 
 @pytest.mark.parametrize(
@@ -158,8 +161,8 @@ def test_demodulated_streams_fitted_alike_form_one_template(name, option, templa
         template.samples_per_knot = option
     else:
         template.n_knots = option
-    acc = accumulate(MultiObservationMapMaker(cfg).prepare(_ground_obs()))
-    operator = acc.buckets[0].template.implicit.operator
+    buckets, _ = accumulate(MultiObservationMapMaker(cfg).prepare(_ground_obs()))
+    operator = buckets[0].template.implicit.operator
     assert {key: t.streams for key, t in operator.templates.items()} == templates
 
 
@@ -309,6 +312,29 @@ def test_amplitudes_shared_by_detectors_are_returned_per_observation(name, templ
     assert amplitudes.shape[0] == 2  # one set of amplitudes per observation
 
 
+@pytest.mark.parametrize(
+    'normal',
+    [
+        pytest.param(lambda tiles: bucket_normal(tiles, None), id='system'),
+        pytest.param(lambda tiles: bucket_map_normal(tiles, binned=True), id='binned'),
+        pytest.param(lambda tiles: bucket_map_normal(tiles, binned=False), id='white'),
+    ],
+)
+def test_the_normal_system_of_a_bucket_holds_the_arrays_of_its_tiles(normal):
+    # Memory: the system of each tile reads the arrays of the tiles in place, those the tiles of
+    # an observation share -- its boresight pointing, its shared templates -- held once per
+    # observation rather than copied for each of its tiles.
+    cfg = replace(_quadrupolar_config(_T2P_QUADRUPOLE), detector_tile_size=3)
+    run = MultiObservationMapMaker(cfg).prepare(_ground_obs(n_dets=7, focal_plane_radius=0.2))
+    tiles = accumulate(run)[0][0]
+    members = normal(tiles).operands
+    assert isinstance(members, StackedEnsemble)
+    held = {id(leaf) for leaf in jax.tree.leaves(tiles.stacked)}
+    arrays = [leaf for leaf in jax.tree.leaves(members.stacked) if isinstance(leaf, jax.Array)]
+    assert all(id(leaf) in held for leaf in arrays)
+    assert members.strides.count('segment') == tiles.strides.count('segment') > 0
+
+
 @pytest.mark.parametrize(('batch', 'n_buffered'), [(0, 8), (64, 8), (3, 9)])
 def test_only_observations_larger_than_a_batch_are_padded(batch, n_buffered):
     # 8 detectors: a batch of 64 holds them all, unpadded; batches of 3 need a ninth
@@ -328,21 +354,24 @@ def test_several_observations_per_device_match_single_observations(monkeypatch, 
     observations = _hwp_obs(n_obs=10)
 
     maker = MultiObservationMapMaker(cfg).prepare(observations)
-    together = accumulate(maker)
+    _, together = accumulate(maker)
     (bucket,) = maker.layout.buckets
     assert bucket.tiles_per_device >= 2
-    alone = [accumulate(MultiObservationMapMaker(cfg).prepare([obs])) for obs in observations]
+    alone = [accumulate(MultiObservationMapMaker(cfg).prepare([obs]))[1] for obs in observations]
 
-    assert_allclose(together.hit_map, sum(acc.hit_map for acc in alone))
+    assert_allclose(together.hit_map, sum(totals.hit_map for totals in alone))
     assert_allclose(
-        together.rhs['map'].data, sum(acc.rhs['map'].data for acc in alone), rtol=1e-12, atol=1e-12
+        together.rhs['map'].data,
+        sum(totals.rhs['map'].data for totals in alone),
+        rtol=1e-12,
+        atol=1e-12,
     )
     # (tile, ...), with one tile per observation
     template_rhs = np.asarray(together.rhs[TEMPLATES][0]['hwp_synchronous'])
-    for observation, acc in enumerate(alone):
+    for observation, totals in enumerate(alone):
         (segment,) = np.flatnonzero(bucket.segment_observations == observation)
         (tile,) = bucket.tiles_of(segment)
-        alone_rhs = acc.rhs[TEMPLATES][0]['hwp_synchronous']
+        alone_rhs = totals.rhs[TEMPLATES][0]['hwp_synchronous']
         assert_allclose(template_rhs[tile], np.asarray(alone_rhs)[0])
 
 

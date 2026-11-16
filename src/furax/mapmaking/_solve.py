@@ -12,13 +12,16 @@ from jaxtyping import Array, PyTree
 
 import furax.tree
 from furax import AbstractLinearOperator
+from furax.core import AdditionOperator, BlockDiagonalOperator, BlockSelectOperator, StackedEnsemble
 from furax.linalg import CGResult, LowRankTerms, cg, lanczos_tr
 from furax.linalg._lanczos import LanczosWhich
+from furax.obs.stokes import StokesType
 
+from ._bucket import bucket_normal, bucket_response, preconditioner, ridge
 from ._checkpoint import CHECKPOINT_FILES, SolveCheckpoint
 from .config import SolverConfig, TwoLevelConfig
 from .layout import TilePlacement
-from .preconditioner import make_two_level_preconditioner
+from .preconditioner import BJPreconditioner, make_two_level_preconditioner
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +46,7 @@ class MapMakingSystem:
 
     Its unknowns are a dictionary of the map, under `'map'`, and of the amplitudes solved for with
     it, under the name of their kind (see
-    [`AMPLITUDE_KINDS`][furax.mapmaking._bucket.AMPLITUDE_KINDS]).
+    [`AMPLITUDE_STRIDES`][furax.mapmaking._tile.AMPLITUDE_STRIDES]).
     """
 
     A: AbstractLinearOperator
@@ -54,6 +57,63 @@ class MapMakingSystem:
     """Approximate inverse of `A`."""
     injected_b: PyTree | None = None
     """The right-hand side for the injected simulated sky, if any."""
+
+    @classmethod
+    def create(
+        cls,
+        buckets: list[StackedEnsemble],
+        rhs: dict[str, Any],
+        S: AbstractLinearOperator,
+        BJ: BJPreconditioner,
+        sky: StokesType | None = None,
+    ) -> 'MapMakingSystem':
+        r"""The GLS normal system $J^\top W' J x = J^\top W' d$ over the selected pixels.
+
+        Args:
+            buckets: The [`Tile`][furax.mapmaking._tile.Tile]s of each bucket.
+            rhs: The right-hand side accumulated by the pass over the data, with the map RHS on
+                the full sky (see [`PassTotals.rhs`][furax.mapmaking._pass.PassTotals.rhs]).
+            S: Selection of the estimated pixels out of the full sky grid.
+            BJ: Block-Jacobi preconditioner.
+            sky: A simulated sky on the full grid, whose right-hand side `injected_b` is added.
+
+        Returns:
+            The system to solve. Its unknowns are a dictionary of the selected sky pixels, under
+            `'map'`, and of the amplitudes of each kind, one block per bucket.
+        """
+        # Explicit templates and gaps are configured for the run, so every bucket has them or none.
+        kinds = buckets[0].template.kinds
+
+        # The unknowns are the selected sky pixels, then, per kind of amplitudes present, one block
+        # per bucket, of which each bucket's system reads and writes its own
+        b = rhs | {'map': S(rhs['map'])}
+        strides = {'map': None} | dict.fromkeys(kinds, 1)
+        normals = [bucket_normal(tiles, S) for tiles in buckets]
+        terms: list[AbstractLinearOperator] = [
+            AdditionOperator(normals, sequential=True, in_strides=strides)
+        ]
+        injected_b = None
+        if sky is not None:
+            responses = [bucket_response(tiles, S) for tiles in buckets]
+            injected_b = AdditionOperator(
+                responses, sequential=True, in_strides=None, out_strides=strides
+            )(sky)
+
+        # The ridge the Gram inverses were factored with acts on the amplitudes alone, so it is
+        # one term over them all, outside the passes over the TOD.
+        for kind in kinds:
+            ridged = [ridge(tiles, kind) for tiles in buckets]
+            assert all(r is None for r in ridged) or all(r is not None for r in ridged)
+            if ridged[0] is not None:
+                amplitudes = BlockSelectOperator(kind, in_structure=terms[0].in_structure)
+                terms.append((amplitudes.T @ BlockDiagonalOperator(ridged) @ amplitudes).reduce())
+
+        # The map is preconditioned by the block-Jacobi preconditioner restricted to the selected
+        # pixels, the amplitudes of each kind block-diagonally over the buckets
+        inverses = {kind: [preconditioner(tiles, kind) for tiles in buckets] for kind in kinds}
+        M = BlockDiagonalOperator({'map': (S @ BJ.I @ S.T).reduce()} | inverses)
+        A = AdditionOperator(terms, sequential=True)
+        return cls(A, b, M, injected_b)
 
     def solve(
         self,

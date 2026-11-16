@@ -66,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax-so-map` logs the excluded observations as a warning with their reasons, and adds one line per observation read, the start of each solve and a progress line every 10 CG steps (#432)
 - `furax-so-map` shows the messages below WARNING of process 0 only on the console, and its log files also hold the messages logged before they were created (#432)
 - The multi-observation mapmaker's pass over the data runs on the ensemble engine: a `HostEnsemble` of each bucket's slots replaces the hand-rolled accumulation loop (#401)
-- The multi-observation mapmaker's left-hand side (`BucketNormalOperator`, `MemberOperator`) runs on the ensemble engine (#414)
+- The multi-observation mapmaker's left-hand side runs on the ensemble engine (#414)
 - `LazyPreprocSOTODLibObservation` now caches each preprocessing group in a file of its own, shared by runs that select or join the wafers differently (#450)
 - `furax-so-map` and `furax-so-cache` select every wafer by default, instead of `ws0`; `--wafer` selects a subset, and the value `all` is removed (#449)
 - Documentation: the navigation is pinned in the left sidebar, and the user-guide URLs use dashes, e.g. `user-guide/getting-started/` (#460)

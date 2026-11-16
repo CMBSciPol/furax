@@ -167,8 +167,13 @@ def test_extras_roundtrip(tmp_path):
                 'valid_sample_fraction': [None, None],
                 'load_seconds': [1.5, None],
                 'error': [None, None],
+                'chi2': [1.02, None],
             },
-            schema_overrides={'valid_sample_fraction': pl.Float64, 'error': pl.String},
+            schema_overrides={
+                'valid_sample_fraction': pl.Float64,
+                'error': pl.String,
+                'chi2': pl.Float64,
+            },
         ),
         detectors=pl.DataFrame(
             {

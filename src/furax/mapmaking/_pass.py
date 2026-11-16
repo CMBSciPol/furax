@@ -26,6 +26,7 @@ from furax.obs.landscapes import StokesLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, StokesI, StokesType
 
+from ._diagnostics import tile_statistics
 from ._gaps import GapSplines
 from ._injection import inject, unpadded
 from ._observation import ReaderField
@@ -39,7 +40,7 @@ from ._tile import (
     low_rank_tile_spectra,
     restrict_streams,
 )
-from .config import GapTreatment, InjectionMode, MapMakingConfig, WeightingMode
+from .config import DiagnosticsConfig, GapTreatment, InjectionMode, MapMakingConfig, WeightingMode
 from .gap_filling import gap_fill
 from .layout import TileBucket, TilePlacement
 from .lowrank import LowRankNoiseModel, ModesCore, fit_low_rank_spectra
@@ -138,6 +139,37 @@ def pass_kernel(
             # from the same data; build it once before the `cond`, minding `restrict_streams`.
             tod = jax.lax.cond(use, lambda: _filled(data, padding, config, landscape), lambda: raw)
         return _contribution(data, tod, padding, use, config, landscape, gaps, noise_model)
+
+    return kernel
+
+
+def residual_kernel(
+    config: MapMakingConfig, landscape: StokesLandscape, diagnostics: DiagnosticsConfig
+) -> Callable[[tuple[Any, tuple[Tile, dict[str, Any]]], StokesType | None, StokesType], Any]:
+    """The kernel of the residual pass: the statistics of one detector tile.
+
+    The member is one tile's read, as for [`pass_kernel`][], paired with the
+    [`Tile`][furax.mapmaking._tile.Tile] the pass over the data built from it and the amplitudes
+    of each kind it reads, solved for. The sky to inject, if any, and the map solved for, on the
+    whole sky, are shared inputs. The kernel returns the statistics of
+    [`tile_statistics`][furax.mapmaking._diagnostics.tile_statistics].
+
+    Args:
+        config: The mapmaking configuration.
+        landscape: The landscape of the maps.
+        diagnostics: The statistics to compute.
+    """
+    sky_landscape = landscape.with_stokes(config.read_stokes)
+    replaces = config.injection is not None and config.injection.mode == InjectionMode.REPLACE
+
+    def kernel(member, sky, solution):
+        (data, padding, _), (tile, amplitudes) = member
+        data = _prepared(data, padding, sky, config, sky_landscape, replaces)
+        tod = data[ReaderField.SAMPLE_DATA]
+        if config.read_stokes != landscape.stokes:
+            # The extra streams read, the I one for the T2P template, stay out of the model
+            _, tod = restrict_streams(data, tod, landscape.stokes)
+        return tile_statistics(tile, tod, {'map': solution} | amplitudes, diagnostics)
 
     return kernel
 

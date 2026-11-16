@@ -81,16 +81,24 @@ def modes_correction(
     modes take from the right-hand side; to $B x$, from the normal system. The amplitudes are
     `(segment, frequency, mode, 2)`. The arguments are those of [`bucket_normal`][].
     """
+    strides = _unknown_strides(tiles)
+    B = _summed(Tile.modes, tiles, selection, in_strides=strides, out_strides='segment')
+    return B.T @ modes_core(tiles)
+
+
+def modes_core(tiles: StackedEnsemble) -> BlockDiagonalOperator:
+    r"""$K$ of each observation of a bucket, on the amplitudes of its correlated modes.
+
+    The amplitudes are `(segment, frequency, mode, 2)` (see
+    [`Tile.modes_core`][furax.mapmaking._tile.Tile.modes_core]).
+    """
     cores = lift(lambda tile: tile.modes_core, tiles)
     assert isinstance(cores, StackedEnsemble)
     cores = cores.by_segment()
     # small computations: every member of a device is evaluated at once, vectorized
-    K = BlockDiagonalOperator(
+    return BlockDiagonalOperator(
         replace(cores, policy=replace(cores.policy, batch=cores.size_per_device))
     )
-    strides = _unknown_strides(tiles)
-    B = _summed(Tile.modes, tiles, selection, in_strides=strides, out_strides='segment')
-    return B.T @ K
 
 
 def block_jacobi(buckets: list[StackedEnsemble], binned: bool) -> BJPreconditioner:

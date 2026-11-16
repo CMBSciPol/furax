@@ -8,6 +8,7 @@ import healpy as hp
 import jax
 import jax.numpy as jnp
 import numpy as np
+import polars as pl
 import pytest
 from numpy.testing import assert_allclose
 
@@ -16,6 +17,7 @@ from furax.mapmaking import AbstractLazyObservation, MapMakingConfig, MultiObser
 from furax.mapmaking._reader import detector_tile_structure
 from furax.mapmaking.config import (
     CirculantBridgeConfig,
+    DiagnosticsConfig,
     ExplicitGapsConfig,
     GapsConfig,
     GapTreatment,
@@ -460,10 +462,16 @@ def test_low_rank_weight_on_detector_tiles_gives_the_map_of_whole_observations(g
             pointing=PointingConfig(on_the_fly=True, interpolation='nearest'),
             gaps=gaps,
             detector_tile_size=tile_size,
+            diagnostics=DiagnosticsConfig(bands=(0.5,), residual_map=False),
         )
-        maps.append(MultiObservationMapMaker(config).make_maps(observations).map.data)
+        maps.append(MultiObservationMapMaker(config).make_maps(observations))
     whole, tiles = maps
-    assert_allclose(tiles, whole, atol=1e-10 * float(np.abs(whole).max()))
+    assert_allclose(
+        tiles.map.data, whole.map.data, atol=1e-10 * float(np.abs(whole.map.data).max())
+    )
+    assert whole.detectors is not None and tiles.detectors is not None
+    for column in ('chi2', 'chi2_0_0.5hz', 'chi2_0.5_nyquisthz'):
+        assert_allclose(tiles.detectors[column], whole.detectors[column], rtol=1e-8)
 
 
 def test_nested_healpix_gives_the_ring_map():
@@ -564,6 +572,34 @@ class TestGapTreatmentMapMaker:
         assert maps[1].observations is not None
         assert maps[1].observations['over_gap_budget'].to_list() == [0, 0]
         assert eqx.tree_equal(maps[1].map, maps[0].map, rtol=1e-8, atol=1e-8)
+
+    @pytest.mark.parametrize('treatment', [GapTreatment.INNER_MASK, GapTreatment.EXPLICIT])
+    def test_diagnostics_report_the_residual_chi2(self, treatment):
+        observations = [GapProbingLazyGroundObservation(seed=i) for i in range(2)]
+        if treatment == GapTreatment.EXPLICIT:
+            config = self._explicit_config(probe=True)
+        else:
+            config = self._config(treatment)
+        config.diagnostics = DiagnosticsConfig(bands=(1.0,))
+        results = MultiObservationMapMaker(config).make_maps(observations)
+        assert results.observations is not None and results.detectors is not None
+        chi2 = results.observations['chi2'].to_numpy()
+        assert np.all(np.isfinite(chi2)) and np.all(chi2 > 0)
+        kept = results.detectors.filter(~pl.col('over_flagged') & ~pl.col('over_gap_budget'))
+        for column in ('chi2', 'chi2_0_1hz', 'chi2_1_nyquisthz'):
+            assert kept[column].is_finite().all()
+        assert results.residual_map is not None
+        assert all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(results.residual_map))
+
+    def test_diagnostics_turn_on_and_off_independently(self):
+        observations = [GapProbingLazyGroundObservation(seed=i) for i in range(2)]
+        config = self._config(GapTreatment.INNER_MASK)
+        config.diagnostics = DiagnosticsConfig(chi2=False, bands=(), residual_map=True)
+        results = MultiObservationMapMaker(config).make_maps(observations)
+        assert results.residual_map is not None
+        assert results.observations is not None and results.detectors is not None
+        assert results.observations['chi2'].is_null().all()
+        assert not any(c.startswith('chi2') for c in results.detectors.columns)
 
     def test_explicit_gaps_need_the_probed_sample_rate(self):
         class RatelessObservation(GapProbingLazyGroundObservation):

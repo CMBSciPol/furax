@@ -21,8 +21,9 @@ from furax.obs.stokes import StokesType
 from furax.profiling import format_bytes
 
 from . import _report
-from ._bucket import block_jacobi
+from ._bucket import block_jacobi, modes_core
 from ._catalog import ObservationCatalog, ProbeRecord, Read, detector_table, gather_rows
+from ._diagnostics import statistics_correction
 from ._gaps import GapSplines, bridge_amplitudes, gap_budget, knot_spacing, max_gap_amplitudes
 from ._injection import load_sky
 from ._landscape import explicit_wcs_geometry, scan_wcs_footprint
@@ -32,12 +33,27 @@ from ._observation import (
     ObservationProbe,
     ReaderField,
 )
-from ._pass import PASS_REDUCTIONS, PassTotals, bucket_tiles, fit_kernel, fit_low_rank, pass_kernel
+from ._pass import (
+    PASS_REDUCTIONS,
+    PassTotals,
+    bucket_tiles,
+    fit_kernel,
+    fit_low_rank,
+    pass_kernel,
+    residual_kernel,
+)
 from ._provenance import provenance
 from ._reader import ObservationReader, detector_tile_structure, tile_reads
 from ._solve import MapMakingSystem
-from ._tile import Tile
-from .config import GapTreatment, InjectionMode, MapMakingConfig, NoiseSource, WeightingMode
+from ._tile import AMPLITUDE_STRIDES, Tile
+from .config import (
+    DiagnosticsConfig,
+    GapTreatment,
+    InjectionMode,
+    MapMakingConfig,
+    NoiseSource,
+    WeightingMode,
+)
 from .layout import TileBucket, TileLayout, TilePlacement
 from .lowrank import LowRankNoiseModel, ModesCore
 from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
@@ -215,6 +231,22 @@ class MapMakingRun[T]:
             sky = solved.x['map']
             amplitudes = _report.template_amplitudes(buckets, solved.x, self.placement) or None
 
+            statistics = residual_map = None
+            if (diagnostics := self.config.diagnostics_config) is not None:
+                start = time.perf_counter()
+                scanned_sky = None if is_response else injected_sky
+                statistics, residual_rhs = self._residual_statistics(
+                    buckets, solved.x | {'map': S.T(sky)}, scanned_sky, diagnostics
+                )
+                if residual_rhs is not None:
+                    # binned under the white weight, the system of the block-Jacobi preconditioner
+                    residual_map = S.T((S @ BJ.I @ S.T).reduce()(S(residual_rhs)))
+                message = f'Residual pass in {time.perf_counter() - start:.0f} s'
+                if 'chi2' in statistics:
+                    chi2, good = statistics['chi2'].sum(), statistics['good'].sum()
+                    message += f': chi2/sample={chi2 / max(good, 1):.4f} over {int(good)} samples'
+                logger.info(message)
+
         # Built only now, so that their copies are not held through the solve
         return MapMakingResults(
             map=S.T(sky),  # all sky pixels including those not estimated (zero)
@@ -224,13 +256,15 @@ class MapMakingRun[T]:
             landscape=self.landscape,
             template_amplitudes=amplitudes,
             injected_map=None if solved.injected_sky is None else S.T(solved.injected_sky),
-            observations=self._catalog.to_table(drops),
+            residual_map=residual_map,
+            observations=self._catalog.to_table(drops, statistics),
             # the noise model covers the streams of the model's TOD, not all those read
             detectors=detector_table(
                 self._catalog.reads,
                 noise_parameters,
                 buckets[0].template.tod_format.stokes,
                 drops,
+                None if diagnostics is None else _detector_statistics(statistics, diagnostics),
             ),
         )
 
@@ -490,6 +524,78 @@ class MapMakingRun[T]:
         tiles = bucket_tiles(outputs, resolved, bucket, self.placement, self.fit_config, cores)
         return tiles, outputs
 
+    def _residual_statistics(
+        self,
+        buckets: list[StackedEnsemble],
+        x: dict[str, Any],
+        scanned_sky: StokesType | None,
+        diagnostics: DiagnosticsConfig,
+    ) -> tuple[dict[str, np.ndarray], StokesType | None]:
+        r"""One more pass over the data: the residual statistics of every tile, and its binned map.
+
+        Args:
+            buckets: The tiles of each bucket.
+            x: The unknowns solved for, the `'map'` on the whole sky.
+            scanned_sky: The simulated sky scanned into the TOD, if any.
+            diagnostics: The statistics to compute.
+
+        Returns:
+            The `good` samples of each detector and those of its `chi2` and band `bands`, with
+            their expected `band_samples`, turned on, per observation in observation order,
+            `([band,] obs, stream, det)`, zero-padded; and the residual binned on the whole sky,
+            before its normalization, if turned on. Under a low-rank noise model, the correlated
+            modes are marginalized from the $\chi^2$ once the tiles of each observation are summed.
+        """
+        kinds = buckets[0].template.kinds
+        shared_sky = None if scanned_sky is None else self.placement.broadcast(scanned_sky)
+        solution = self.placement.broadcast(x['map'])
+        names = ['good', *(n for n in ('chi2', 'bands') if getattr(diagnostics, n))]
+        if diagnostics.bands:
+            names.append('band_samples')
+        statistics_on = diagnostics.chi2 or bool(diagnostics.bands)
+        kernel = residual_kernel(self.fit_config, self.landscape, diagnostics)
+        per_bucket: dict[str, list[np.ndarray]] = {name: [] for name in names}
+        residual_map = self.landscape.zeros() if diagnostics.residual_map else None
+        for b, (reader, tiles) in enumerate(zip(self.readers, buckets, strict=True)):
+            reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
+            reads = tile_reads(
+                self.layout.buckets[b], reader, self.placement.axis, self._prefetches_reads
+            )
+            # each tile reads the tile the pass built, and its own amplitudes or its observation's
+            amplitudes = {kind: x[kind][b] for kind in kinds}
+            strides = jax.tree.leaves(
+                {
+                    kind: jax.tree.map(lambda _, k=kind: AMPLITUDE_STRIDES[k], x[kind][b])
+                    for kind in kinds
+                }
+            )
+            reads = reads.zip((tiles.stacked, amplitudes), strides=(*tiles.strides, *strides))
+            modes = statistics_on and tiles.template.modes_core is not None
+            spec: dict[str, Any] = dict.fromkeys(names, 1)
+            if residual_map is not None:
+                spec['map'] = 'sum'
+            if modes:
+                spec |= {'modes': 'segment_sum', 'low': 1}
+            out, _ = map_reduce(kernel, reads, spec, shared_sky, solution)
+            if residual_map is not None:
+                residual_map = furax.tree.add(residual_map, out['map'])
+            if modes:
+                out = _marginalized_modes(buckets[b], out, diagnostics)
+            for name, arrays in per_bucket.items():
+                arrays.append(self.placement.gather(out[name]))
+        # each tile is (stream, det), after the band axis, if any
+        layout = self.placement.layout
+        statistics = {
+            name: layout.to_observation_order(
+                arrays, detector_axis=3 if name in ('bands', 'band_samples') else 2
+            )
+            for name, arrays in per_bucket.items()
+        }
+        for name in ('bands', 'band_samples'):
+            if name in statistics:
+                statistics[name] = np.moveaxis(statistics[name], 1, 0)
+        return statistics, residual_map
+
     def _fit_low_rank(
         self, bucket: TileBucket, reader: ObservationReader[T], sky: StokesType | None
     ) -> tuple[LowRankNoiseModel, ModesCore]:
@@ -737,6 +843,47 @@ class MapMakingRun[T]:
 def _first_detectors(bucket: TileBucket) -> Array:
     """The first detector of each tile of a bucket in its observation, `(tile,)`."""
     return jnp.asarray(bucket.tile_starts, jnp.int32)
+
+
+def _marginalized_modes(
+    tiles: StackedEnsemble, out: dict[str, Any], diagnostics: DiagnosticsConfig
+) -> dict[str, Any]:
+    """The statistics of a bucket under a low-rank noise model, its modes marginalized.
+
+    `out` holds those under the diagonal weight, and the sums `modes` and the low-frequency
+    coefficients `low` of the residual that give their correction (see
+    [`statistics_correction`][furax.mapmaking._diagnostics.statistics_correction]).
+    """
+    z = modes_core(tiles)(out['modes'])
+    zipped = tiles.zip((out['low'], z), strides=(1, 'segment'))
+
+    def correct(member):
+        tile, (low, z_o) = member
+        return statistics_correction(tile, low, z_o, diagnostics)
+
+    names = [n for n in ('chi2', 'bands') if getattr(diagnostics, n)]
+    correction, _ = map_reduce(correct, zipped, dict.fromkeys(names, 1))
+    return out | {name: out[name] - value for name, value in correction.items()}
+
+
+def _detector_statistics(
+    statistics: dict[str, np.ndarray] | None, diagnostics: DiagnosticsConfig
+) -> dict[str, np.ndarray] | None:
+    r"""The reduced $\chi^2$ of each detector, overall and per band, `(obs, stream, det)`."""
+    if statistics is None or len(statistics) == 1:  # the good samples alone
+        return None
+    good = statistics['good']
+    usable = good > 0
+    columns = {}
+    if 'chi2' in statistics:
+        columns['chi2'] = np.where(usable, statistics['chi2'] / np.where(usable, good, 1), np.nan)
+    edges = [0.0, *diagnostics.bands] if 'bands' in statistics else []
+    for k, low in enumerate(edges):
+        high = f'{edges[k + 1]:g}' if k + 1 < len(edges) else 'nyquist'
+        samples = statistics['band_samples'][k]
+        reduced = statistics['bands'][k] / np.where(samples > 0, samples, 1)
+        columns[f'chi2_{low:g}_{high}hz'] = np.where(usable & (samples > 0), reduced, np.nan)
+    return columns
 
 
 def _excluded_message(failures: list[tuple[str, str]], limit: int = 5) -> str:

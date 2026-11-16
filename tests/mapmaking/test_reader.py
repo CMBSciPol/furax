@@ -6,7 +6,8 @@ import pytest
 from numpy.testing import assert_array_equal
 
 from furax.mapmaking import ObservationBufferShape, ObservationReader
-from furax.mapmaking._reader import ObservationRecord, TileReader
+from furax.mapmaking._reader import ObservationRecord, TileReader, tile_reads
+from furax.mapmaking.layout import TileBucket
 from tests.mapmaking.helpers import FakeLazyObservation, FakeObservation
 
 
@@ -101,6 +102,29 @@ def test_tile_reader_cuts_tiles_out_of_the_observations():
     _, _, read = tiles.filler
     assert not read
     assert jax.tree.map(np.shape, tiles.read(1, 0)[0]) == jax.tree.map(np.shape, tiles.filler[0])
+
+
+def test_tile_reads_map_each_tile_of_a_bucket_to_its_detectors():
+    # two tiles of the first observation on one device, one tile and a padding tile on the other
+    shapes = [ObservationBufferShape(3, 500), ObservationBufferShape(2, 500)]
+    bucket = TileBucket.create(shapes, [0, 1], n_devices=2, detector_tile_size=2)
+    assert bucket.valid.tolist() == [True, True, True, False]
+    reader = ObservationReader.from_observations(
+        [FakeLazyObservation(n_dets=n, n_samples=500) for n in (3, 2)],
+        requested_fields=['sample_data'],
+        shapes=[shape.whole_tiles(bucket.tile_size) for shape in shapes],
+    )
+    reads = tile_reads(bucket, reader, 'tile', prefetch=False)
+    tods = [jax.tree.leaves(reader.read_host(i)[0]['sample_data'])[0] for i in range(2)]
+
+    for tile, (observation, start) in enumerate([(0, 0), (0, 2), (1, 0)]):
+        data, _, read = reads.read(tile)
+        assert read
+        assert_array_equal(
+            jax.tree.leaves(data['sample_data'])[0], tods[observation][..., start : start + 2, :]
+        )
+    _, _, read = reads.read(3)
+    assert not read  # the padding tile reads filler
 
 
 def test_tile_reader_slices_the_detector_uids_with_the_tiles():

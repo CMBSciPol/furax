@@ -26,6 +26,36 @@ def build_acquisition_operator(
     dtype: DTypeLike = jnp.float64,
 ) -> AbstractLinearOperator:
     """Build an acquisition operator for a single observation. Does not include masking."""
+    response, pointing = _acquisition_factors(
+        landscape,
+        q_sky_bore,
+        q_bore_det,
+        hwp_angles,
+        demodulated=demodulated,
+        pointing_on_the_fly=pointing_on_the_fly,
+        pointing_batch_samples=pointing_batch_samples,
+        pointing_interpolate=pointing_interpolate,
+        dtype=dtype,
+    )
+    return response @ pointing
+
+
+def _acquisition_factors(
+    landscape: StokesLandscape,
+    q_sky_bore: Quaternion,
+    q_bore_det: Quaternion,
+    hwp_angles: Array | None = None,
+    *,
+    demodulated: bool = False,
+    pointing_on_the_fly: bool = True,
+    pointing_batch_samples: int | None = None,
+    pointing_interpolate: bool = False,
+    dtype: DTypeLike = jnp.float64,
+) -> tuple[AbstractLinearOperator, PointingOperator]:
+    """The factors of the acquisition operator $H = R P$.
+
+    The pointing $P$ reads the sky; the response $R$ acts on the TOD it gives.
+    """
     # The TOD shape
     ndet = q_bore_det.shape[0]
     nsamp = q_sky_bore.shape[0]
@@ -52,7 +82,7 @@ def build_acquisition_operator(
         stokes=landscape.stokes,
     )
     if not has_hwp:
-        return polarizer @ pointing
+        return polarizer, pointing
 
     # If there is a HWP, we are in the boresight frame so we need another rotation
     #
@@ -72,7 +102,7 @@ def build_acquisition_operator(
     # In the demodulated case, there is no polarizer
     # And the gamma angle is flipped!
     if demodulated:
-        return 0.5 * rot.T @ pointing
+        return 0.5 * rot.T, pointing
 
     # In the general case, we include polarizer and HWP
     hwp = HWPOperator.create(
@@ -81,4 +111,4 @@ def build_acquisition_operator(
         stokes=landscape.stokes,
         angles=hwp_angles,
     )
-    return polarizer @ rot @ hwp @ pointing
+    return polarizer @ rot @ hwp, pointing

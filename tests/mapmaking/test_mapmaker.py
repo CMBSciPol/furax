@@ -106,21 +106,21 @@ def test_model_matches_the_reader_and_the_landscape(stokes, demodulated):
     (bucket,) = maker.layout.buckets
     (reader,) = maker.readers
     assert reader.count == len(observations)
-    tiles = accumulate(maker).buckets[0]
+    tiles = accumulate(maker)[0][0]
     assert tiles.size == bucket.n_tiles
-    model = tiles.template.model
-    # structures compared ignoring sharding (the model is built sharded inside shard_map)
-    assert structure_equal(model.map_structure, maker.landscape.structure)
-    # the samples are read in float32, and cast to the dtype of the model
+    template = tiles.template
+    # structures compared ignoring sharding (the template is built sharded inside shard_map)
+    assert structure_equal(template.H.in_structure, maker.landscape.structure)
+    # the samples are read in float32, and cast to the dtype of the template
     tile, _ = detector_tile_structure(reader.out_structure, bucket.tile_size)
-    dtype = model.tod_format.dtype
+    dtype = template.tod_format.dtype
     expected = jax.tree.map(lambda s: jax.ShapeDtypeStruct(s.shape, dtype), tile['sample_data'])
-    assert structure_equal(model.tod_format.structure, expected)
+    assert structure_equal(template.tod_format.structure, expected)
     # a single white noise model covers both paths; on a demodulated TOD, its per-detector sigma
     # carries the stream axis (after the tile axis of the accumulation)
-    assert isinstance(model.noise_model, WhiteNoiseModel)
+    assert isinstance(template.noise_model, WhiteNoiseModel)
     if demodulated:
-        assert tiles.stacked.model.noise_model.sigma.shape[1] == len(stokes)
+        assert tiles.stacked.noise_model.sigma.shape[1] == len(stokes)
 
 
 @pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])

@@ -1091,7 +1091,7 @@ class TestSharded:
 
     def test_hand_built_policy_evaluates_without_the_ambient_mesh(self):
         # a policy built directly with the axis, without `shard` -- the pattern of
-        # `bucket_apply` and of the mapmaker -- carries no mesh: the engine reads it from
+        # `bucket_tiles` and `tile_reads` -- carries no mesh: the engine reads it from
         # the laid-out leaves
         reference, _ = map_reduce(
             _apply, _stacked(), {'sum': 'sum', 'stack': 1, 'shared': None}, 3.0

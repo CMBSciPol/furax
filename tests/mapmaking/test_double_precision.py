@@ -14,7 +14,7 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking import MultiObservationMapMaker, ObservationReader
-from furax.mapmaking._model import _sample_rate
+from furax.mapmaking._tile import _sample_rate
 from furax.mapmaking.config import NoiseFitConfig, SolverConfig, WeightingConfig
 from tests.mapmaking.helpers import FakeLazyObservation, FakeObservation, accumulate, healpix_config
 
@@ -111,7 +111,7 @@ def test_float32_tod_accumulates_like_float64(detector_tile_size: int) -> None:
             shapes=shapes,
         ),
     )
-    float64, float32 = accumulate(reference), accumulate(maker)
+    (_, float64), (_, float32) = accumulate(reference), accumulate(maker)
     assert float32.rhs['map'].data.dtype == jnp.float64
     assert_array_equal(float32.hit_map, float64.hit_map)
     assert_allclose(float32.rhs['map'].data, float64.rhs['map'].data, rtol=1e-12)

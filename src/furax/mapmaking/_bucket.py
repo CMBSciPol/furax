@@ -150,7 +150,7 @@ def _amplitude_operator(
     operators = lift(lambda tile: getattr(tile.amplitudes(kind), part), tiles)
     assert isinstance(operators, StackedEnsemble)
     if AMPLITUDE_KINDS[kind] == 'observation':
-        operators = segment_ensemble(operators)
+        operators = operators.by_segment()
     return MemberOperator(operators, in_structure=structure)
 
 
@@ -236,19 +236,6 @@ def tile_system(
     return BlockRowOperator(blocks), (W @ model.F).reduce()
 
 
-def segment_ensemble(ensemble: StackedEnsemble) -> StackedEnsemble:
-    """An ensemble of tiles holding only segment and shared leaves, as one of its segments.
-
-    Raises:
-        ValueError: If a leaf varies with the tile.
-    """
-    if any(isinstance(s, int) for s in ensemble.strides):
-        raise ValueError('a leaf varies with the tile, not with its segment')
-    assert ensemble.segments is not None
-    strides = tuple(None if s is None else 1 for s in ensemble.strides)
-    return StackedEnsemble(ensemble.segments, ensemble.stacked, strides, policy=ensemble.policy)
-
-
 @symmetric
 class BucketNormalOperator(AbstractLinearOperator):
     r"""$\sum_t J_t^\top W'_t J_t$ over the detector tiles of a bucket.
@@ -309,7 +296,7 @@ class MemberOperator(AbstractLinearOperator):
 
     The operators are one per tile of a bucket, such as the inverses of the Grams of the template
     amplitudes of its detectors, which precondition them, or one per segment, for the template
-    amplitudes the detectors of an observation share (see [`segment_ensemble`][]).
+    amplitudes the detectors of an observation share (see [`StackedEnsemble.by_segment`][furax.core.StackedEnsemble.by_segment]).
     """
 
     operators: StackedEnsemble

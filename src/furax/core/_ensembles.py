@@ -507,6 +507,40 @@ class StackedEnsemble(Ensemble):
             segments=self.segments,
         )
 
+    def by_segment(self) -> 'StackedEnsemble':
+        """The ensemble seen over its segments: one member per segment.
+
+        Member j holds entry j of each segment leaf, and the shared leaves whole. It keeps the
+        mesh axis of the policy, so that each device holds its own segments, but not the batch,
+        which counts members.
+
+        Examples:
+            Five members in two segments: the view has one member per segment.
+
+            >>> ensemble = StackedEnsemble(
+            ...     5, jnp.array([10.0, 20.0]), 'segment', owner=jnp.array([0, 0, 0, 1, 1])
+            ... )
+            >>> out, _ = map_reduce(lambda offset: 2 * offset, ensemble.by_segment(), 1)
+            >>> out.tolist()
+            [20.0, 40.0]
+
+        Raises:
+            ValueError: If the members are not grouped in segments, or if a leaf varies with the
+                member rather than with its segment.
+        """
+        if self.segments is None:
+            raise ValueError('the members are not grouped in segments')
+        if any(isinstance(s, int) for s in self.strides):
+            raise ValueError('a leaf varies with the member, not with its segment')
+        strides = tuple(None if s is None else 1 for s in self.strides)
+        return StackedEnsemble(
+            self.segments,
+            self.stacked,
+            strides,
+            axes=self.axes,
+            policy=Policy(axis=self.policy.axis),
+        )
+
     def shard(self, axis: str) -> 'StackedEnsemble':
         """The ensemble laid out over a mesh axis: consecutive members on each device.
 

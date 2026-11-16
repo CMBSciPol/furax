@@ -797,6 +797,32 @@ def test_segment_ensembles_are_validated(build, match):
         build()
 
 
+def test_by_segment_has_one_member_per_segment():
+    ensemble = StackedEnsemble(
+        N,
+        {'o': _offsets(), 't': _shared()},
+        {'o': 'segment', 't': None},
+        owner=jnp.asarray(OWNER),
+        policy=Policy(batch=2),
+    )
+    view = ensemble.by_segment()
+    assert view.size == N_SEGMENTS and view.owner is None
+    assert view.policy.batch == 1  # the batch counted members
+    out, kinds = map_reduce(lambda m: m['o'] + m['t'], view, 'auto')
+    assert kinds == 1
+    assert_allclose(out, _offsets() + _shared())
+
+
+@pytest.mark.parametrize(
+    ('ensemble', 'match'),
+    [(_segmented, 'varies with the member'), (_stacked, 'not grouped')],
+    ids=['member-leaf', 'no-segments'],
+)
+def test_by_segment_rejects(ensemble, match):
+    with pytest.raises(ValueError, match=match):
+        ensemble().by_segment()
+
+
 _SHARED = jnp.ones(N_SAMPS)
 
 

@@ -86,6 +86,13 @@ class TestClosures:
         assert_allclose(operator.as_matrix(), np.diag(_diagonals().sum(axis=0)))
 
 
+def test_addition_as_matrix_skips_the_padded_members():
+    valid = jnp.arange(N) < N - 2
+    operator = AdditionOperator(dataclasses.replace(_ensemble('stacked'), valid=valid))
+    assert_allclose(operator.as_matrix(), np.diag(_diagonals()[valid].sum(axis=0)))
+    assert_allclose(operator.as_matrix() @ _x(), operator(_x()))
+
+
 @pytest.mark.parametrize('representation', ['list', 'stacked'])
 class TestMemberAxis:
     """The composites over an ensemble whose stacked sides carry the member axis at 1."""
@@ -268,6 +275,16 @@ def test_composites_close_a_sharded_ensemble():
         normal = (column.T @ column).reduce()
         assert isinstance(normal, AdditionOperator)
         assert_allclose(normal(x), (diagonals**2 * x).sum(axis=0))
+
+
+@pytest.mark.distributed
+def test_addition_as_matrix_over_a_sharded_ensemble():
+    n = jax.device_count()
+    diagonals = jnp.arange(float(n * M)).reshape(n, M) + 1.0
+    ensemble = lift(lambda m: DiagonalOperator(m['d']), StackedEnsemble(n, {'d': diagonals}, 1))
+    with jax.set_mesh(jax.make_mesh((n,), ('obs',))):
+        matrix = AdditionOperator(ensemble.shard('obs')).as_matrix()
+    assert_allclose(matrix, np.diag(diagonals.sum(axis=0)))
 
 
 @pytest.mark.distributed

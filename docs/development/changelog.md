@@ -88,6 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ReaderField.BORESIGHT_QUATERNIONS` (`'boresight_quaternions'`) → `ReaderField.Q_SKY_BORE` (`'q_sky_bore'`), `DETECTOR_QUATERNIONS` (`'detector_quaternions'`) → `Q_BORE_DET` (`'q_bore_det'`)
   - `get_boresight_quaternions()` → `get_q_sky_bore()`, `get_detector_quaternions()` → `get_q_bore_det()` on every observation interface
   - the `boresight_quaternions` / `detector_quaternions` arguments of `PointingOperator.create` and `build_acquisition_operator` → `q_sky_bore` / `q_bore_det`, and of `ScreenSampler.from_wind` → `q_hor_bore` / `q_bore_det`
+- `AdditionOperator.as_matrix()` over an `Ensemble` traces the member once, whatever the ensemble size (#502)
 
 ### Fixed
 
@@ -105,6 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MultiObservationMapMaker` builds the weight of each detector tile once, with its final mask, instead of building it again to gate out padding tiles and failed observations (#477)
 - The strides and axes of `StackedEnsemble`, `HostEnsemble` and `Ensemble.zip` can follow a pytree holding `None`, and `lift` accepts functions whose output holds `None` (#486)
 - `xieta_to_quat`, formerly `XiEtaAngles.to_quaternion`, has finite derivatives at the boresight (#509)
+- `AdditionOperator.as_matrix()` over an `Ensemble` leaves out the padded members, and accepts a sharded ensemble (#502)
 
 ## [0.17.2] - 2026-10-30
 

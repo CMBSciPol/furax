@@ -82,6 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** the classes `IsoAngles`, `LonLatAngles`, `AzElAngles` and `XiEtaAngles` are replaced by functions; the last angle (`psi` or `gamma`) defaults to zero, and the inverse returns a tuple (#509)
   - `IsoAngles(theta, phi, psi).to_quaternion()` → `iso_to_quat(theta, phi, psi)`, `IsoAngles.from_quaternion(q)` → `quat_to_iso(q)`
   - likewise `lonlat_to_quat` / `quat_to_lonlat`, `azel_to_quat` / `quat_to_azel`, `xieta_to_quat` / `quat_to_xieta`
+- `AdditionOperator.as_matrix()` over an `Ensemble` traces the member once, whatever the ensemble size (#502)
 
 ### Fixed
 

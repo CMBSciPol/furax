@@ -324,13 +324,11 @@ def test_stacked_leaves_match_their_strides():
 
 def test_zip_pairs_each_member_with_its_slice():
     v = jnp.arange(float(N))
-    for ensemble in (_stacked(), _list()):
+    for ensemble in (_stacked(), _list(), _host()):
         member, entry = ensemble.zip({'v': v}).fetch(2)
         assert_allclose(member['x'], _xs()[2])
         assert_allclose(member['t'], _shared())
         assert_allclose(entry['v'], v[2])
-    with pytest.raises(NotImplementedError, match='zipped'):
-        _host().zip({'v': v})
 
 
 def test_strides_are_canonicalized_at_construction():
@@ -695,6 +693,53 @@ def test_segments_combine_over_their_members(representation, batch):
         assert_allclose(out[key], expected[key])
 
 
+def _zipped() -> tuple[dict[str, jax.Array], dict[str, int | str | None]]:
+    """Arrays a host ensemble of `_host_segmented` is zipped with, and their strides."""
+    ys = 10 * _xs()
+    per_segment = -_offsets()
+    shared = jnp.full(N_SAMPS, 3.0)
+    x = {'y': ys, 's': per_segment, 'c': shared}
+    return x, {'y': 1, 's': 'segment', 'c': None}
+
+
+def _zipped_apply(member):
+    m, z = member
+    return {
+        'member': m['x'] + z['y'],
+        'segment': z['s'] + m['o'],
+        'total': z['c'] * m['x'],
+    }
+
+
+@pytest.mark.parametrize('batch', [1, 2, 8])
+def test_host_zip_matches_the_resident_zip(batch):
+    x, strides = _zipped()
+    policy = Policy(batch=batch)
+    resident = _segmented(policy=policy).zip(x, strides=strides)
+    expected, expected_kinds = map_reduce(_zipped_apply, resident, SEGMENT_SPEC)
+    host = _host_segmented(policy=policy).zip(x, strides=strides)
+    out, kinds = map_reduce(_zipped_apply, host, SEGMENT_SPEC)
+    assert kinds == expected_kinds == {'member': 1, 'segment': 'segment', 'total': 'segment_sum'}
+    for key in expected:
+        assert_allclose(out[key], expected[key])
+    _, entry = host.fetch(5)
+    assert_allclose(entry['s'], x['s'][OWNER[5]])
+
+
+@pytest.mark.parametrize(
+    ('x', 'strides', 'axes', 'match'),
+    [
+        (jnp.zeros((N - 1, 2)), 1, 0, 'stride-1 leaf of 8 members'),
+        (jnp.zeros((N, 2)), 'segment', 0, 'segment leaf of 4 segments'),
+        (jnp.zeros((2, N)), 1, 1, 'member-leading'),
+    ],
+    ids=['members', 'segments', 'axes'],
+)
+def test_host_zip_rejects(x, strides, axes, match):
+    with pytest.raises(ValueError, match=match):
+        _host_segmented().zip(x, axes=axes, strides=strides)
+
+
 @pytest.mark.parametrize('batch', [1, 2])
 def test_padded_members_drop_from_their_segment(batch):
     # member 4 is the only one of segment 2, which keeps zeros
@@ -1013,6 +1058,22 @@ class TestSharded:
                 ensemble = _host_segmented(valid=valid, policy=Policy(axis='obs'))
             out, _ = map_reduce(_segment_apply, ensemble, SEGMENT_SPEC)
             assert out['total'].sharding.spec[0] == 'obs'  # each device keeps its segments
+            for key in expected:
+                assert_allclose(out[key], expected[key])
+
+    @pytest.mark.parametrize('batch', [1, 2])
+    def test_host_zip_reads_the_entries_of_each_device(self, batch):
+        x, strides = _zipped()
+        valid = np.array([True] * 7 + [False])
+        expected, _ = map_reduce(
+            _zipped_apply,
+            _segmented(valid=jnp.asarray(valid)).zip(x, strides=strides),
+            SEGMENT_SPEC,
+        )
+        with jax.set_mesh(self._pair_mesh()):
+            policy = Policy(axis='obs', batch=batch)
+            host = _host_segmented(valid=valid, policy=policy).zip(x, strides=strides)
+            out, _ = map_reduce(_zipped_apply, host, SEGMENT_SPEC)
             for key in expected:
                 assert_allclose(out[key], expected[key])
 

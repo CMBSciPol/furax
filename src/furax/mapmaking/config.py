@@ -21,6 +21,8 @@ __all__ = [
     'WeightingMode',
     'NoiseSource',
     'NoiseFitConfig',
+    'LowRankNoiseFitConfig',
+    'CirculantBridgeConfig',
     'SolverConfig',
     'TwoLevelConfig',
     'GapsConfig',
@@ -58,6 +60,9 @@ class WeightingMode(Enum):
 
     TOEPLITZ = 'toeplitz'
     """Banded Toeplitz weighting ($1/f$ noise model)."""
+
+    LOW_RANK = 'low_rank'
+    """Detector-correlated weighting: a diagonal plus a few common modes per frequency bin."""
 
 
 class NoiseSource(Enum):
@@ -221,6 +226,76 @@ class NoiseFitConfig:
 
 
 @dataclass
+class CirculantBridgeConfig:
+    """The padding after the data of each observation under the circulant low-rank weight.
+
+    The weight applies across the end of the buffer to its start: without padding, the end of the
+    data meets its start there, and the step between them spreads noise into the map. Every
+    observation gets at least `length` of padding, more when its bucket pads it further. With
+    explicit gaps, a cubic spline over the whole padding, solved for with the map, bridges the end
+    of the data to its start across it; under other gap treatments, the padding is left empty.
+
+    The knots of the spline are `resolution` apart next to the data, where the noise it bridges is
+    correlated with the data, and their spacing grows by `growth` towards the middle of the
+    padding, where a smooth spline is all the noise needs: a long padding takes few more
+    amplitudes than a short one.
+    """
+
+    length: float = 32.0
+    """The least padding after the data, in seconds."""
+
+    resolution: float = 6.4
+    """The knot spacing of the spline next to the data, in seconds."""
+
+    growth: float = 1.5
+    """The factor by which the knot spacing grows towards the middle of the padding; 1 for
+    uniform knots."""
+
+    def __post_init__(self) -> None:
+        if self.length <= 0:
+            raise ValueError(f"'length' must be positive, got {self.length}")
+        if self.resolution <= 0:
+            raise ValueError(f"'resolution' must be positive, got {self.resolution}")
+        if self.growth < 1:
+            raise ValueError(f"'growth' must be at least 1, got {self.growth}")
+
+
+@dataclass
+class LowRankNoiseFitConfig:
+    """Options for fitting a detector-correlated noise model: a diagonal plus a few common modes."""
+
+    bin_edges: tuple[float, ...] = (0.0015, 0.003, 0.006, 0.012, 0.025, 0.05, 0.1, 0.2)
+    """Frequency bin edges in Hz, increasing. The modes are fitted in each bin between two
+    consecutive edges. Below the first edge the first bin applies; above the last edge the noise
+    is uncorrelated and white."""
+
+    max_modes: int = 18
+    """Maximum number of correlated modes per bin."""
+
+    threshold_quantile: float = 0.99
+    """A mode is kept when its eigenvalue exceeds this quantile of the largest eigenvalue of pure
+    noise, from the Marchenko-Pastur edge and the Tracy-Widom fluctuation. Between 0.9 and 0.999."""
+
+    taper: float = 2.0
+    """Duration in seconds of the cosine taper applied to each end of the observation before its
+    Fourier transform."""
+
+    whitening_band: tuple[float, float] = (1.0, 3.0)
+    """Frequency band in Hz where each channel is assumed white, to set its noise level."""
+
+    single_lim: float = 0.55
+    """A mode is rejected when one channel carries a component of its unit vector above this."""
+
+    deproject: bool = True
+    """Whether to fit the model on the TOD less its fit by the configured templates, which their
+    amplitudes absorb in the solve, rather than on the TOD itself."""
+
+    bridge: CirculantBridgeConfig | None = field(default_factory=CirculantBridgeConfig)
+    """The padding, and its spline, between the end of the data and its start, where the weight
+    wraps around; `None` for none."""
+
+
+@dataclass
 class WeightingConfig:
     """Configuration for the inverse-noise / weighting matrix used in mapmaking.
 
@@ -250,10 +325,13 @@ class WeightingConfig:
     fitting: NoiseFitConfig = field(default_factory=NoiseFitConfig)
     """Options for fitting the noise PSD to the data."""
 
+    low_rank: LowRankNoiseFitConfig = field(default_factory=LowRankNoiseFitConfig)
+    """Options for fitting the detector-correlated noise model. Only relevant in `LOW_RANK` mode."""
+
     @property
     def diagonal_matrix(self) -> bool:
         """True when the inverse-noise matrix is diagonal (identity or white)."""
-        return self.mode != WeightingMode.TOEPLITZ
+        return self.mode not in (WeightingMode.TOEPLITZ, WeightingMode.LOW_RANK)
 
 
 @dataclass
@@ -1232,6 +1310,8 @@ class MapMakingConfig:
                 'Templates with correlated weighting require gaps.treatment=inner_mask, nested '
                 'or explicit.'
             )
+        if self.weighting.mode == WeightingMode.LOW_RANK:
+            self._check_low_rank()
         if self.templates is not None and not self.binned:
             self._check_explicit_templates()
         if (templates := self.templates) is not None:
@@ -1258,6 +1338,16 @@ class MapMakingConfig:
             ):
                 if isinstance(per_stream, dict):
                     self._check_stream_groups(f'templates.{name}', per_stream)
+
+    def _check_low_rank(self) -> None:
+        """Check that the detector-correlated weighting supports the config."""
+        if self.weighting.source != NoiseSource.FIT:
+            raise ValueError('weighting.mode=low_rank requires weighting.source=fit.')
+        if self.gaps.treatment in (GapTreatment.FILL, GapTreatment.NESTED):
+            # the nested weight solves with a banded Toeplitz N⁻¹, which the low-rank one is not
+            raise ValueError(
+                'weighting.mode=low_rank requires gaps.treatment=inner_mask or explicit.'
+            )
 
     def _check_explicit_templates(self) -> None:
         """Check that no template is implicit: a correlated weight needs them all explicit."""

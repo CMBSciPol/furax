@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 from collections.abc import Collection, Sequence
 from dataclasses import replace
@@ -22,7 +23,7 @@ from furax.profiling import format_bytes
 from . import _report
 from ._bucket import block_jacobi
 from ._catalog import ObservationCatalog, ProbeRecord, Read, detector_table, gather_rows
-from ._gaps import GapSplines, gap_budget, knot_spacing, max_gap_amplitudes
+from ._gaps import GapSplines, bridge_amplitudes, gap_budget, knot_spacing, max_gap_amplitudes
 from ._injection import load_sky
 from ._landscape import explicit_wcs_geometry, scan_wcs_footprint
 from ._observation import (
@@ -31,17 +32,21 @@ from ._observation import (
     ObservationProbe,
     ReaderField,
 )
-from ._pass import PASS_REDUCTIONS, PassTotals, bucket_tiles, pass_kernel
+from ._pass import PASS_REDUCTIONS, PassTotals, bucket_tiles, fit_kernel, fit_low_rank, pass_kernel
 from ._provenance import provenance
 from ._reader import ObservationReader, detector_tile_structure, tile_reads
 from ._solve import MapMakingSystem
 from ._tile import Tile
 from .config import GapTreatment, InjectionMode, MapMakingConfig, NoiseSource, WeightingMode
-from .layout import TileLayout, TilePlacement
+from .layout import TileBucket, TileLayout, TilePlacement
+from .lowrank import LowRankNoiseModel, ModesCore
 from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
 from .templates import required_reader_fields
 
 logger = logging.getLogger(__name__)
+
+_SAMPLE_RATE_TOLERANCE = 1e-3
+"""Relative spread of the observation sample rates the low-rank weighting accepts as one rate."""
 
 
 class MultiObservationMapMaker:
@@ -198,7 +203,7 @@ class MapMakingRun[T]:
             )
 
             response_sky = injected_sky if is_response else None
-            system = MapMakingSystem.create(buckets, totals.rhs, S, BJ, response_sky)
+            system = MapMakingSystem.create(buckets, totals.rhs, S, BJ, response_sky, totals.modes)
             if (two_level := self.config.solver.two_level) is not None:
                 system = system.deflate(two_level)
             solved = system.solve(
@@ -253,6 +258,7 @@ class MapMakingRun[T]:
         if scanned_sky is not None:
             sky = self.placement.broadcast(scanned_sky)
         buckets = []
+        modes: list[Array] = []
         for b in range(len(self.readers)):
             tiles, outputs = self._read_bucket(b, sky)
             hit_map = hit_map + outputs['hit_map']
@@ -261,10 +267,12 @@ class MapMakingRun[T]:
             for kind, kind_rhs in bucket_rhs.items():
                 if kind_rhs is not None:  # a kind of amplitudes the run has
                     rhs.setdefault(kind, []).append(kind_rhs)
+            if outputs['modes'] is not None:
+                modes.append(outputs['modes'])
             # the unfactored shared Gram must not stay on the devices through the next pass
             del outputs
             buckets.append(tiles)
-        return buckets, PassTotals(hit_map, rhs)
+        return buckets, PassTotals(hit_map, rhs, modes or None)
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -371,8 +379,11 @@ class MapMakingRun[T]:
         still falls back to a partial segment.
         """
         weighting = self.config.weighting
-        if weighting.mode == WeightingMode.IDENTITY or weighting.source != NoiseSource.FIT:
-            return self.config  # no PSD is estimated, so the segment length is unused
+        if weighting.source != NoiseSource.FIT or weighting.mode in (
+            WeightingMode.IDENTITY,
+            WeightingMode.LOW_RANK,  # fitted on the whole observation
+        ):
+            return self.config  # no Welch PSD is estimated, so the segment length is unused
         # not `_buffer_shapes`: a length padded further would admit a segment reaching the padding
         shortest = min(shape.sample_count for shape in self._probe_shapes)
         nperseg = min(weighting.fitting.nperseg, shortest)
@@ -463,13 +474,56 @@ class MapMakingRun[T]:
         and the segments, which is the layout of the bucket's tiles.
         """
         reader = self.readers[bucket_index]
-        reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         bucket = self.layout.buckets[bucket_index]
+        fitted = None
+        if self.config.weighting.mode == WeightingMode.LOW_RANK:
+            fitted = self._fit_low_rank(bucket, reader, sky)
+        reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         reads = tile_reads(bucket, reader, self.placement.axis, self._prefetches_reads)
+        cores = None
+        if fitted is not None:
+            models, cores = fitted
+            # each tile takes its rows of the model of its observation, where the fit left it
+            reads = reads.zip((models, _first_detectors(bucket)), strides=('segment', 1))
         kernel = pass_kernel(self.fit_config, self.landscape, self._gap_splines[bucket_index])
         outputs, resolved = map_reduce(kernel, reads, PASS_REDUCTIONS, sky)
-        tiles = bucket_tiles(outputs, resolved, bucket, self.placement, self.fit_config)
+        tiles = bucket_tiles(outputs, resolved, bucket, self.placement, self.fit_config, cores)
         return tiles, outputs
+
+    def _fit_low_rank(
+        self, bucket: TileBucket, reader: ObservationReader[T], sky: StokesType | None
+    ) -> tuple[LowRankNoiseModel, ModesCore]:
+        """A pass over the data of a bucket for its low-rank noise models, one per observation.
+
+        Each tile gives the spectrum and white level of its channels, in its rows of arrays of its
+        observation, summed over its tiles on the device that holds them; each observation is
+        then fitted there (see [`fit_low_rank`][furax.mapmaking._pass.fit_low_rank]). The detector
+        axis of the models is padded to a whole number of tiles.
+
+        Returns the models and their cores, their leaves `(segment, ...)`, on the devices.
+        """
+        detectors = max(self._buffer_shapes[i].detector_count for i in bucket.observations)
+        capacity = -(-detectors // bucket.tile_size) * bucket.tile_size
+        sample_rate = self._probed_sample_rate
+        reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
+        reads = tile_reads(bucket, reader, self.placement.axis, self._prefetches_reads)
+        reads = reads.zip(_first_detectors(bucket))
+        kernel = fit_kernel(self.fit_config, self.landscape, capacity, sample_rate)
+        (spectra, level, n_real), _ = map_reduce(
+            kernel, reads, ('segment_sum', 'segment_sum', 'segment'), sky
+        )
+        models, cores = fit_low_rank(
+            spectra,
+            level,
+            n_real,
+            self.fit_config,
+            self.landscape,
+            capacity,
+            bucket.envelope.sample_count,
+            sample_rate,
+            self.placement.axis,
+        )
+        return models, cores
 
     @cached_property
     def _prefetches_reads(self) -> bool:
@@ -515,8 +569,67 @@ class MapMakingRun[T]:
             logger.info(
                 f'Bucket {b}: {budget} gap amplitudes per detector, knots every {spacing} samples'
             )
-            models.append(GapSplines(spacing, budget))
+            models.append(GapSplines(spacing, budget, *self._bridge(bucket)))
         return models
+
+    def _bridge(self, bucket: TileBucket) -> tuple[int, float, float]:
+        """The amplitude slots of the bridge of a bucket, its knot spacing in samples, its growth.
+
+        The slots fit the longest padding of the observations of the bucket; there are none
+        without a bridge.
+        """
+        if not self._bridge_samples:
+            return 0, 1.0, 1.0
+        bridge = self.config.weighting.low_rank.bridge
+        assert bridge is not None
+        spacing = bridge.resolution * self._probed_sample_rate
+        envelope = bucket.envelope.sample_count
+        shortest = min(self._probe_shapes[i].sample_count for i in bucket.observations)
+        slots = bridge_amplitudes(envelope - shortest, spacing, bridge.growth)
+        logger.info(
+            f'Bridge: {slots} amplitudes per channel over at most {envelope - shortest} samples'
+        )
+        return slots, spacing, bridge.growth
+
+    @cached_property
+    def _bridge_samples(self) -> int:
+        """The padding every observation gets after its data, for the circulant weight to wrap.
+
+        See [`CirculantBridgeConfig`][furax.mapmaking.config.CirculantBridgeConfig].
+        """
+        weighting = self.config.weighting
+        if (
+            weighting.mode != WeightingMode.LOW_RANK
+            or (bridge := weighting.low_rank.bridge) is None
+        ):
+            return 0
+        return max(math.ceil(bridge.length * self._probed_sample_rate), 4)
+
+    @cached_property
+    def _probed_sample_rate(self) -> float:
+        """The sample rate shared by the observations, from their probes.
+
+        The low-rank noise model places its frequency bins at it, which must be known before
+        compilation. An observation whose probe failed is left out here; its read fails later as
+        well.
+        """
+        rates = np.array(
+            [
+                p.sample_rate
+                for p in self._catalog.probes.values()
+                if isinstance(p, ProbeRecord) and p.sample_rate is not None
+            ]
+        )
+        if rates.size == 0:
+            raise RuntimeError('no observation probed its sample rate')
+        median = float(np.median(rates))
+        if np.ptp(rates) > _SAMPLE_RATE_TOLERANCE * median:
+            raise ValueError(
+                f'the observations have sample rates from {rates.min()} to {rates.max()} Hz: the '
+                'low-rank weighting needs a common one'
+            )
+        logger.info(f'Low-rank noise bins placed at the probed sample rate of {median:.6g} Hz')
+        return median
 
     def _knot_spacing(self, i: int, probe: ProbeRecord) -> int:
         """The knot spacing of the explicit gaps of observation `i`, in samples."""
@@ -530,10 +643,17 @@ class MapMakingRun[T]:
 
     @cached_property
     def _buffer_shapes(self) -> list[ObservationBufferShape]:
-        """The shapes the buckets and the readers size their buffers from."""
+        """The shapes the buckets and the readers size their buffers from.
+
+        These are the probed shapes, with the padding the circulant weight needs after the data.
+        """
+        shapes = [
+            shape._replace(sample_count=shape.sample_count + self._bridge_samples)
+            for shape in self._probe_shapes
+        ]
         if not self.config.fft_friendly_sample_count:
-            return self._probe_shapes
-        return [shape.fft_friendly() for shape in self._probe_shapes]
+            return shapes
+        return [shape.fft_friendly() for shape in shapes]
 
     @cached_property
     def _probe_shapes(self) -> list[ObservationBufferShape]:
@@ -578,12 +698,14 @@ class MapMakingRun[T]:
         n_proc = jax.process_count()
         need_intervals = ReaderField.SCANNING_INTERVALS in self.reader_fields
         explicit = self._explicit_gaps
+        # the low-rank noise model places its bins at the sample rate
+        rate = explicit or self.config.weighting.mode == WeightingMode.LOW_RANK
         # the good ranges size the gap amplitudes (`ExplicitGapsConfig.probe`)
         count_gaps = explicit and self.config.gaps.explicit.probe
         local: dict[int, ProbeRecord | str] = {}
         for i in range(jax.process_index(), self.n_observations, n_proc):
             try:
-                probe = self.observations[i].probe(need_intervals, explicit, count_gaps)
+                probe = self.observations[i].probe(need_intervals, rate, count_gaps)
                 local[i] = self._probe_record(probe)
             except Exception as error:
                 logger.exception('Probe of observation %d failed', i)
@@ -604,12 +726,17 @@ class MapMakingRun[T]:
             if gaps.explicit.probe and probe.good_ranges is not None:
                 assert gaps.max_flagged_fraction is not None  # required by explicit gaps
                 count = max_gap_amplitudes(probe.good_ranges, spacing, gaps.max_flagged_fraction)
-        return ProbeRecord(probe.shape, spacing, count)
+        return ProbeRecord(probe.shape, spacing, count, probe.sample_rate)
 
     @property
     def _explicit_gaps(self) -> bool:
         """Whether the gaps are explicit, their amplitudes solved for with the map."""
         return self.config.gap_treatment == GapTreatment.EXPLICIT
+
+
+def _first_detectors(bucket: TileBucket) -> Array:
+    """The first detector of each tile of a bucket in its observation, `(tile,)`."""
+    return jnp.asarray(bucket.tile_starts, jnp.int32)
 
 
 def _excluded_message(failures: list[tuple[str, str]], limit: int = 5) -> str:

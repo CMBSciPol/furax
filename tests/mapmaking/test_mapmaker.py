@@ -15,11 +15,14 @@ from furax.core._base import structure_equal
 from furax.mapmaking import AbstractLazyObservation, MapMakingConfig, MultiObservationMapMaker
 from furax.mapmaking._reader import detector_tile_structure
 from furax.mapmaking.config import (
+    CirculantBridgeConfig,
     ExplicitGapsConfig,
+    GapsConfig,
     GapTreatment,
     HealpixConfig,
     HWPSynchronousConfig,
     LandscapeConfig,
+    LowRankNoiseFitConfig,
     NestedConfig,
     NoiseFitConfig,
     NoiseSource,
@@ -37,6 +40,7 @@ from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
 from furax.obs.stokes import ValidStokesLiteral
 from tests.mapmaking.helpers import (
+    CorrelatedLazyGroundObservation,
     FailingLazyObservation,
     FakeLazyGroundObservation,
     FakeLazyObservation,
@@ -421,6 +425,45 @@ def _config(
         pomme_tau=pomme_tau,
         max_buckets=max_buckets,
     )
+
+
+@pytest.mark.parametrize(
+    'gaps',
+    [
+        GapsConfig(treatment=GapTreatment.INNER_MASK),
+        GapsConfig(
+            treatment=GapTreatment.EXPLICIT,
+            explicit=ExplicitGapsConfig(resolution=0.04),
+            max_flagged_fraction=0.5,
+        ),
+    ],
+    ids=['inner-mask', 'explicit-bridge'],
+)
+def test_low_rank_weight_on_detector_tiles_gives_the_map_of_whole_observations(gaps):
+    """The low-rank fit and its correlated modes span the tiles of each observation."""
+    observations = [
+        CorrelatedLazyGroundObservation(seed=i, n_dets=12, n_samples=1024) for i in range(2)
+    ]
+    maps = []
+    for tile_size in (0, 4):
+        config = MapMakingConfig(
+            weighting=WeightingConfig(
+                mode=WeightingMode.LOW_RANK,
+                low_rank=LowRankNoiseFitConfig(
+                    bin_edges=(0.5, 2.0, 8.0),
+                    max_modes=4,
+                    bridge=CirculantBridgeConfig(length=1.0, resolution=0.2),
+                ),
+            ),
+            solver=SolverConfig(rtol=1e-12, atol=0, max_steps=300),
+            landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8)),
+            pointing=PointingConfig(on_the_fly=True, interpolation='nearest'),
+            gaps=gaps,
+            detector_tile_size=tile_size,
+        )
+        maps.append(MultiObservationMapMaker(config).make_maps(observations).map.data)
+    whole, tiles = maps
+    assert_allclose(tiles, whole, atol=1e-10 * float(np.abs(whole).max()))
 
 
 def test_nested_healpix_gives_the_ring_map():

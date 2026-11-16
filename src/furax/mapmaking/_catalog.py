@@ -41,6 +41,8 @@ class ProbeRecord(NamedTuple):
     gap_amplitudes: int | None = None
     """The most amplitudes the explicit gaps of one of its detectors kept need at that spacing, if
     its good ranges were probed."""
+    sample_rate: float | None = None
+    """Its sample rate in Hz, if probed."""
 
 
 @dataclass

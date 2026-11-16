@@ -5,7 +5,13 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from furax import MaskOperator
-from furax.mapmaking._gaps import GapSplines, gap_budget, knot_spacing, max_gap_amplitudes
+from furax.mapmaking._gaps import (
+    GapSplines,
+    bridge_amplitudes,
+    gap_budget,
+    knot_spacing,
+    max_gap_amplitudes,
+)
 from furax.obs.stokes import StokesQU
 from tests.mapmaking.helpers import ranges
 
@@ -140,3 +146,29 @@ def test_knot_spacing_rounds_to_whole_samples(
     resolution: float, sample_rate: float, expected: int
 ) -> None:
     assert knot_spacing(resolution, sample_rate) == expected
+
+
+@pytest.mark.parametrize(('spacing', 'growth'), [(3.0, 1.0), (2.0, 1.5)])
+def test_bridge_spans_the_padding_in_its_own_slots(spacing: float, growth: float) -> None:
+    """A partition of unity over the padding, after the gap slots, on the channels with data."""
+    good, n_samples, budget = _mask(), 100, 70
+    bridge = bridge_amplitudes(good.shape[-1] - n_samples, spacing, growth)
+    structure = jax.ShapeDtypeStruct(good.shape, jnp.float64)
+    mask = MaskOperator.from_boolean_mask(jnp.asarray(good), in_structure=structure)
+    C = GapSplines(3, budget, bridge, spacing, growth).basis(mask, n_samples)
+    assert C.in_structure.shape == (*good.shape[:-1], budget + bridge)
+    matrix = np.asarray(C.as_matrix()).reshape(*good.shape, *good.shape[:-1], budget + bridge)
+    without = np.asarray(GapSplines(3, budget).basis(mask, n_samples).as_matrix())
+    assert_allclose(matrix[..., :budget].reshape(without.shape), without)  # the gaps unchanged
+    for channel in range(2):
+        tail = matrix[channel, :, channel, budget:]  # (samp, bridge)
+        assert_allclose(tail[:n_samples], 0)
+        assert_allclose(tail[n_samples:].sum(axis=-1), 1, atol=1e-12)
+        assert np.linalg.matrix_rank(tail[n_samples:]) == bridge
+    assert_allclose(matrix[2], 0)  # no data, nothing to bridge
+
+
+def test_bridge_amplitudes_grow_with_the_log_of_the_padding() -> None:
+    assert bridge_amplitudes(1001, 50.0, 1.0) == 20 + 3  # uniform knots, every 50 samples
+    long, short = bridge_amplitudes(10_000, 50.0, 1.5), bridge_amplitudes(1_000, 50.0, 1.5)
+    assert short < long < short + 15

@@ -17,13 +17,14 @@ import jax
 import jax.numpy as jnp
 from fastquat import Quaternion
 from jax.tree_util import register_dataclass
-from jaxtyping import Array, Int64, PyTree
+from jaxtyping import Array, Int, Int64, PyTree
 
 from furax import AbstractLinearOperator
 from furax.core import Policy, StackedEnsemble, lift, map_reduce
+from furax.obs import TODFormat
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.pointing import PointingOperator
-from furax.obs.stokes import StokesI, StokesType
+from furax.obs.stokes import Stokes, StokesI, StokesType
 
 from ._gaps import GapSplines
 from ._injection import inject, unpadded
@@ -35,11 +36,14 @@ from ._tile import (
     Tile,
     acquisition_operator,
     assemble_templates,
+    low_rank_tile_spectra,
     restrict_streams,
 )
-from .config import GapTreatment, InjectionMode, MapMakingConfig
+from .config import GapTreatment, InjectionMode, MapMakingConfig, WeightingMode
 from .gap_filling import gap_fill
 from .layout import TileBucket, TilePlacement
+from .lowrank import LowRankNoiseModel, ModesCore, fit_low_rank_spectra
+from .noise import NoiseModel
 from .templates.gram import factor
 from .weight import WeightOperator
 
@@ -58,6 +62,9 @@ PASS_REDUCTIONS = {
     # what the tiles of an observation share (boresight pointing, bases of the shared templates,
     # ...) is kept once per segment, the rest per tile
     'tile': 'auto',
+    # under a low-rank noise model, the amplitudes of the correlated modes of the data, summed
+    # over the tiles of each observation
+    'modes': 'segment_sum',
 }
 """How the engine combines the outputs of [`pass_kernel`][] over the tiles of a bucket (see
 `map_reduce`): the hit map and the map RHS are summed, and the rest is kept where it lives, per
@@ -77,15 +84,23 @@ class PassTotals:
     [`AMPLITUDE_STRIDES`][furax.mapmaking._tile.AMPLITUDE_STRIDES]) a list with the right-hand
     side of each bucket, `(tile, ...)`, or `(segment, ...)` for the amplitudes the detectors of an
     observation share."""
+    modes: list[Array] | None = None
+    r"""Under a low-rank noise model, the amplitudes $\sum_t T_t^\top D_t^{-1} M_t d_t$ of the
+    correlated modes of the data of each bucket, `(segment, frequency, mode, 2)` (see
+    [`Tile.modes`][furax.mapmaking._tile.Tile.modes]); `None` otherwise."""
 
 
 def pass_kernel(
-    config: MapMakingConfig, landscape: StokesLandscape, gaps: GapSplines | None = None
-) -> Callable[[tuple[Any, Any, Array], StokesType | None], dict[str, Any]]:
+    config: MapMakingConfig,
+    landscape: StokesLandscape,
+    gaps: GapSplines | None = None,
+) -> Callable[[Any, StokesType | None], dict[str, Any]]:
     r"""The kernel of the pass over a bucket: the contribution of one detector tile.
 
     The member is one tile's read, the triple `(data, padding, use)` restricted to the tile's
-    detectors; the sky to inject, if any, is a shared input that every member receives whole.
+    detectors; under a low-rank noise model, the pair of it and the model of the tile's observation
+    (see [`fit_low_rank`][]) with the tile's first detector, of which the tile takes its rows. The
+    sky to inject, if any, is a shared input that every member receives whole.
     The kernel returns a dictionary, keyed as [`PASS_REDUCTIONS`][]:
 
     - `'hit_map'`: the hit map of the tile's good samples;
@@ -96,26 +111,24 @@ def pass_kernel(
       of their Gram and under `'coarse'` their coarse amplitudes, both `None` without them. The
       Gram is factored once summed over the tiles;
     - `'tile'`: the [`Tile`][furax.mapmaking._tile.Tile], the Gram of the templates its
-      observation's detectors share not yet factored.
+      observation's detectors share not yet factored;
+    - `'modes'`: under a low-rank noise model, the amplitudes $T^\top D^{-1} M d$ of the
+      correlated modes of its data, `None` otherwise.
 
     Args:
         config: The mapmaking configuration.
         landscape: The landscape of the maps.
         gaps: The spline model of the explicit gaps of the bucket, if any.
     """
+    low_rank = config.weighting.mode == WeightingMode.LOW_RANK
     fill_gaps = config.gap_treatment == GapTreatment.FILL
     sky_landscape = landscape.with_stokes(config.read_stokes)
     replaces = config.injection is not None and config.injection.mode == InjectionMode.REPLACE
 
     def kernel(member, sky):
-        data, padding, use = member
-        # The TOD is read in float32, whatever the pipeline's dtype
-        tod = jax.tree.map(lambda x: x.astype(config.dtype), data[ReaderField.SAMPLE_DATA])
-        data = {**data, ReaderField.SAMPLE_DATA: tod}
-        if sky is not None:  # the samples to inject into, per detector
-            shape = jax.tree.leaves(tod)[0].shape
-            H = acquisition_operator(data, config, sky_landscape)
-            data = inject(H, sky, data, unpadded(padding, shape), replaces)
+        (data, padding, use), fitted = member if low_rank else (member, None)
+        data = _prepared(data, padding, sky, config, sky_landscape, replaces)
+        noise_model = None if fitted is None else _tile_model(*fitted, data)
         tod = raw = data[ReaderField.SAMPLE_DATA]
         if fill_gaps:
             # Gap filling needs whole observations, so it only runs with one tile per observation
@@ -124,9 +137,100 @@ def pass_kernel(
             # TODO: `_filled` and `_contribution` each build the tile (pointing, mask, noise fit)
             # from the same data; build it once before the `cond`, minding `restrict_streams`.
             tod = jax.lax.cond(use, lambda: _filled(data, padding, config, landscape), lambda: raw)
-        return _contribution(data, tod, padding, use, config, landscape, gaps)
+        return _contribution(data, tod, padding, use, config, landscape, gaps, noise_model)
 
     return kernel
+
+
+def fit_kernel(
+    config: MapMakingConfig, landscape: StokesLandscape, capacity: int, sample_rate: float
+) -> Callable[[tuple[Any, Array], StokesType | None], tuple[Array, Array, Array]]:
+    """The kernel of the pass that fits the low-rank noise model of each observation.
+
+    The member is one tile's read, as for [`pass_kernel`][], and its first detector. The spectrum
+    and white level of each channel of the tile (see
+    [`low_rank_tile_spectra`][furax.mapmaking._tile.low_rank_tile_spectra]) go to its rows of
+    arrays `(stream, capacity, ...)`, zero elsewhere, so that their sum over the tiles of an
+    observation holds all its channels; then comes the number of samples of the observation.
+
+    Args:
+        config: The mapmaking configuration.
+        landscape: The landscape of the maps.
+        capacity: The detectors of the arrays of an observation, a whole number of tiles.
+        sample_rate: The sample rate at which the bins of the model are placed, in Hz.
+    """
+    sky_landscape = landscape.with_stokes(config.read_stokes)
+    replaces = config.injection is not None and config.injection.mode == InjectionMode.REPLACE
+
+    def kernel(member, sky):
+        (data, padding, use), start = member
+        data = _prepared(data, padding, sky, config, sky_landscape, replaces)
+        tod = data[ReaderField.SAMPLE_DATA]
+        temperature = None
+        if config.read_stokes != landscape.stokes:
+            temperature = tod.i
+            data, tod = restrict_streams(data, tod, landscape.stokes)
+        tod_format = _tod_format_of(tod)
+        spectra, level, n_real = low_rank_tile_spectra(
+            data, config, tod_format, padding, sample_rate, temperature
+        )
+        n_streams = 1 if tod_format.stokes is None else tod_format.n_streams
+        zero = jnp.zeros((), jnp.int32)
+        spectra = spectra.reshape(n_streams, -1, spectra.shape[-1]) * use
+        level = level.reshape(n_streams, -1) * use
+        placed = (
+            jax.lax.dynamic_update_slice(
+                jnp.zeros((n_streams, capacity, *x.shape[2:]), x.dtype),
+                x,
+                (zero, start.astype(zero.dtype), *(zero for _ in x.shape[2:])),
+            )
+            for x in (spectra, level)
+        )
+        return (*placed, n_real)
+
+    return kernel
+
+
+def fit_low_rank(
+    spectra: Array,
+    level: Array,
+    n_real: Array,
+    config: MapMakingConfig,
+    landscape: StokesLandscape,
+    capacity: int,
+    n_samples: int,
+    sample_rate: float,
+    axis: str,
+) -> tuple[LowRankNoiseModel, ModesCore]:
+    """The low-rank noise model of each observation of a bucket, and its core $K$.
+
+    The inputs are the outputs of [`fit_kernel`][] summed over the tiles of each observation,
+    `(segment, ...)`, which is fitted on the device that holds it. The detector axis of the models
+    is padded to `capacity`: the rows past the detectors of an observation are dead channels.
+
+    Returns:
+        The models and their cores (see
+        [`LowRankNoiseModel.modes_core`][furax.mapmaking.lowrank.LowRankNoiseModel.modes_core]),
+        their leaves `(segment, ...)`.
+    """
+    lead = (len(landscape.stokes), capacity) if config.demodulated else (capacity,)
+
+    def fit(member):
+        spectra, level, n_real = member
+        model = fit_low_rank_spectra(
+            spectra.reshape(-1, spectra.shape[-1]),
+            level.reshape(-1),
+            n_samples,
+            n_real,
+            sample_rate,
+            lead=lead,
+            config=config.weighting.low_rank,
+        )
+        return model, model.modes_core(n_samples)
+
+    segments = StackedEnsemble(spectra.shape[0], (spectra, level, n_real), policy=Policy(axis=axis))
+    (models, cores), _ = map_reduce(fit, segments, 1)
+    return models, cores
 
 
 def bucket_tiles(
@@ -135,6 +239,7 @@ def bucket_tiles(
     bucket: TileBucket,
     placement: TilePlacement,
     config: MapMakingConfig,
+    cores: ModesCore | None = None,
 ) -> StackedEnsemble:
     """The tiles of a bucket, from the outputs of [`pass_kernel`][] combined over the pass.
 
@@ -149,6 +254,8 @@ def bucket_tiles(
         bucket: The bucket.
         placement: The placement of its tiles on the devices.
         config: The mapmaking configuration.
+        cores: Under a low-rank noise model, the core $K$ of the correlated modes of each
+            observation, its leaves `(segment, ...)` (see [`fit_low_rank`][]).
     """
     tiles = StackedEnsemble(
         bucket.n_tiles,
@@ -158,6 +265,11 @@ def bucket_tiles(
         owner=placement.shard(bucket.owner),
         segments=bucket.n_segments,
     )
+    if cores is not None:
+        # structural: the tiles keep their leaves and strides, the cores one per segment
+        joined = lift(_with_modes_core, tiles, _per_segment(cores, tiles))
+        assert isinstance(joined, StackedEnsemble)
+        tiles = joined
     shared = outputs['shared_gram']
     if shared['gram'] is None:
         return tiles
@@ -176,6 +288,7 @@ def _contribution(
     config: MapMakingConfig,
     landscape: StokesLandscape,
     gaps: GapSplines | None,
+    noise_model: PyTree[NoiseModel] | None = None,
 ) -> dict[str, Any]:
     """The contribution of one tile, from the fields read for it and its TOD."""
     temperature = None
@@ -184,7 +297,7 @@ def _contribution(
         temperature = data[ReaderField.SAMPLE_DATA].i
         data, tod = restrict_streams(data, tod, landscape.stokes)
     # Padding/failed observations contribute nothing
-    tile = Tile.create(data, padding, config, landscape, use, gaps)
+    tile = Tile.create(data, padding, config, landscape, use, gaps, noise_model)
 
     # Hit map = nearest-neighbour coverage of the sample mask
     hit_pointing = PointingOperator.create(
@@ -202,10 +315,14 @@ def _contribution(
         implicit, explicit, gram = assemble_templates(data, config, tile, temperature)
         tile = replace(tile, implicit=implicit, explicit=explicit)
 
+    modes = None
     if config.gap_treatment == GapTreatment.FILL and not config.use_templates:
         # skip the inner mask of W, so that the fill survives N⁻¹
         assert isinstance(tile.W, WeightOperator)
         rhs = {'map': (tile.H.T @ tile.M @ tile.W.weight @ tile.F).reduce()(tod)}
+    elif isinstance(tile.noise_model, LowRankNoiseModel):
+        both = tile.rhs_and_modes()(tod)
+        rhs, modes = both['unknowns'], both['modes']
     else:
         rhs = tile.rhs()(tod)
     return {
@@ -217,7 +334,46 @@ def _contribution(
             'coarse': None if gram is None else gram.coarse,
         },
         'tile': tile,
+        'modes': modes,
     }
+
+
+def _prepared(
+    data: dict[str, Any],
+    padding: Any,
+    sky: StokesType | None,
+    config: MapMakingConfig,
+    sky_landscape: StokesLandscape,
+    replaces: bool,
+) -> dict[str, Any]:
+    """The fields read for a tile, its TOD in the pipeline's dtype, with the sky injected, if any."""
+    # The TOD is read in float32, whatever the pipeline's dtype
+    tod = jax.tree.map(lambda x: x.astype(config.dtype), data[ReaderField.SAMPLE_DATA])
+    data = {**data, ReaderField.SAMPLE_DATA: tod}
+    if sky is not None:  # the samples to inject into, per detector
+        shape = jax.tree.leaves(tod)[0].shape
+        H = acquisition_operator(data, config, sky_landscape)
+        data = inject(H, sky, data, unpadded(padding, shape), replaces)
+    return data
+
+
+def _tile_model(
+    model: LowRankNoiseModel, start: Int[Array, ''], data: dict[str, Any]
+) -> LowRankNoiseModel:
+    """The low-rank noise model of a tile: its rows of that of its observation, from `start`."""
+    n_detectors = jax.tree.leaves(data[ReaderField.SAMPLE_DATA])[0].shape[-2]
+    n_streams, capacity = model.lead if len(model.lead) > 1 else (1, model.lead[0])
+    detectors = start + jnp.arange(n_detectors)
+    channels = (jnp.arange(n_streams)[:, None] * capacity + detectors).ravel()
+    lead = (n_detectors,) if len(model.lead) == 1 else (n_streams, n_detectors)
+    return model.select(channels, lead)
+
+
+def _tod_format_of(tod: PyTree[Array]) -> TODFormat:
+    """The format of a TOD."""
+    if isinstance(tod, Stokes):
+        return TODFormat(tod.shape, tod.dtype, tod.stokes)
+    return TODFormat(tod.shape, tod.dtype)
 
 
 def _filled(
@@ -267,16 +423,32 @@ def _factor_shared_gram(
         return factor(replace(gram, coarse=coarse), regularization=regularization)
 
     inverse, kinds = map_reduce(factor_one, ensemble, 'auto')
+    return _per_segment(inverse, tiles, kinds)
+
+
+def _per_segment(stacked: Any, tiles: StackedEnsemble, kinds: Any = None) -> StackedEnsemble:
+    """An ensemble of `tiles` whose members read the entries of `stacked`, `(segment, ...)`.
+
+    `kinds` are those `map_reduce` resolved the leaves of `stacked` to, by default `stacked`
+    itself: the leaves of kind None, shared, stay None.
+    """
+    if kinds is None:
+        kinds = stacked
     return StackedEnsemble(
         tiles.size,
-        inverse,
-        # stacked over the segments, an inverse is one per observation among the tiles; the
+        stacked,
+        # stacked over the segments, an entry is one per observation among the tiles; the
         # shared leaves, of kind None, stay None
         jax.tree.map(lambda _: 'segment', kinds),
         policy=tiles.policy,
         owner=tiles.owner,
         segments=tiles.segments,
     )
+
+
+def _with_modes_core(tile: Tile, core: ModesCore) -> Tile:
+    """`tile` with the core of the correlated modes of its observation."""
+    return replace(tile, modes_core=core)
 
 
 def _with_shared_gram_inverse(tile: Tile, inverse: tuple[AbstractLinearOperator, Any]) -> Tile:

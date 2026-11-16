@@ -17,7 +17,7 @@ from furax.linalg import CGResult, LowRankTerms, cg, lanczos_tr
 from furax.linalg._lanczos import LanczosWhich
 from furax.obs.stokes import StokesType
 
-from ._bucket import bucket_normal, bucket_response, preconditioner, ridge
+from ._bucket import bucket_normal, bucket_response, modes_correction, preconditioner, ridge
 from ._checkpoint import CHECKPOINT_FILES, SolveCheckpoint
 from .config import SolverConfig, TwoLevelConfig
 from .layout import TilePlacement
@@ -66,6 +66,7 @@ class MapMakingSystem:
         S: AbstractLinearOperator,
         BJ: BJPreconditioner,
         sky: StokesType | None = None,
+        modes: list[Array] | None = None,
     ) -> 'MapMakingSystem':
         r"""The GLS normal system $J^\top W' J x = J^\top W' d$ over the selected pixels.
 
@@ -76,6 +77,10 @@ class MapMakingSystem:
             S: Selection of the estimated pixels out of the full sky grid.
             BJ: Block-Jacobi preconditioner.
             sky: A simulated sky on the full grid, whose right-hand side `injected_b` is added.
+            modes: Under a low-rank noise model, the amplitudes of the correlated modes of the
+                data of each bucket (see
+                [`PassTotals.modes`][furax.mapmaking._pass.PassTotals.modes]), whose share the
+                system takes from the right-hand side.
 
         Returns:
             The system to solve. Its unknowns are a dictionary of the selected sky pixels, under
@@ -92,6 +97,12 @@ class MapMakingSystem:
         terms: list[AbstractLinearOperator] = [
             AdditionOperator(normals, sequential=True, in_strides=strides)
         ]
+        if modes is not None:
+            corrections = [modes_correction(tiles, S) for tiles in buckets]
+            correction = AdditionOperator(
+                corrections, sequential=True, in_strides=1, out_strides=strides
+            )
+            b = furax.tree.sub(b, correction(modes))
         injected_b = None
         if sky is not None:
             responses = [bucket_response(tiles, S) for tiles in buckets]

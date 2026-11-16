@@ -30,6 +30,11 @@ def pytest_configure(config: pytest.Config) -> None:
     else:
         os.environ.setdefault('JAX_PLATFORMS', 'cpu')
         os.environ.setdefault('XLA_FLAGS', '--xla_force_host_platform_device_count=8')
+        import jax
+
+        # `jax_platforms` snapshots `JAX_PLATFORMS` at `import jax`, which a conftest below
+        # `tests/` may already have run when the command line names a path inside it
+        jax.config.update('jax_platforms', os.environ['JAX_PLATFORMS'])
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:

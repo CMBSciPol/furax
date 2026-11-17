@@ -20,10 +20,10 @@ from jax.scipy.signal import detrend
 from jaxtyping import Complex, DTypeLike, Float
 
 from furax.math import bspline
-from furax.math.coords import XiEtaAngles
 from furax.math.legendre import legvander
 from furax.math.zernike import zernike_vander
 from furax.obs import TODFormat
+from furax.obs.coords import quat_to_xieta
 
 from .._observation import ReaderField, _sample_rate
 from ..config import (
@@ -285,23 +285,23 @@ def t2p_templates(
     )
     if config.zernike_order is None and config.quadrupole_order is None:
         return {'t2p': Template(basis, tod_format, streams=streams)}
-    angles = _focal_plane_angles(data)
+    xi, eta, gamma = _focal_plane_angles(data)
     joint = config.joint_qu
     if config.quadrupole_order is None:
         assert config.zernike_order is not None  # guaranteed by the test above
         coupling = zernike_couplings(
-            angles.xi,
-            angles.eta,
-            angles.gamma,
+            xi,
+            eta,
+            gamma,
             config.zernike_order,
             config.zernike_radius,
             streams=streams if joint else None,
         )
     else:
         coupling = winding_couplings(
-            angles.xi,
-            angles.eta,
-            angles.gamma,
+            xi,
+            eta,
+            gamma,
             config.quadrupole_order,
             config.zernike_radius,
             decentred=config.decentred,
@@ -333,11 +333,11 @@ def common_mode_templates(
     if not streams:
         return {}
     basis = _spline_drift_basis(data, config.samples_per_knot, tod_format.dtype)
-    angles = _focal_plane_angles(data)
+    xi, eta, gamma = _focal_plane_angles(data)
     coupling = winding_couplings(
-        angles.xi,
-        angles.eta,
-        angles.gamma,
+        xi,
+        eta,
+        gamma,
         config.quadrupole_order,
         config.radius,
         decentred=config.decentred,
@@ -528,11 +528,11 @@ def _qu_streams(tod_format: TODFormat) -> str:
     return ''.join(s for s in tod_format.stokes.lower() if s in 'qu')
 
 
-def _focal_plane_angles(data: Mapping[str, Any]) -> XiEtaAngles:
+def _focal_plane_angles(
+    data: Mapping[str, Any],
+) -> tuple[Float[Array, ' det'], Float[Array, ' det'], Float[Array, ' det']]:
     """The detectors' positions and orientations on the focal plane, from their quaternions."""
-    return XiEtaAngles.from_quaternion(
-        Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS])
-    )
+    return quat_to_xieta(Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS]))
 
 
 def _spline_drift_basis(data: Mapping[str, Any], samples_per_knot: int, dtype: DTypeLike) -> Basis:

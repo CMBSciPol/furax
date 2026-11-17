@@ -16,7 +16,7 @@ from fastquat import Quaternion
 from jax.experimental import multihost_utils as mhu
 from jaxtyping import Bool, Float64, Int64
 
-from furax.math.coords import XiEtaAngles
+from furax.obs.coords import quat_to_xieta
 
 from ._model import DROP_REASONS
 from ._observation import ObservationBufferShape
@@ -216,5 +216,5 @@ def _focal_plane_coordinates(records: list[ObservationRecord]) -> Float64[np.nda
     quaternions = [r.quaternions for r in records if r.quaternions is not None]
     if quaternions:
         q = Quaternion.from_array(jnp.asarray(np.concatenate(quaternions)))
-        coordinates[:, read] = np.stack([np.asarray(a) for a in XiEtaAngles.from_quaternion(q)])
+        coordinates[:, read] = np.stack([np.asarray(a) for a in quat_to_xieta(q)])
     return coordinates

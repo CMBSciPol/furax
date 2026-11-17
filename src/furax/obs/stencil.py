@@ -10,8 +10,8 @@ from typing import NamedTuple, Self
 import jax.numpy as jnp
 from jaxtyping import Array, Bool, DTypeLike, Float, Integer
 
-from furax.math.coords import ZSPhi
 from furax.obs._indexing import NO_PIXEL
+from furax.obs.coords import ZSPhi
 
 __all__ = [
     'Interpolation',

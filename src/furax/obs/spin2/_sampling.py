@@ -3,8 +3,8 @@ r"""Spin-2 transported gather and scatter over an interpolation stencil."""
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from furax.math.coords import ZSPhi
 from furax.obs._indexing import gather_pixels, scatter_add_pixels
+from furax.obs.coords import ZSPhi
 from furax.obs.operators._qu_rotations import Spin2Rotation
 from furax.obs.spin2._transport import spin2_cos_sin_zs
 from furax.obs.stencil import Stencil

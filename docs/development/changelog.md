@@ -78,6 +78,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** the nested gap weight applies its inner inverse by Chebyshev iteration, linear at any step count, instead of CG, and never falls back to the inner mask: `NestedConfig` loses `max_flag_fraction`, `rtol` and `atol` (#475)
   - `NestedConfig.precondition` is removed: the solve is preconditioned by the white-noise level
 - **Breaking:** `furax.obs.sampling` is merged into `furax.obs.pointing` (#508)
+- **Breaking:** `furax.math.coords` is moved to `furax.obs.coords` (#509)
+- **Breaking:** the classes `IsoAngles`, `LonLatAngles`, `AzElAngles` and `XiEtaAngles` are replaced by functions; the last angle (`psi` or `gamma`) defaults to zero, and the inverse returns a tuple (#509)
+  - `IsoAngles(theta, phi, psi).to_quaternion()` → `iso_to_quat(theta, phi, psi)`, `IsoAngles.from_quaternion(q)` → `quat_to_iso(q)`
+  - likewise `lonlat_to_quat` / `quat_to_lonlat`, `azel_to_quat` / `quat_to_azel`, `xieta_to_quat` / `quat_to_xieta`
 
 ### Fixed
 
@@ -92,6 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Padded samples are no longer binned onto one pixel, which serialized the GPU scatter in proportion to the padding (#425)
 - `MultiObservationMapMaker` builds the weight of each detector tile once, with its final mask, instead of building it again to gate out padding tiles and failed observations (#477)
 - The strides and axes of `StackedEnsemble`, `HostEnsemble` and `Ensemble.zip` can follow a pytree holding `None`, and `lift` accepts functions whose output holds `None` (#486)
+- `xieta_to_quat`, formerly `XiEtaAngles.to_quaternion`, has finite derivatives at the boresight (#509)
 
 ## [0.17.2] - 2026-10-30
 

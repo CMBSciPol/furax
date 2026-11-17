@@ -43,9 +43,9 @@ from furax.mapmaking.templates._builders import (
 from furax.mapmaking.templates.bases import TensorBasis
 from furax.mapmaking.templates.pomme import PommeProjectionOperator
 from furax.math import bspline
-from furax.math.coords import XiEtaAngles
 from furax.math.zernike import zernike
 from furax.obs import TODFormat
+from furax.obs.coords import xieta_to_quat
 from tests.mapmaking.templates.helpers import TOL, wrap
 
 
@@ -534,8 +534,7 @@ def test_winding_couplings_reject_a_radial_order_below_one():
 def _field_data(stokes: str) -> dict:
     """The fields the polarization templates are built from: those of `_data` and the detector
     quaternions."""
-    angles = XiEtaAngles(*_detector_angles())
-    quaternions = jnp.stack(angles.to_quaternion().to_components(), -1)
+    quaternions = jnp.stack(xieta_to_quat(*_detector_angles()).to_components(), -1)
     return _data(stokes) | {ReaderField.DETECTOR_QUATERNIONS: quaternions}
 
 

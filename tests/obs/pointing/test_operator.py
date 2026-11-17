@@ -8,7 +8,13 @@ from jax.tree_util import register_static
 from numpy.testing import assert_allclose, assert_array_almost_equal, assert_array_equal
 
 import furax.tree as ftree
-from furax.math.coords import IsoAngles, XiEtaAngles, ZSPhi, gamma_angle, polarization_angle_cos_sin
+from furax.obs.coords import (
+    ZSPhi,
+    gamma_angle,
+    iso_to_quat,
+    polarization_angle_cos_sin,
+    xieta_to_quat,
+)
 from furax.obs.landscapes import (
     CARLandscape,
     HealpixLandscape,
@@ -82,7 +88,7 @@ def test_batches_do_not_change_the_result(batch_samples, precompute) -> None:
     assert NDET * NSAMP == 30  # the ids above assume it
     landscape = HealpixLandscape(NSIDE, 'IQU')
     k1, k2, k3, k4, k5 = jax.random.split(jax.random.key(50), 5)
-    nodes = XiEtaAngles(*jax.random.normal(k3, (3, NDET, 2)) * 0.01).to_quaternion()
+    nodes = xieta_to_quat(*jax.random.normal(k3, (3, NDET, 2)) * 0.01)
     weights = StokesIQU(jnp.array([0.5, 0.5]), jnp.array([0.3, 0.7]), jnp.array([0.6, 0.4]))
     op = PointingOperator.create(
         landscape,
@@ -132,9 +138,7 @@ def test_default_batch_bounds_the_memory_of_a_wide_beam() -> None:
     k1, k2 = jax.random.split(jax.random.key(60))
     n_nodes, n_samples = 2048, 2**14
     beam = DiscretizedBeam.create(
-        XiEtaAngles(
-            *jax.random.normal(k2, (2, n_nodes)) * 0.01, jnp.zeros(n_nodes)
-        ).to_quaternion(),
+        xieta_to_quat(*jax.random.normal(k2, (2, n_nodes)) * 0.01, jnp.zeros(n_nodes)),
         jnp.full(n_nodes, 1 / n_nodes),
     )
 
@@ -581,7 +585,7 @@ class TestSamplesWithoutPointing:
         k1, k2, k3 = jax.random.split(jax.random.key(70), 3)
         beam = None
         if with_beam:
-            nodes = XiEtaAngles(*jax.random.normal(k3, (3, 2)) * 0.01).to_quaternion()
+            nodes = xieta_to_quat(*jax.random.normal(k3, (3, 2)) * 0.01)
             beam = DiscretizedBeam.create(nodes, jnp.array([0.4, 0.6]))
         qbore, qdet = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
         valid = (jnp.arange(NDET) < NDET - 1)[:, None] & (jnp.arange(NSAMP) < NSAMP - 3)[None, :]
@@ -623,7 +627,7 @@ class TestNearestTransport:
         landscape = HealpixLandscape(NSIDE, 'IQU')
         pixels = jnp.arange(0, 12 * NSIDE**2, 7)
         theta, phi = jhp.pix2ang(NSIDE, pixels)
-        qbore = IsoAngles(theta, phi, jnp.zeros_like(theta)).to_quaternion()
+        qbore = iso_to_quat(theta, phi, jnp.zeros_like(theta))
         qdet = Quaternion.ones((1,))  # identity: the detector points at the boresight
 
         op = PointingOperator.create(landscape, qbore, qdet)
@@ -672,17 +676,15 @@ class TestBeam:
     def _quats(seed: int) -> tuple[Quaternion, Quaternion]:
         # each detector has a gamma of its own: the boresight frame strips it from `qdet`, and the
         # beam nodes must not turn with it
-        return Quaternion.random(jax.random.key(seed), (NSAMP,)), XiEtaAngles(
+        return Quaternion.random(jax.random.key(seed), (NSAMP,)), xieta_to_quat(
             jnp.array([0.0, 0.02, -0.03]),
             jnp.array([0.0, -0.01, 0.02]),
             jnp.array([0.3, 0.1, -1.2]),
-        ).to_quaternion()
+        )
 
     @staticmethod
     def _nodes() -> Quaternion:
-        return XiEtaAngles(
-            jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), jnp.zeros(2)
-        ).to_quaternion()
+        return xieta_to_quat(jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), jnp.zeros(2))
 
     @staticmethod
     def _per_stokes_weights(stokes: ValidStokesLiteral) -> Stokes:
@@ -709,7 +711,7 @@ class TestBeam:
         plain = PointingOperator.create(
             landscape, qbore, qdet, frame=frame, interpolate=interpolate
         )
-        origin = XiEtaAngles(jnp.zeros(1), jnp.zeros(1), jnp.zeros(1)).to_quaternion()
+        origin = xieta_to_quat(jnp.zeros(1), jnp.zeros(1), jnp.zeros(1))
         op = PointingOperator.create(
             landscape,
             qbore,
@@ -965,9 +967,7 @@ class TestRotationAbsorption:
         qbore, qdet = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
         kwargs = {}
         if per_stokes:
-            nodes = XiEtaAngles(
-                jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), 0.0
-            ).to_quaternion()
+            nodes = xieta_to_quat(jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), 0.0)
             weights = StokesIQU(jnp.array([0.5, 0.5]), jnp.array([0.7, 0.3]), jnp.array([0.2, 0.8]))
             kwargs = {'beam': DiscretizedBeam.create(nodes, weights)}
         landscape = HealpixLandscape(NSIDE, 'IQU')
@@ -1019,18 +1019,16 @@ class TestFrames:
     def _ops(interpolate: bool, beam: bool) -> dict[str, PointingOperator]:
         k1 = jax.random.key(70)
         qbore = Quaternion.random(k1, (NSAMP,))
-        qdet = XiEtaAngles(
+        qdet = xieta_to_quat(
             jnp.array([0.0, 0.02, -0.03]),
             jnp.array([0.0, -0.01, 0.02]),
             jnp.array([0.3, 0.1, -1.2]),
-        ).to_quaternion()
+        )
         kwargs = {}
         if beam:
             kwargs = {
                 'beam': DiscretizedBeam.create(
-                    XiEtaAngles(
-                        jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), 0.0
-                    ).to_quaternion(),
+                    xieta_to_quat(jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), 0.0),
                     jnp.array([0.3, 0.7]),
                 ),
             }

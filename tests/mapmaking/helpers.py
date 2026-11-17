@@ -28,7 +28,7 @@ from furax.mapmaking._accumulated import AccumulatedModel
 from furax.mapmaking._bucket import AMPLITUDE_KINDS, amplitude_kinds
 from furax.mapmaking.config import HealpixConfig, LandscapeConfig, MapMakingConfig, PointingConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
-from furax.math.coords import XiEtaAngles
+from furax.obs.coords import xieta_to_quat
 from furax.obs.landscapes import ProjectionType, StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
@@ -158,7 +158,7 @@ class FakeObservation(AbstractObservation[None]):
             rng = np.random.default_rng(1234)
             xi, eta = rng.uniform(-1, 1, (2, self._n_dets)) * self._focal_plane_radius
             gamma = rng.uniform(0, np.pi, self._n_dets)
-            q = XiEtaAngles(xi, eta, gamma).to_quaternion()
+            q = xieta_to_quat(xi, eta, gamma)
             return np.stack([np.asarray(c, np.float64) for c in q.to_components()], axis=-1)
         q = np.zeros((self._n_dets, 4), dtype=np.float64)
         q[:, 0] = 1.0

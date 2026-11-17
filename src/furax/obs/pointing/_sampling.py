@@ -11,8 +11,8 @@ from fastquat import Quaternion
 from jaxtyping import Array, Bool, Float, Int, Integer
 
 from furax.core.utils import register_dataclass_with_keys
-from furax.math.coords import XiEtaAngles, ZSPhi, gamma_angle_cos_sin, polarization_angle_cos_sin
 from furax.obs._indexing import NO_PIXEL
+from furax.obs.coords import ZSPhi, gamma_angle_cos_sin, polarization_angle_cos_sin, xieta_to_quat
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators import Spin2Rotation
 from furax.obs.spin2 import transport_rotation
@@ -145,7 +145,7 @@ class DiscretizedBeam:
         # which the beam map's -delta axis (-z) maps to; +alpha (+y) maps to its y axis. So the
         # detector-frame direction is (-z, y, x), whose orthographic coordinates are
         # (xi, eta) = (-y, z).
-        nodes = XiEtaAngles(-y, z, jnp.zeros_like(y)).to_quaternion()
+        nodes = xieta_to_quat(-y, z)
         return cls.create(nodes, weights)
 
     @classmethod

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax.math.coords import ZSPhi
+from furax.obs.coords import ZSPhi
 from furax.obs.stencil import Interpolation, Stencil
 
 

@@ -8,17 +8,22 @@ import numpy as np
 import pytest
 from fastquat import Quaternion as Q
 
-from furax.math.coords import (
+from furax.obs.coords import (
+    XAXIS,
     ZAXIS,
-    AzElAngles,
-    IsoAngles,
-    LonLatAngles,
-    XiEtaAngles,
+    azel_to_quat,
     euler,
     gamma_angle,
     gamma_angle_cos_sin,
+    iso_to_quat,
+    lonlat_to_quat,
     polarization_angle,
     polarization_angle_cos_sin,
+    quat_to_azel,
+    quat_to_iso,
+    quat_to_lonlat,
+    quat_to_xieta,
+    xieta_to_quat,
 )
 
 IDENTITY = Q.ones(())
@@ -52,7 +57,7 @@ class TestEuler:
         np.testing.assert_allclose(result.wxyz, ROT_Z_90.wxyz, atol=1e-8)
 
 
-class TestISOAngles:
+class TestIso:
     """ISO angle representation (theta, phi, psi) has a known coordinate singularity for pure
     Z-axis rotations (theta ~ 0), where phi/psi become degenerate -- expected, not a bug.
     """
@@ -68,8 +73,8 @@ class TestISOAngles:
         ],
     )
     def test_roundtrip(self, q: Q) -> None:
-        theta, phi, psi = IsoAngles.from_quaternion(q)
-        recovered = IsoAngles(theta, phi, psi).to_quaternion()
+        theta, phi, psi = quat_to_iso(q)
+        recovered = iso_to_quat(theta, phi, psi)
 
         assert jnp.all(jnp.isfinite(jnp.array([theta, phi, psi])))
         np.testing.assert_allclose(abs(recovered), 1.0, atol=1e-6)
@@ -79,22 +84,22 @@ class TestISOAngles:
         assert matches, f'ISO roundtrip failed for {q}: got {recovered}'
 
     def test_to_quaternion_is_normalized(self) -> None:
-        q = IsoAngles(jnp.pi / 2, jnp.pi / 4, jnp.pi / 3).to_quaternion()
+        q = iso_to_quat(jnp.pi / 2, jnp.pi / 4, jnp.pi / 3)
         np.testing.assert_allclose(abs(q), 1.0, atol=1e-8)
         assert jnp.all(jnp.isfinite(q.wxyz))
 
     def test_batch(self) -> None:
         batch = Q.from_array(jnp.array([IDENTITY.wxyz, [0.5, 0.5, 0.5, 0.5], ROT_X_90.wxyz]))
-        theta, phi, psi = IsoAngles.from_quaternion(batch)
+        theta, phi, psi = quat_to_iso(batch)
         assert theta.shape == phi.shape == psi.shape == (3,)
-        recovered = IsoAngles(theta, phi, psi).to_quaternion()
+        recovered = iso_to_quat(theta, phi, psi)
         assert recovered.shape == (3,)
 
     def test_z_axis_spherical_consistency(self) -> None:
         """Rotating the Z-axis by q should land at the spherical point given by its ISO angles."""
         q = Q(0.6, 0.3, 0.4, 0.7).normalize()
         rotated_z = q.rotate_vector(jnp.array([0.0, 0.0, 1.0]))
-        theta, phi, _ = IsoAngles.from_quaternion(q)
+        theta, phi, _ = quat_to_iso(q)
         expected = jnp.array(
             [jnp.sin(theta) * jnp.cos(phi), jnp.sin(theta) * jnp.sin(phi), jnp.cos(theta)]
         )
@@ -102,14 +107,14 @@ class TestISOAngles:
 
     def test_jit_compatible(self) -> None:
         q = Q(0.6, 0.3, 0.4, 0.7).normalize()
-        angles = jax.jit(IsoAngles.from_quaternion)(q)
-        recovered = jax.jit(IsoAngles.to_quaternion)(angles)
+        angles = jax.jit(quat_to_iso)(q)
+        recovered = jax.jit(iso_to_quat)(*angles)
         assert recovered.shape == ()
 
 
-class TestLonLatAngles:
+class TestLonLat:
     def test_identity(self) -> None:
-        alpha, delta, psi = LonLatAngles.from_quaternion(IDENTITY)
+        alpha, delta, psi = quat_to_lonlat(IDENTITY)
         np.testing.assert_allclose(alpha, 0.0, atol=1e-8)
         np.testing.assert_allclose(delta, math.pi / 2, atol=1e-8)
         np.testing.assert_allclose(psi, 0.0, atol=1e-8)
@@ -117,8 +122,8 @@ class TestLonLatAngles:
     @pytest.mark.parametrize('q', [IDENTITY, Q(0.5, 0.5, 0.5, 0.5), ROT_X_90, ROT_Y_90])
     def test_roundtrip(self, q: Q) -> None:
         q = q.normalize()
-        alpha, delta, psi = LonLatAngles.from_quaternion(q)
-        recovered = LonLatAngles(alpha, delta, psi).to_quaternion()
+        alpha, delta, psi = quat_to_lonlat(q)
+        recovered = lonlat_to_quat(alpha, delta, psi)
         matches = jnp.allclose(recovered.wxyz, q.wxyz, atol=1e-6) or jnp.allclose(
             recovered.wxyz, -q.wxyz, atol=1e-6
         )
@@ -126,33 +131,33 @@ class TestLonLatAngles:
 
     def test_relationship_to_iso(self) -> None:
         q = Q(0.6, 0.3, 0.4, 0.7).normalize()
-        theta_iso, phi_iso, psi_iso = IsoAngles.from_quaternion(q)
-        alpha, delta, psi_lonlat = LonLatAngles.from_quaternion(q)
+        theta_iso, phi_iso, psi_iso = quat_to_iso(q)
+        alpha, delta, psi_lonlat = quat_to_lonlat(q)
         np.testing.assert_allclose(alpha, phi_iso, atol=1e-8)
         np.testing.assert_allclose(delta, math.pi / 2 - theta_iso, atol=1e-8)
         np.testing.assert_allclose(psi_lonlat, psi_iso, atol=1e-8)
 
 
-class TestAzElAngles:
+class TestAzEl:
     def test_relationship_to_lonlat(self) -> None:
         q = Q(0.6, 0.3, 0.4, 0.7).normalize()
-        az, el, psi = AzElAngles.from_quaternion(q)
-        lon, lat, psi_lonlat = LonLatAngles.from_quaternion(q)
+        az, el, psi = quat_to_azel(q)
+        lon, lat, psi_lonlat = quat_to_lonlat(q)
         np.testing.assert_allclose(az, -lon, atol=1e-8)
         np.testing.assert_allclose(el, lat, atol=1e-8)
         np.testing.assert_allclose(psi, psi_lonlat, atol=1e-8)
 
     def test_roundtrip(self) -> None:
         q = Q(0.6, 0.3, 0.4, 0.7).normalize()
-        recovered = AzElAngles(*AzElAngles.from_quaternion(q)).to_quaternion()
+        recovered = azel_to_quat(*quat_to_azel(q))
         assert jnp.allclose(recovered.wxyz, q.wxyz, atol=1e-6) or jnp.allclose(
             recovered.wxyz, -q.wxyz, atol=1e-6
         )
 
 
-class TestXiEtaAngles:
+class TestXiEta:
     def test_identity(self) -> None:
-        xi, eta, gamma = XiEtaAngles.from_quaternion(IDENTITY)
+        xi, eta, gamma = quat_to_xieta(IDENTITY)
         np.testing.assert_allclose(xi, 0.0, atol=1e-8)
         np.testing.assert_allclose(eta, 0.0, atol=1e-8)
         np.testing.assert_allclose(gamma, 0.0, atol=1e-8)
@@ -172,8 +177,8 @@ class TestXiEtaAngles:
     )
     def test_roundtrip(self, q: Q) -> None:
         q = q.normalize()
-        xi, eta, gamma = XiEtaAngles.from_quaternion(q)
-        recovered = XiEtaAngles(xi, eta, gamma).to_quaternion()
+        xi, eta, gamma = quat_to_xieta(q)
+        recovered = xieta_to_quat(xi, eta, gamma)
         matches = jnp.allclose(recovered.wxyz, q.wxyz, atol=1e-6) or jnp.allclose(
             recovered.wxyz, -q.wxyz, atol=1e-6
         )
@@ -183,9 +188,9 @@ class TestXiEtaAngles:
         batch = Q.from_array(
             jnp.array([IDENTITY.wxyz, [0.5, 0.5, 0.5, 0.5], ROT_Z_90.wxyz])
         ).normalize()
-        xi, eta, gamma = XiEtaAngles.from_quaternion(batch)
+        xi, eta, gamma = quat_to_xieta(batch)
         assert xi.shape == eta.shape == gamma.shape == (3,)
-        recovered = XiEtaAngles(xi, eta, gamma).to_quaternion()
+        recovered = xieta_to_quat(xi, eta, gamma)
         assert recovered.shape == (3,)
 
 
@@ -195,7 +200,7 @@ class TestGammaAngle:
 
     def test_matches_xieta_gamma(self) -> None:
         q = Q(0.6, 0.3, 0.4, 0.7).normalize()
-        _, _, gamma_xieta = XiEtaAngles.from_quaternion(q)
+        _, _, gamma_xieta = quat_to_xieta(q)
         np.testing.assert_allclose(gamma_angle(q), gamma_xieta, atol=1e-8)
 
 
@@ -236,12 +241,12 @@ class TestPoles:
 
     def _pointing(self, theta: float) -> Q:
         psi = jnp.asarray(self.PSI)
-        return IsoAngles(jnp.full_like(psi, theta), jnp.zeros_like(psi), psi).to_quaternion()
+        return iso_to_quat(jnp.full_like(psi, theta), jnp.zeros_like(psi), psi)
 
     def test_iso_angles_roundtrip(self, theta: float) -> None:
-        angles = IsoAngles.from_quaternion(self._pointing(theta))
-        np.testing.assert_allclose(angles.phi, 0.0, atol=1e-15)
-        np.testing.assert_allclose(angles.psi, self.PSI, atol=1e-14)
+        _, phi, psi = quat_to_iso(self._pointing(theta))
+        np.testing.assert_allclose(phi, 0.0, atol=1e-15)
+        np.testing.assert_allclose(psi, self.PSI, atol=1e-14)
 
     def test_polarization_angle(self, theta: float) -> None:
         q = self._pointing(theta)
@@ -254,7 +259,7 @@ class TestPoles:
         """Approaching the pole along phi = 0 gives the angle at the pole."""
         psi = jnp.asarray(self.PSI)
         near = abs(theta - 1e-7)
-        q = IsoAngles(jnp.full_like(psi, near), jnp.zeros_like(psi), psi).to_quaternion()
+        q = iso_to_quat(jnp.full_like(psi, near), jnp.zeros_like(psi), psi)
         np.testing.assert_allclose(polarization_angle(q), self.PSI, atol=1e-12)
 
 
@@ -264,22 +269,18 @@ class TestAngleConversionConsistency:
         vec = jnp.array([1.0, 2.0, 3.0])
         original = q.rotate_vector(vec)
 
-        theta, phi, psi = IsoAngles.from_quaternion(q)
-        assert jnp.allclose(
-            IsoAngles(theta, phi, psi).to_quaternion().rotate_vector(vec), original, atol=1e-6
-        )
+        theta, phi, psi = quat_to_iso(q)
+        assert jnp.allclose(iso_to_quat(theta, phi, psi).rotate_vector(vec), original, atol=1e-6)
 
-        alpha, delta, psi_ll = LonLatAngles.from_quaternion(q)
+        alpha, delta, psi_ll = quat_to_lonlat(q)
         assert jnp.allclose(
-            LonLatAngles(alpha, delta, psi_ll).to_quaternion().rotate_vector(vec),
+            lonlat_to_quat(alpha, delta, psi_ll).rotate_vector(vec),
             original,
             atol=1e-6,
         )
 
-        xi, eta, gamma = XiEtaAngles.from_quaternion(q)
-        assert jnp.allclose(
-            XiEtaAngles(xi, eta, gamma).to_quaternion().rotate_vector(vec), original, atol=1e-6
-        )
+        xi, eta, gamma = quat_to_xieta(q)
+        assert jnp.allclose(xieta_to_quat(xi, eta, gamma).rotate_vector(vec), original, atol=1e-6)
 
 
 class TestConventions:
@@ -293,14 +294,17 @@ class TestConventions:
     def _wrap(angle: jax.Array) -> jax.Array:
         return (angle + jnp.pi) % (2 * jnp.pi) - jnp.pi
 
-    def test_psi_is_the_polarization_angle(self) -> None:
+    def test_polarization_angle_from_south_through_east(self) -> None:
+        """The angle from the south of the meridian at v = q z to u = q x, through the east."""
         q = self._rotations()
-        psi = IsoAngles.from_quaternion(q).psi
-        np.testing.assert_allclose(self._wrap(polarization_angle(q) - psi), 0.0, atol=1e-12)
+        v, u = q.rotate_vector(ZAXIS), q.rotate_vector(XAXIS)
+        south = -ZAXIS + v[..., 2:] * v
+        expected = jnp.atan2(jnp.sum(jnp.cross(south, u) * v, axis=-1), jnp.sum(south * u, axis=-1))
+        np.testing.assert_allclose(self._wrap(polarization_angle(q) - expected), 0.0, atol=1e-12)
 
     def test_gamma_is_phi_plus_psi(self) -> None:
         q = self._rotations()
-        _, phi, psi = IsoAngles.from_quaternion(q)
+        _, phi, psi = quat_to_iso(q)
         np.testing.assert_allclose(self._wrap(gamma_angle(q) - phi - psi), 0.0, atol=1e-12)
 
     def test_gamma_cos_sin_matches_the_angle(self) -> None:
@@ -312,8 +316,7 @@ class TestConventions:
     def test_gamma_opposite_the_boresight(self) -> None:
         """A detector looking opposite the boresight is at the south pole: gamma = psi, phi = 0."""
         psi = TestPoles.PSI
-        q = IsoAngles(jnp.full(psi.shape, jnp.pi), jnp.zeros(psi.shape), jnp.asarray(psi))
-        q = q.to_quaternion()
+        q = iso_to_quat(jnp.full(psi.shape, jnp.pi), 0.0, psi)
         np.testing.assert_allclose(gamma_angle(q), psi, atol=1e-14)
         cos_gamma, sin_gamma = gamma_angle_cos_sin(q)
         np.testing.assert_allclose(cos_gamma, np.cos(psi), atol=1e-14)
@@ -322,6 +325,6 @@ class TestConventions:
     def test_xi_eta_are_orthographic_coordinates(self) -> None:
         xi, eta = jax.random.normal(jax.random.key(1), (2, 200)) * 0.1
         gamma = jax.random.uniform(jax.random.key(2), (200,), maxval=2 * jnp.pi)
-        v = XiEtaAngles(xi, eta, gamma).to_quaternion().rotate_vector(ZAXIS)
+        v = xieta_to_quat(xi, eta, gamma).rotate_vector(ZAXIS)
         np.testing.assert_allclose(-v[..., 1], xi, atol=1e-12)
         np.testing.assert_allclose(-v[..., 0], eta, atol=1e-12)

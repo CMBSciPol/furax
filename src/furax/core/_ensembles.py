@@ -822,8 +822,10 @@ def lift(f: Callable[..., PyTree[Any]], *ensembles: Ensemble) -> Ensemble:
     composing or transposing operators -- is detected by tracing `f` on one abstract member, and
     the output ensemble reuses the input arrays with their strides, at no cost. Otherwise `f` is
     vectorized by `jax.vmap` over the member axis, stride-s and segment leaves expanded to one
-    entry per member, and the output leaves come back with stride 1. Stacked ensembles grouped in
-    segments must share their owner index, which the output keeps.
+    entry per member, and the output leaves come back with stride 1. Lifting
+    `lambda m: DeferredOperator(build, m)` instead keeps the arrays at their strides, see
+    [`DeferredOperator`][furax.core.DeferredOperator]. Stacked ensembles grouped in segments must
+    share their owner index, which the output keeps.
 
     Args:
         f: From one member per ensemble to a pytree: an operator constructor, a composition,

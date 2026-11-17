@@ -32,7 +32,7 @@ def profile_neg_log_likelihood(
     Examples:
         >>> import lineax as lx
         >>> def loss(wind_velocity):
-        ...     sampler = ScreenSampler.from_wind(qbore, qdet, wind_velocity, times)
+        ...     sampler = ScreenSampler.from_wind(q_hor_bore, q_bore_det, wind_velocity, times)
         ...     P = PointingOperator.from_sampler(landscape, sampler)
         ...     return profile_neg_log_likelihood(P, d_obs, N_inv)
         >>> grad = jax.grad(loss)(wind_velocity_init)

@@ -311,7 +311,10 @@ class TestLocalLandscape:
     ) -> tuple[LocalStokesLandscape, PointingOperator]:
         local = LocalStokesLandscape(p_full.landscape, indices)
         p_local = PointingOperator.create(
-            local, p_full.sampler.qbore, p_full.sampler.qdet, interpolate=_interpolates(p_full)
+            local,
+            p_full.sampler.q_sky_bore,
+            p_full.sampler.q_bore_det,
+            interpolate=_interpolates(p_full),
         )
         return local, p_local
 
@@ -1045,7 +1048,7 @@ class TestFrames:
         sampler = ops['detector'].sampler
         quats = sampler.quaternions()
         cos_psi, sin_psi = polarization_angle_cos_sin(quats)
-        gamma = gamma_angle(sampler.qdet)[:, None]
+        gamma = gamma_angle(sampler.q_bore_det)[:, None]
         sky = ops['detector'].landscape.normal(jax.random.key(71))
 
         tods = {frame: op(sky) for frame, op in ops.items()}

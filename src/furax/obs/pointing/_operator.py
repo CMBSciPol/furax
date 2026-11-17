@@ -142,8 +142,8 @@ class PointingOperator(AbstractLinearOperator):
         )
         sampler = QuaternionSampler(
             kernel=kernel,
-            qbore=boresight_quaternions,
-            qdet=detector_quaternions,
+            q_sky_bore=boresight_quaternions,
+            q_bore_det=detector_quaternions,
             frame=frame,
         )
         return cls.from_sampler(landscape, sampler, batch_samples=batch_samples)

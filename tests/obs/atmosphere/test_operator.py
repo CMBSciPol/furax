@@ -70,8 +70,8 @@ class TestScreenSamplerValidation:
         with pytest.raises(ValueError, match='does not support a beam'):
             ScreenSampler(
                 kernel=SamplingKernel(beam=beam),
-                qbore=op.sampler.qbore,
-                qdet=op.sampler.qdet,
+                q_hor_bore=op.sampler.q_hor_bore,
+                q_bore_det=op.sampler.q_bore_det,
                 wind_displacement=op.sampler.wind_displacement,
             )
 
@@ -98,7 +98,9 @@ class TestAtmosphereOperatorMv:
 
         flat = atm.ravel()
         for d in range(NDET):
-            qdet_full = op.sampler.qbore[None, :] * op.sampler.qdet[d : d + 1, None]  # (1, samp)
+            qdet_full = (
+                op.sampler.q_hor_bore[None, :] * op.sampler.q_bore_det[d : d + 1, None]
+            )  # (1, samp)
             x, y = landscape.quat2xy(qdet_full[0])  # (samp,)
             idx = landscape.pixel2index(*landscape.xy2pixel(x, y))
             expected = flat.i[idx]
@@ -114,7 +116,9 @@ class TestAtmosphereOperatorMv:
 
         flat = atm.ravel()
         for d in range(NDET):
-            qdet_full = op.sampler.qbore[None, :] * op.sampler.qdet[d : d + 1, None]  # (1, samp)
+            qdet_full = (
+                op.sampler.q_hor_bore[None, :] * op.sampler.q_bore_det[d : d + 1, None]
+            )  # (1, samp)
             x, y = landscape.quat2xy(qdet_full[0])  # (samp,)
             x_shifted = x + times * wind_velocity[0]
             y_shifted = y + times * wind_velocity[1]
@@ -133,7 +137,9 @@ class TestAtmosphereElevationModulation:
         tod_mod = op_mod(atm)
 
         for d in range(NDET):
-            qdet_full = op.sampler.qbore[None, :] * op.sampler.qdet[d : d + 1, None]  # (1, samp)
+            qdet_full = (
+                op.sampler.q_hor_bore[None, :] * op.sampler.q_bore_det[d : d + 1, None]
+            )  # (1, samp)
             sin_el = qdet_full[0].rotate_vector(ZAXIS)[..., 2]  # (samp,)
             assert_array_almost_equal(tod_mod.i[d], tod.i[d] / sin_el)
 

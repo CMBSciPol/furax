@@ -67,7 +67,7 @@ def _in_pixel_frame(h: AbstractLinearOperator) -> AbstractLinearOperator:
     gather = IndexOperator((stokes_idx, pixels), in_structure=ravel.out_structure)
     angles = polarization_angle(qdet_full)
     if pointing.sampler.frame == 'boresight':
-        angles -= gamma_angle(pointing.sampler.qdet)[:, None]
+        angles -= gamma_angle(pointing.sampler.q_bore_det)[:, None]
     rot = QURotationOperator(angles=angles, in_structure=gather.out_structure)
     return reduce(operator.matmul, h.operands[:-1]) @ rot @ gather @ ravel
 

@@ -451,12 +451,12 @@ class AbstractGroundObservation[T](AbstractObservation[T]):
 
         # Combine boresight pointing with detector offsets via quaternion multiplication
         # Broadcasting: (1, n_final_samples) * (n_dets, 1) -> (n_dets, n_final_samples)
-        qbore = Quaternion.from_array(boresight_quaternions)
-        qdet = Quaternion.from_array(detector_quaternions)
-        qdet_full = qbore[None, :] * qdet[:, None]
+        q_sky_bore = Quaternion.from_array(boresight_quaternions)
+        q_bore_det = Quaternion.from_array(detector_quaternions)
+        q_sky_det = q_sky_bore[None, :] * q_bore_det[:, None]
 
         # Convert quaternions to longitude/latitude angles in radians
-        alpha, delta, _ = quat_to_lonlat(qdet_full)
+        alpha, delta, _ = quat_to_lonlat(q_sky_det)
 
         # Convert to degrees if requested
         if use_degrees:

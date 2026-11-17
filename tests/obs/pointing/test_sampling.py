@@ -6,7 +6,7 @@ from equinox import tree_equal
 from fastquat import Quaternion
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax.math.coords import ZAXIS, IsoAngles, XiEtaAngles
+from furax.obs.coords import ZAXIS, iso_to_quat, quat_to_xieta, xieta_to_quat
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.pointing import (
     AngleSampler,
@@ -25,9 +25,7 @@ NDET = 3
 
 
 def _nodes() -> Quaternion:
-    return XiEtaAngles(
-        jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), jnp.zeros(2)
-    ).to_quaternion()
+    return xieta_to_quat(jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), jnp.zeros(2))
 
 
 class TestDiscretizedBeamCreate:
@@ -68,7 +66,7 @@ class TestDiscretizedBeamFromDirections:
         """
         directions = _directions(jnp.array([0.02, 0.0, -0.01]), jnp.array([0.0, 0.03, -0.02]))
         beam = DiscretizedBeam.from_directions(directions, jnp.ones(3) / 3)
-        pointing = IsoAngles(jnp.array(jnp.pi / 2), jnp.array(0.0), jnp.array(psi)).to_quaternion()
+        pointing = iso_to_quat(jnp.array(jnp.pi / 2), jnp.array(0.0), jnp.array(psi))
         sky = (pointing * beam.nodes).rotate_vector(ZAXIS)
         cos, sin = jnp.cos(psi), jnp.sin(psi)
         x, y, z = directions.T
@@ -80,7 +78,7 @@ class TestDiscretizedBeamFromDirections:
         alpha, delta = 0.05 * jax.random.normal(jax.random.key(0), (2, *shape))
         directions = _directions(alpha, delta)
         beam = DiscretizedBeam.from_directions(directions, jnp.ones(5) / 5)
-        xi, eta, gamma = XiEtaAngles.from_quaternion(beam.nodes)
+        xi, eta, gamma = quat_to_xieta(beam.nodes)
         assert beam.nodes.shape == shape
         assert_allclose(xi, -directions[..., 1], atol=1e-15)
         assert_allclose(eta, directions[..., 2], atol=1e-15)
@@ -113,7 +111,7 @@ class TestDiscretizedBeamLoad:
     @staticmethod
     def _per_detector_nodes() -> Quaternion:
         xi, eta = 0.05 * jax.random.normal(jax.random.key(1), (2, NDET, 2))
-        return XiEtaAngles(xi, eta, jnp.zeros((NDET, 2))).to_quaternion()
+        return xieta_to_quat(xi, eta, jnp.zeros((NDET, 2)))
 
     @pytest.mark.parametrize(
         'per_detector, weights, stokes',
@@ -194,7 +192,7 @@ class TestDiscretizedBeamChecked:
 
 class TestNodesFor:
     def test_selects_the_detectors_of_a_batch(self) -> None:
-        nodes = XiEtaAngles(*jax.random.normal(jax.random.key(0), (3, NDET, 2))).to_quaternion()
+        nodes = xieta_to_quat(*jax.random.normal(jax.random.key(0), (3, NDET, 2)))
         batch = DiscretizedBeam(nodes, jnp.ones(2)).nodes_for(jnp.array([2, 0]))
         assert_array_equal(batch.wxyz, nodes.wxyz[jnp.array([2, 0])])
 
@@ -271,9 +269,7 @@ class TestAngleSampler:
                 Interpolation.BILINEAR, DiscretizedBeam(_nodes(), jnp.array([0.3, 0.7]))
             ),
             qbore=qbore,
-            qdet=XiEtaAngles(
-                jnp.zeros(NDET), jnp.linspace(-0.1, 0.1, NDET), jnp.ones(NDET)
-            ).to_quaternion(),
+            qdet=xieta_to_quat(jnp.zeros(NDET), jnp.linspace(-0.1, 0.1, NDET), jnp.ones(NDET)),
         )
         sky = landscape.normal(jax.random.key(3))
         on_the_fly = PointingOperator.from_sampler(landscape, sampler)(sky)
@@ -299,9 +295,7 @@ class TestPrecomputedSampler:
         sampler = QuaternionSampler(
             kernel=SamplingKernel(interpolation),
             qbore=Quaternion.random(jax.random.key(4), (7,)),
-            qdet=XiEtaAngles(
-                jnp.zeros(NDET), jnp.linspace(-0.1, 0.1, NDET), jnp.ones(NDET)
-            ).to_quaternion(),
+            qdet=xieta_to_quat(jnp.zeros(NDET), jnp.linspace(-0.1, 0.1, NDET), jnp.ones(NDET)),
         )
         cached = PrecomputedSampler.from_sampler(sampler, landscape)
         sky = landscape.normal(jax.random.key(5))

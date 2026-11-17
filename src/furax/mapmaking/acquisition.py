@@ -3,8 +3,8 @@ from fastquat import Quaternion
 from jaxtyping import Array, DTypeLike
 
 from furax import AbstractLinearOperator
-from furax.math.coords import gamma_angle
 from furax.obs import HWPOperator, LinearPolarizerOperator, QURotationOperator
+from furax.obs.coords import gamma_angle
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.pointing import PointingOperator
 

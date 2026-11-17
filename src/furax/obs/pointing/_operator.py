@@ -124,14 +124,14 @@ class PointingOperator(AbstractLinearOperator):
             >>> import jax
             >>> import jax.numpy as jnp
             >>> from fastquat import Quaternion
-            >>> from furax.math.coords import IsoAngles
+            >>> from furax.obs.coords import iso_to_quat
             >>> from furax.obs.landscapes import HealpixLandscape
             >>> theta, phi, psi = jax.random.uniform(jax.random.key(0), (3, 1000)) * jnp.array(
             ...     [[jnp.pi], [2 * jnp.pi], [2 * jnp.pi]]
             ... )
             >>> landscape = HealpixLandscape(nside=64, stokes='IQU')
             >>> pointing = PointingOperator.create(
-            ...     landscape, IsoAngles(theta, phi, psi).to_quaternion(), Quaternion.ones((1,))
+            ...     landscape, iso_to_quat(theta, phi, psi), Quaternion.ones((1,))
             ... )
             >>> pointing.out_structure.shape
             (1, 1000)

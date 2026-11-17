@@ -17,8 +17,8 @@ from furax.core import IndexOperator, RavelOperator
 from furax.interfaces.sotodlib import LazySOTODLibObservation
 from furax.mapmaking.acquisition import build_acquisition_operator
 from furax.mapmaking.config import SotodlibConfig
-from furax.math.coords import gamma_angle, polarization_angle
 from furax.obs import QURotationOperator
+from furax.obs.coords import gamma_angle, polarization_angle
 from furax.obs.landscapes import HealpixLandscape
 from furax.obs.spin2 import spin2_cos_sin
 from furax.obs.stokes import Stokes, StokesI

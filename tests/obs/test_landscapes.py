@@ -8,7 +8,7 @@ from fastquat import Quaternion
 from jax import Array
 from numpy.testing import assert_allclose, assert_array_almost_equal, assert_array_equal
 
-from furax.math.coords import IsoAngles, XiEtaAngles
+from furax.obs.coords import iso_to_quat, xieta_to_quat
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     CARLandscape,
@@ -638,7 +638,7 @@ class TestNestedHealpix:
         assert_array_equal(nested.world2index(*angles), expected)
 
     def test_quat2index_matches_world2index(self, nested, angles):
-        quat = IsoAngles(*angles, jnp.zeros_like(angles[0])).to_quaternion()
+        quat = iso_to_quat(*angles, jnp.zeros_like(angles[0]))
         assert_array_equal(nested.quat2index(quat), nested.world2index(*angles))
 
     def test_index2stencil_reads_the_same_pixel_centers(self, ring, nested, angles):
@@ -828,7 +828,7 @@ class TestLocalStokesLandscape:
         phi = jnp.array([0.7, 3.1, 5.0])
         return QuaternionSampler(
             kernel=SamplingKernel(interpolation, beam),
-            qbore=IsoAngles(theta, phi, jnp.zeros_like(theta)).to_quaternion(),
+            qbore=iso_to_quat(theta, phi, jnp.zeros_like(theta)),
             qdet=Quaternion.ones((1,)),
         )
 
@@ -857,9 +857,7 @@ class TestLocalStokesLandscape:
     def test_from_sampler_reads_the_parent_map_exactly(self, stokes) -> None:
         """Beam nodes and per-Stokes weights widen the subset to every pixel they read."""
         parent = HealpixLandscape(2, stokes=stokes)
-        nodes = XiEtaAngles(
-            jnp.array([0.2, -0.3]), jnp.array([0.1, 0.25]), jnp.zeros(2)
-        ).to_quaternion()
+        nodes = xieta_to_quat(jnp.array([0.2, -0.3]), jnp.array([0.1, 0.25]), jnp.zeros(2))
         weights = jnp.array([0.4, 0.6])
         if stokes == 'IQU':
             weights = StokesIQU(weights, jnp.array([1.0, 0.0]), jnp.array([0.0, 1.0]))

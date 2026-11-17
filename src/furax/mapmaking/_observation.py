@@ -18,7 +18,7 @@ from jaxtyping import Array, Bool, Float, Int, Key, UInt32
 from numpy.typing import NDArray
 from scipy.fft import next_fast_len
 
-from furax.math.coords import LonLatAngles
+from furax.obs.coords import quat_to_lonlat
 from furax.obs.landscapes import ProjectionType, StokesLandscape
 from furax.obs.stokes import (
     StokesI,
@@ -456,7 +456,7 @@ class AbstractGroundObservation[T](AbstractObservation[T]):
         qdet_full = qbore[None, :] * qdet[:, None]
 
         # Convert quaternions to longitude/latitude angles in radians
-        alpha, delta, _ = LonLatAngles.from_quaternion(qdet_full)
+        alpha, delta, _ = quat_to_lonlat(qdet_full)
 
         # Convert to degrees if requested
         if use_degrees:

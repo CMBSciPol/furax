@@ -513,10 +513,17 @@ class StackedEnsemble(Ensemble):
             if s is not None and leaf.shape[a] % devices:
                 raise ValueError(f'{leaf.shape[a]} entries do not split over {devices} devices')
         _check_segments(self.owner, self.segments, self.size, devices)
-        placed = [
-            leaf if s is None else jax.device_put(leaf, P(*(None,) * a, axis))
-            for leaf, s, a in zip(leaves, strides, self.axes)
-        ]
+        # an array several leaves hold on one member axis, such as after a structural lift, is
+        # placed once, so that it stays one array on the devices
+        placements: dict[tuple[int, int], Array] = {}
+        placed = []
+        for leaf, s, a in zip(leaves, strides, self.axes):
+            if s is not None:
+                key = (id(leaf), a)
+                if key not in placements:
+                    placements[key] = jax.device_put(leaf, P(*(None,) * a, axis))
+                leaf = placements[key]
+            placed.append(leaf)
         valid = None if self.valid is None else jax.device_put(self.valid, P(axis))
         owner = None if self.owner is None else jax.device_put(self.owner, P(axis))
         return dataclasses.replace(

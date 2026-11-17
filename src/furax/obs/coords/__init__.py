@@ -33,6 +33,7 @@ from ._angles import (
     quat_to_xieta,
     xieta_to_quat,
 )
+from ._geometry import azel_to_vec, tangent_basis, vec_to_azel
 
 __all__ = [
     'XAXIS',
@@ -40,6 +41,7 @@ __all__ = [
     'ZAXIS',
     'ZSPhi',
     'azel_to_quat',
+    'azel_to_vec',
     'euler',
     'gamma_angle',
     'gamma_angle_cos_sin',
@@ -51,5 +53,7 @@ __all__ = [
     'quat_to_iso',
     'quat_to_lonlat',
     'quat_to_xieta',
+    'tangent_basis',
+    'vec_to_azel',
     'xieta_to_quat',
 ]

@@ -18,17 +18,19 @@ from furax.obs.landscapes import (
 )
 from furax.obs.operators import QURotationOperator
 from furax.obs.operators._qu_rotations import rotate_qu_cs
-from furax.obs.pointing import PointingOperator, PointingTransposeOperator, _Tiling
-from furax.obs.sampling import (
+from furax.obs.pointing import (
     AbstractSampler,
     AngleSampler,
     DiscretizedBeam,
+    PointingOperator,
     PointingRows,
+    PointingTransposeOperator,
     PrecomputedSampler,
     QuaternionSampler,
     RotatedSampler,
     SamplingKernel,
 )
+from furax.obs.pointing._operator import _Tiling
 from furax.obs.spin2 import transport_rotation, transported_gather
 from furax.obs.stencil import Interpolation
 from furax.obs.stokes import Stokes, StokesIQU, ValidStokesLiteral

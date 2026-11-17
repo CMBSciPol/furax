@@ -22,7 +22,7 @@ from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 if TYPE_CHECKING:  # the sampling module reads landscapes
-    from furax.obs.sampling import AbstractSampler
+    from furax.obs.pointing import AbstractSampler
 
 _StokesT = TypeVar('_StokesT', bound=Stokes)
 

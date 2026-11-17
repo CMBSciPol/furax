@@ -62,11 +62,11 @@ def test_quaternions_are_zero_padded():
     )
     data, _, _ = reader.read(0)
     obs = FakeObservation(**small)
-    qbore, qdet = data['boresight_quaternions'], data['detector_quaternions']
-    assert_array_equal(qbore[:500], obs.get_boresight_quaternions())
-    assert_array_equal(qdet[:2], obs.get_detector_quaternions())
-    assert not np.any(qbore[500:])
-    assert not np.any(qdet[2:])
+    q_sky_bore, q_bore_det = data['boresight_quaternions'], data['detector_quaternions']
+    assert_array_equal(q_sky_bore[:500], obs.get_boresight_quaternions())
+    assert_array_equal(q_bore_det[:2], obs.get_detector_quaternions())
+    assert not np.any(q_sky_bore[500:])
+    assert not np.any(q_bore_det[2:])
 
 
 @pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])

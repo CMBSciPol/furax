@@ -36,15 +36,16 @@ class ScreenSampler(AbstractSampler):
 
     Attributes:
         kernel: The interpolation of the screen. A beam is not supported.
-        qbore: Boresight quaternions in the horizon frame (z-axis = zenith), shape (n_samples,).
-        qdet: Detector offset quaternions, shape (n_detectors,).
+        q_hor_bore: Boresight quaternions in the horizon frame (z-axis = zenith), shape
+            (n_samples,).
+        q_bore_det: Detector quaternions in the boresight frame, shape (n_detectors,).
         wind_displacement: Wind offset `(vx * t_k, vy * t_k)` of each sample, shape
             (n_samples, 2).
         elevation_modulation: If True, weight each sample by `1 / sin(el)` (airmass).
     """
 
-    qbore: Quaternion
-    qdet: Quaternion
+    q_hor_bore: Quaternion
+    q_bore_det: Quaternion
     wind_displacement: Float[Array, 'samp 2']
     elevation_modulation: bool = field(default=False, metadata={'static': True})
 
@@ -79,15 +80,15 @@ class ScreenSampler(AbstractSampler):
         interpolation = Interpolation.BILINEAR if interpolate else Interpolation.NEAREST
         return cls(
             kernel=SamplingKernel(interpolation),
-            qbore=boresight_quaternions,
-            qdet=detector_quaternions,
+            q_hor_bore=boresight_quaternions,
+            q_bore_det=detector_quaternions,
             wind_displacement=times[:, None] * wind_velocity[None, :],
             elevation_modulation=elevation_modulation,
         )
 
     @property
     def shape(self) -> tuple[int, ...]:
-        return self.qdet.shape[0], self.qbore.shape[0]
+        return self.q_bore_det.shape[0], self.q_hor_bore.shape[0]
 
     def pointing_rows(self, landscape: StokesLandscape, index: SampleIndex) -> PointingRows:
         """The screen stencil, which carries no sky positions and no rotation.
@@ -119,7 +120,7 @@ class ScreenSampler(AbstractSampler):
 
     def _quaternions(self, index: SampleIndex) -> Quaternion:
         idet, isamp = index
-        return self.qbore[isamp] * self.qdet[idet]
+        return self.q_hor_bore[isamp] * self.q_bore_det[idet]
 
     def _wind_xy(
         self, landscape: TangentialLandscape, index: SampleIndex

@@ -263,13 +263,15 @@ class TestAngleSampler:
 
     def test_quaternions_to_angles_reads_the_same_map(self) -> None:
         landscape = HealpixLandscape(NSIDE, 'IQU')
-        qbore = Quaternion.random(jax.random.key(2), (7,))
+        q_sky_bore = Quaternion.random(jax.random.key(2), (7,))
         sampler = QuaternionSampler(
             kernel=SamplingKernel(
                 Interpolation.BILINEAR, DiscretizedBeam(_nodes(), jnp.array([0.3, 0.7]))
             ),
-            qbore=qbore,
-            qdet=xieta_to_quat(jnp.zeros(NDET), jnp.linspace(-0.1, 0.1, NDET), jnp.ones(NDET)),
+            q_sky_bore=q_sky_bore,
+            q_bore_det=xieta_to_quat(
+                jnp.zeros(NDET), jnp.linspace(-0.1, 0.1, NDET), jnp.ones(NDET)
+            ),
         )
         sky = landscape.normal(jax.random.key(3))
         on_the_fly = PointingOperator.from_sampler(landscape, sampler)(sky)
@@ -280,8 +282,8 @@ class TestAngleSampler:
         """Angles can put a sample on a pixel boundary in another pixel than `quat2index`."""
         sampler = QuaternionSampler(
             kernel=SamplingKernel(Interpolation.NEAREST),
-            qbore=Quaternion.random(jax.random.key(5), (7,)),
-            qdet=Quaternion.ones((NDET,)),
+            q_sky_bore=Quaternion.random(jax.random.key(5), (7,)),
+            q_bore_det=Quaternion.ones((NDET,)),
         )
         with pytest.raises(ValueError, match='cannot be stored as angles'):
             sampler.to_angles(HealpixLandscape(NSIDE, 'IQU'))
@@ -294,8 +296,10 @@ class TestPrecomputedSampler:
         landscape = HealpixLandscape(NSIDE, stokes)
         sampler = QuaternionSampler(
             kernel=SamplingKernel(interpolation),
-            qbore=Quaternion.random(jax.random.key(4), (7,)),
-            qdet=xieta_to_quat(jnp.zeros(NDET), jnp.linspace(-0.1, 0.1, NDET), jnp.ones(NDET)),
+            q_sky_bore=Quaternion.random(jax.random.key(4), (7,)),
+            q_bore_det=xieta_to_quat(
+                jnp.zeros(NDET), jnp.linspace(-0.1, 0.1, NDET), jnp.ones(NDET)
+            ),
         )
         cached = PrecomputedSampler.from_sampler(sampler, landscape)
         sky = landscape.normal(jax.random.key(5))

@@ -43,17 +43,19 @@ def _make_operator(
     k1, k2, k3 = jax.random.split(key, 3)
 
     # Small zenith angles so all detectors land inside the map
-    qbore = Quaternion.random(k1, (nsamp,))
-    qbore = Quaternion.from_array(qbore.wxyz.at[:, 1:3].multiply(0.05)).normalize()  # near zenith
+    q_hor_bore = Quaternion.random(k1, (nsamp,))
+    q_hor_bore = Quaternion.from_array(
+        q_hor_bore.wxyz.at[:, 1:3].multiply(0.05)
+    ).normalize()  # near zenith
 
-    qdet = Quaternion.random(k2, (ndet,))
-    qdet = Quaternion.from_array(qdet.wxyz.at[:, 1:3].multiply(0.01)).normalize()
+    q_bore_det = Quaternion.random(k2, (ndet,))
+    q_bore_det = Quaternion.from_array(q_bore_det.wxyz.at[:, 1:3].multiply(0.01)).normalize()
 
     atm_map = landscape.normal(k3)
 
     sampler = ScreenSampler.from_wind(
-        qbore,
-        qdet,
+        q_hor_bore,
+        q_bore_det,
         wind_velocity,
         times,
         interpolate=False,
@@ -70,8 +72,8 @@ class TestScreenSamplerValidation:
         with pytest.raises(ValueError, match='does not support a beam'):
             ScreenSampler(
                 kernel=SamplingKernel(beam=beam),
-                qbore=op.sampler.qbore,
-                qdet=op.sampler.qdet,
+                q_hor_bore=op.sampler.q_hor_bore,
+                q_bore_det=op.sampler.q_bore_det,
                 wind_displacement=op.sampler.wind_displacement,
             )
 
@@ -98,8 +100,8 @@ class TestAtmosphereOperatorMv:
 
         flat = atm.ravel()
         for d in range(NDET):
-            qdet_full = op.sampler.qbore[None, :] * op.sampler.qdet[d : d + 1, None]  # (1, samp)
-            x, y = landscape.quat2xy(qdet_full[0])  # (samp,)
+            q_hor_det = op.sampler.q_hor_bore * op.sampler.q_bore_det[d]  # (samp,)
+            x, y = landscape.quat2xy(q_hor_det)  # (samp,)
             idx = landscape.pixel2index(*landscape.xy2pixel(x, y))
             expected = flat.i[idx]
             assert_array_almost_equal(tod.i[d], expected)
@@ -114,8 +116,8 @@ class TestAtmosphereOperatorMv:
 
         flat = atm.ravel()
         for d in range(NDET):
-            qdet_full = op.sampler.qbore[None, :] * op.sampler.qdet[d : d + 1, None]  # (1, samp)
-            x, y = landscape.quat2xy(qdet_full[0])  # (samp,)
+            q_hor_det = op.sampler.q_hor_bore * op.sampler.q_bore_det[d]  # (samp,)
+            x, y = landscape.quat2xy(q_hor_det)  # (samp,)
             x_shifted = x + times * wind_velocity[0]
             y_shifted = y + times * wind_velocity[1]
             idx = landscape.pixel2index(*landscape.xy2pixel(x_shifted, y_shifted))
@@ -133,8 +135,8 @@ class TestAtmosphereElevationModulation:
         tod_mod = op_mod(atm)
 
         for d in range(NDET):
-            qdet_full = op.sampler.qbore[None, :] * op.sampler.qdet[d : d + 1, None]  # (1, samp)
-            sin_el = qdet_full[0].rotate_vector(ZAXIS)[..., 2]  # (samp,)
+            q_hor_det = op.sampler.q_hor_bore * op.sampler.q_bore_det[d]  # (samp,)
+            sin_el = q_hor_det.rotate_vector(ZAXIS)[..., 2]  # (samp,)
             assert_array_almost_equal(tod_mod.i[d], tod.i[d] / sin_el)
 
     def test_off_matches_plain_operator(self) -> None:

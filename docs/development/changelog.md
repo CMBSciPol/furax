@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax.math.bspline.cardinal_bspline` evaluates the cardinal B-splines of degree 0 to 3 (#480)
 - `ObservationProbe.good_ranges` reports the good ranges of the samples of an observation before it is read, from which the mapmaker sizes the amplitudes of the explicit gaps under `ExplicitGapsConfig.probe`; `LazyPreprocSOTODLibObservation` reads them from the preprocessing metadata (#481)
 - `azel_to_vec`, `vec_to_azel` and `tangent_basis` in `furax.obs.coords`: directions and tangent planes in the horizon frame (#511)
+- `AbstractPointingModel`, `BasicPointingModel` and `fit` in `furax.obs.pointing`: telescope pointing models, fitted to point-source observations (#XXX)
+- `SOTODLibSATv1PointingModel` and `SOTODLibSATv2PointingModel` in `furax.interfaces.sotodlib`: ports of the SAT pointing models of sotodlib (#XXX)
 
 ### Changed
 

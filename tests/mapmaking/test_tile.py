@@ -4,14 +4,14 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking import ReaderField
-from furax.mapmaking._model import (
+from furax.mapmaking._observation import real_extent
+from furax.mapmaking._tile import (
     _noise_model,
     _noise_operator,
     _over_flagged,
     _sample_mask,
     restrict_streams,
 )
-from furax.mapmaking._observation import real_extent
 from furax.mapmaking.config import (
     HealpixConfig,
     LandscapeConfig,

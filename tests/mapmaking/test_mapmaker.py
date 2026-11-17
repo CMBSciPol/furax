@@ -106,11 +106,11 @@ def test_model_matches_the_reader_and_the_landscape(stokes, demodulated):
     (bucket,) = maker.layout.buckets
     (reader,) = maker.readers
     assert reader.count == len(observations)
-    tiles = accumulate(maker).buckets[0]
+    tiles = accumulate(maker)[0][0]
     assert tiles.size == bucket.n_tiles
-    model = tiles.template.model
+    model = tiles.template
     # structures compared ignoring sharding (the model is built sharded inside shard_map)
-    assert structure_equal(model.map_structure, maker.landscape.structure)
+    assert structure_equal(model.H.in_structure, maker.landscape.structure)
     # the samples are read in float32, and cast to the dtype of the model
     tile, _ = detector_tile_structure(reader.out_structure, bucket.tile_size)
     dtype = model.tod_format.dtype
@@ -120,7 +120,7 @@ def test_model_matches_the_reader_and_the_landscape(stokes, demodulated):
     # carries the stream axis (after the tile axis of the accumulation)
     assert isinstance(model.noise_model, WhiteNoiseModel)
     if demodulated:
-        assert tiles.stacked.model.noise_model.sigma.shape[1] == len(stokes)
+        assert tiles.stacked.noise_model.sigma.shape[1] == len(stokes)
 
 
 @pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])

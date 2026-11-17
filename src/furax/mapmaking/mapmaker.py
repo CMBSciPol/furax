@@ -10,32 +10,32 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental import multihost_utils as mhu
-from jaxtyping import Array, Bool, Float, Int64, Integer
+from jaxtyping import Array, Bool, Float, Integer
 
 import furax.linalg
 import furax.tree
-from furax.core import HostEnsemble, IndexOperator, Policy, StackedEnsemble, map_reduce
+from furax.core import IndexOperator, StackedEnsemble, map_reduce
 from furax.obs.landscapes import HealpixLandscape, StokesLandscape, WCSLandscape
 from furax.obs.stokes import StokesType
 from furax.profiling import format_bytes
 
 from . import _report
-from ._accumulated import AccumulatedModel
-from ._bucket import AmplitudeKind
+from ._bucket import block_jacobi
 from ._catalog import ObservationCatalog, ProbeRecord, Read, detector_table, gather_rows
 from ._gaps import GapSplines, gap_budget, knot_spacing, max_gap_amplitudes
 from ._injection import load_sky
 from ._landscape import explicit_wcs_geometry, scan_wcs_footprint
-from ._model import TileModel
 from ._observation import (
     AbstractLazyObservation,
     ObservationBufferShape,
     ObservationProbe,
     ReaderField,
 )
-from ._pass import TILE_REDUCTIONS, bucket_tiles, tile_kernel
+from ._pass import PASS_REDUCTIONS, PassTotals, bucket_tiles, pass_kernel
 from ._provenance import provenance
-from ._reader import ObservationReader, TileReader, detector_tile_structure
+from ._reader import ObservationReader, detector_tile_structure, tile_reads
+from ._solve import MapMakingSystem
+from ._tile import Tile
 from .config import GapTreatment, InjectionMode, MapMakingConfig, NoiseSource, WeightingMode
 from .layout import TileLayout, TilePlacement
 from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
@@ -156,8 +156,8 @@ class MapMakingRun[T]:
         with jax.set_mesh(self.placement.mesh):
             # Single read pass, so each observation is read/preprocessed exactly once.
             start = time.perf_counter()
-            acc = self.build_model_and_accumulate(None if is_response else injected_sky)
-            jax.block_until_ready(acc)
+            buckets, totals = self.read_data(None if is_response else injected_sky)
+            jax.block_until_ready((buckets, totals))
             logger.info(f'Finished the pass over the data in {time.perf_counter() - start:.0f} s')
 
             self._catalog.reads = self._gather_reads()
@@ -165,7 +165,7 @@ class MapMakingRun[T]:
                 # The catalog is the same on every process: one warning is enough
                 level = logging.WARNING if jax.process_index() == 0 else logging.DEBUG
                 logger.log(level, _excluded_message(failures))
-            drops = _report.detector_drops(acc.buckets, self.placement)
+            drops = _report.detector_drops(buckets, self.placement)
             if n_dropped := int(drops['over_flagged'].sum()):
                 logger.info(
                     f'Dropped {n_dropped} detectors flagged above '
@@ -180,24 +180,25 @@ class MapMakingRun[T]:
                 )
             noise_parameters = None
             if self.config.weighting.mode != WeightingMode.IDENTITY:
-                noise_parameters = _report.noise_parameters(acc.buckets, self.placement)
+                noise_parameters = _report.noise_parameters(buckets, self.placement)
 
-            BJ = acc.block_jacobi(self.config.binned, self.landscape.structure)
+            BJ = block_jacobi(buckets, self.config.binned)
             icov = BJ.blocks.block_until_ready()
             logger.info('Computed the block-Jacobi preconditioner')
 
-            valid_pixels = self.pixel_selection(acc.hit_map, icov)
+            valid_pixels = self.pixel_selection(totals.hit_map, icov)
             # Select valid pixels on the (trailing) sky axes, leaving the leading Stokes axis intact.
             S = IndexOperator(
                 (..., *jnp.where(valid_pixels)), in_structure=self.landscape.structure
             )
-            n_observed = jnp.sum(acc.hit_map > 0)
+            n_observed = jnp.sum(totals.hit_map > 0)
             logger.info(
                 f'Selected {jnp.sum(valid_pixels)} pixels ({n_observed} seen, '
                 f'{valid_pixels.size} total)'
             )
 
-            system = acc.build_system(S, BJ, injected_sky if is_response else None)
+            response_sky = injected_sky if is_response else None
+            system = MapMakingSystem.create(buckets, totals.rhs, S, BJ, response_sky)
             if (two_level := self.config.solver.two_level) is not None:
                 system = system.deflate(two_level)
             solved = system.solve(
@@ -207,13 +208,13 @@ class MapMakingRun[T]:
                 resume,
             )
             sky = solved.x['map']
-            amplitudes = _report.template_amplitudes(acc.buckets, solved.x, self.placement) or None
+            amplitudes = _report.template_amplitudes(buckets, solved.x, self.placement) or None
 
         # Built only now, so that their copies are not held through the solve
         return MapMakingResults(
             map=S.T(sky),  # all sky pixels including those not estimated (zero)
             icov=jnp.moveaxis(icov, [-2, -1], [0, 1]),  # (*pixels, ns, ns) → (ns, ns, *pixels)
-            hit_map=jnp.where(valid_pixels, acc.hit_map, 0),  # excluded pixels have zero hits
+            hit_map=jnp.where(valid_pixels, totals.hit_map, 0),  # excluded pixels have zero hits
             solver_stats=solved.solver_stats,
             landscape=self.landscape,
             template_amplitudes=amplitudes,
@@ -223,13 +224,18 @@ class MapMakingRun[T]:
             detectors=detector_table(
                 self._catalog.reads,
                 noise_parameters,
-                acc.buckets[0].template.model.tod_format.stokes,
+                buckets[0].template.tod_format.stokes,
                 drops,
             ),
         )
 
-    def build_model_and_accumulate(self, scanned_sky: StokesType | None = None) -> AccumulatedModel:
-        """Build the model and accumulate the hit map and right-hand side in one pass over the data.
+    def read_data(
+        self, scanned_sky: StokesType | None = None
+    ) -> tuple[list[StackedEnsemble], PassTotals]:
+        """Read the data once: the tiles of each bucket, and what the pass sums over them.
+
+        The tiles hold the model of each detector tile (see [`Tile`][furax.mapmaking._tile.Tile]).
+        The totals are the hit map and the right-hand side of the normal system.
 
         Padding tiles and failed observations are gated out using a zero-mask, so they drop from
         the system.
@@ -247,14 +253,18 @@ class MapMakingRun[T]:
         if scanned_sky is not None:
             sky = self.placement.broadcast(scanned_sky)
         buckets = []
-        for b, reader in enumerate(self.readers):
-            hits, map_rhs, bucket_rhs, tiles = self._accumulate_bucket(b, reader, sky)
-            hit_map = hit_map + hits
-            rhs['map'] = furax.tree.add(rhs['map'], map_rhs)
+        for b in range(len(self.readers)):
+            tiles, outputs = self._read_bucket(b, sky)
+            hit_map = hit_map + outputs['hit_map']
+            bucket_rhs = outputs['rhs']
+            rhs['map'] = furax.tree.add(rhs['map'], bucket_rhs.pop('map'))
             for kind, kind_rhs in bucket_rhs.items():
-                rhs.setdefault(kind, []).append(kind_rhs)
+                if kind_rhs is not None:  # a kind of amplitudes the run has
+                    rhs.setdefault(kind, []).append(kind_rhs)
+            # the unfactored shared Gram must not stay on the devices through the next pass
+            del outputs
             buckets.append(tiles)
-        return AccumulatedModel(buckets=buckets, hit_map=hit_map, rhs=rhs)
+        return buckets, PassTotals(hit_map, rhs)
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -319,7 +329,7 @@ class MapMakingRun[T]:
     @property
     def reader_fields(self) -> set[str]:
         rhs_fields = {ReaderField.METADATA, ReaderField.SAMPLE_DATA}
-        model_fields = TileModel.required_reader_fields(self.config)
+        model_fields = Tile.required_reader_fields(self.config)
         templates = self.config.templates
         template_fields = set() if templates is None else required_reader_fields(templates)
         return model_fields | rhs_fields | template_fields
@@ -437,10 +447,13 @@ class MapMakingRun[T]:
             return load_sky(injection, self.landscape)
         return load_sky(injection, self.landscape.with_stokes(self.config.read_stokes))
 
-    def _accumulate_bucket(
-        self, bucket_index: int, reader: ObservationReader[T], sky: StokesType | None
-    ) -> tuple[Int64[Array, '...'], StokesType, dict[AmplitudeKind, Any], StackedEnsemble]:
-        """One bucket's pass over the data: its hit map, its right-hand sides and its tiles.
+    def _read_bucket(
+        self, bucket_index: int, sky: StokesType | None
+    ) -> tuple[StackedEnsemble, dict[str, Any]]:
+        """One bucket's pass over the data: its tiles, and the kernel's outputs combined over them.
+
+        The outputs are those of [`pass_kernel`][furax.mapmaking._pass.pass_kernel], combined as
+        [`PASS_REDUCTIONS`][furax.mapmaking._pass.PASS_REDUCTIONS] says.
 
         The pass is an engine call on a host ensemble of the bucket's tiles: each round launches
         one tile on each device while its process reads the next round. An observation is read
@@ -449,38 +462,14 @@ class MapMakingRun[T]:
         in step until the device sum at the end. The stacked outputs land sharded over the tiles
         and the segments, which is the layout of the bucket's tiles.
         """
+        reader = self.readers[bucket_index]
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         bucket = self.layout.buckets[bucket_index]
-        # the reader reads the observations of the bucket in the order of their indices
-        position = {int(o): k for k, o in enumerate(bucket.observations)}
-        tile_counts = [0] * bucket.n_observations
-        for segment, o in enumerate(bucket.segment_observations):
-            if o >= 0:
-                tile_counts[position[int(o)]] = len(bucket.tiles_of(segment))
-        tile_reader = TileReader(reader, bucket.tile_size, tile_counts)
-
-        def read_tile(tile: int) -> tuple[Any, Any, np.ndarray]:
-            if not bucket.valid[tile]:
-                return tile_reader.filler
-            observation = position[int(bucket.segment_observations[bucket.owner[tile]])]
-            return tile_reader.read(observation, int(bucket.tile_starts[tile]))
-
-        ensemble = HostEnsemble(
-            bucket.n_tiles,
-            read_tile,
-            tile_reader.structure,
-            policy=Policy(axis=self.placement.axis),
-            prefetch=self._prefetches_reads,
-            strides=tile_reader.strides,
-            owner=bucket.owner,
-            segments=bucket.n_segments,
-        )
-        kernel = tile_kernel(self.fit_config, self.landscape, self._gap_splines[bucket_index])
-        (hits, map_rhs, rhs, shared, tile), resolved = map_reduce(
-            kernel, ensemble, TILE_REDUCTIONS, sky
-        )
-        tiles = bucket_tiles(shared, tile, resolved, bucket, self.placement, self.fit_config)
-        return hits, map_rhs, {kind: v for kind, v in rhs.items() if v is not None}, tiles
+        reads = tile_reads(bucket, reader, self.placement.axis, self._prefetches_reads)
+        kernel = pass_kernel(self.fit_config, self.landscape, self._gap_splines[bucket_index])
+        outputs, resolved = map_reduce(kernel, reads, PASS_REDUCTIONS, sky)
+        tiles = bucket_tiles(outputs, resolved, bucket, self.placement, self.fit_config)
+        return tiles, outputs
 
     @cached_property
     def _prefetches_reads(self) -> bool:

@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
 from enum import IntFlag, auto
+from types import EllipsisType
 from typing import TYPE_CHECKING, Any, ClassVar, dataclass_transform, overload
 
 import equinox as eqx
@@ -21,7 +22,16 @@ from furax._config import Config, ConfigState
 from furax.tree import add as tree_add
 from furax.tree import zeros_like
 
-from ._ensembles import Ensemble, ListEnsemble, lift, map_reduce
+from ._ensembles import (
+    Ensemble,
+    ListEnsemble,
+    Stride,
+    _canonical_strides,
+    _reductions,
+    _strided_structure,
+    lift,
+    map_reduce,
+)
 from .utils import register_dataclass_with_keys
 
 if TYPE_CHECKING:
@@ -435,7 +445,7 @@ def idempotent[T: AbstractLinearOperator](cls: type[T]) -> type[T]:
 
 
 class AdditionOperator(AbstractLinearOperator):
-    """An operator that adds two operators, as in C = A + B.
+    r"""An operator that adds two operators, as in C = A + B.
 
     By default the operands are summed as one expression, which lets XLA reserve memory for all
     of them at once. Set `sequential` to sum them one at a time instead. The result is the same
@@ -452,22 +462,90 @@ class AdditionOperator(AbstractLinearOperator):
     The operands may also be an [`Ensemble`][furax.core.Ensemble] of operators: the sum is then
     evaluated by the engine with the ensemble's policy, which decides how many members run
     together, and `sequential` plays no part.
+
+    Over an ensemble, each member may read and write its own part of the vectors only, as set per
+    leaf by `in_strides` and `out_strides`. A leaf of stride None is read whole by every member,
+    and their outputs to it are summed; one of stride 1 has a leading axis with an entry per
+    member, which reads and writes its own entry; one of stride `'segment'` has an entry per
+    segment of the ensemble, which its members read, and to which their outputs are summed. The
+    operator is then $\sum_i P_i^\top A_i Q_i$, with $Q_i$ and $P_i$ the parts of the input and
+    of the output member $i$ sees, such as a map every member reads whole and the amplitudes of
+    each member alone. By default, `out_strides` are `in_strides`.
+
+    A list of operands, such as operators of different shapes, takes strides too, None or 1, given
+    as a prefix of the operands' input or output structure. Where the stride is 1, the vector
+    holds a list with one subtree per operand, as the input of a
+    [`BlockDiagonalOperator`][furax.core.BlockDiagonalOperator] of the operands does, and operand
+    $g$ reads and writes its entry $g$; where it is None, the operands read the same subtree whole
+    and their outputs to it are summed. A `sequential` strided sum applies its operands one at a
+    time, each through its own traced body.
+
+    Examples:
+        Three members, each adding the map, which they all read, to its own entry of `'own'`:
+
+        >>> from furax.core import BlockRowOperator, StackedEnsemble
+        >>> I = IdentityOperator(in_structure=jax.ShapeDtypeStruct((2,), jnp.float32))
+        >>> members = StackedEnsemble(3, BlockRowOperator({'map': I, 'own': I}))
+        >>> op = AdditionOperator(members, in_strides={'map': None, 'own': 1}, out_strides=None)
+        >>> op({'map': jnp.ones(2), 'own': jnp.arange(6.0).reshape(3, 2)})
+        Array([ 9., 12.], dtype=float32)
+
+        Two operands in a list, each adding the map to its own entry of `'own'`, a list:
+
+        >>> rows = [
+        ...     BlockRowOperator({'map': I, 'own': I}),
+        ...     BlockRowOperator({'map': I, 'own': 2 * I}),
+        ... ]
+        >>> op = AdditionOperator(rows, in_strides={'map': None, 'own': 1}, out_strides=None)
+        >>> op({'map': jnp.ones(2), 'own': [jnp.zeros(2), jnp.ones(2)]})
+        Array([4., 4.], dtype=float32)
     """
 
     operands: PyTree[AbstractLinearOperator]
     sequential: bool = field(default=False, metadata={'static': True})
+    in_strides: Any = field(default=None, metadata={'static': True})
+    """How the operands read the input, None if they all read it whole: over an ensemble, one
+    stride per leaf of a member's input; over a list, the strides as given, frozen."""
+    out_strides: Any = field(default=None, metadata={'static': True})
+    """How the outputs of the operands combine, None if summed, as `in_strides`."""
+    _list_out_structure: PyTree[jax.ShapeDtypeStruct] = field(
+        default=None, repr=False, metadata={'static': True}
+    )
+    """The output structure of a strided list sum, computed once at construction."""
 
     def __init__(
-        self, operands: PyTree[AbstractLinearOperator] | Ensemble, sequential: bool = False
+        self,
+        operands: PyTree[AbstractLinearOperator] | Ensemble,
+        sequential: bool = False,
+        in_strides: PyTree[Stride] = None,
+        out_strides: PyTree[Stride] | EllipsisType = ...,
     ) -> None:
+        if out_strides is ...:
+            out_strides = in_strides
         object.__setattr__(self, 'operands', operands)
         object.__setattr__(self, 'sequential', sequential)
         if isinstance(operands, Ensemble):
-            super().__init__(in_structure=operands.template.in_structure)
+            member = operands.template
+            in_flat = _canonical_strides(member.in_structure, in_strides, operands)
+            out_flat = _canonical_strides(member.out_structure, out_strides, operands)
+            object.__setattr__(self, 'in_strides', in_flat)
+            object.__setattr__(self, 'out_strides', out_flat)
+            in_structure = _strided_structure(member.in_structure, in_flat, operands)
+            super().__init__(in_structure=in_structure)
             return
-        if not self.operand_leaves:
+        object.__setattr__(self, 'in_strides', _frozen_strides(in_strides))
+        object.__setattr__(self, 'out_strides', _frozen_strides(out_strides))
+        operands = self.operand_leaves
+        if not operands:
             raise ValueError('AdditionOperator needs at least one operand')
-        super().__init__(in_structure=self.operand_leaves[0].in_structure)
+        if self._strided:
+            structures = [op.out_structure for op in operands]
+            out_structure = _list_strided_structure(self.out_strides, structures)
+            object.__setattr__(self, '_list_out_structure', out_structure)
+            structures = [op.in_structure for op in operands]
+            super().__init__(in_structure=_list_strided_structure(self.in_strides, structures))
+            return
+        super().__init__(in_structure=operands[0].in_structure)
 
     # Tag propagation properties. The members of an ensemble share their class and static fields,
     # so one member answers for all of them.
@@ -477,34 +555,52 @@ class AdditionOperator(AbstractLinearOperator):
             return [self.operands.template]
         return self.operand_leaves
 
+    # With other strides on each side, a member's tags say nothing of the sum.
     @property
     def is_square(self) -> bool:
-        return super().is_square or self._tag_witnesses[0].is_square
+        witnessed = self._tag_witnesses[0].is_square
+        return super().is_square or (self._same_strides and witnessed)
 
     @property
     def is_symmetric(self) -> bool:
-        return super().is_symmetric or all(op.is_symmetric for op in self._tag_witnesses)
+        witnessed = all(op.is_symmetric for op in self._tag_witnesses)
+        return super().is_symmetric or (self._same_strides and witnessed)
 
     @property
     def is_diagonal(self) -> bool:
-        return super().is_diagonal or all(op.is_diagonal for op in self._tag_witnesses)
+        witnessed = all(op.is_diagonal for op in self._tag_witnesses)
+        return super().is_diagonal or (self._same_strides and witnessed)
 
     @property
     def is_positive_semidefinite(self) -> bool:
-        return super().is_positive_semidefinite or all(
-            op.is_positive_semidefinite for op in self._tag_witnesses
-        )
+        witnessed = all(op.is_positive_semidefinite for op in self._tag_witnesses)
+        return super().is_positive_semidefinite or (self._same_strides and witnessed)
 
     @property
     def is_negative_semidefinite(self) -> bool:
-        return super().is_negative_semidefinite or all(
-            op.is_negative_semidefinite for op in self._tag_witnesses
-        )
+        witnessed = all(op.is_negative_semidefinite for op in self._tag_witnesses)
+        return super().is_negative_semidefinite or (self._same_strides and witnessed)
+
+    @property
+    def _same_strides(self) -> bool:
+        return self.in_strides == self.out_strides
+
+    @property
+    def _strided(self) -> bool:
+        """Whether the operands read or write only parts of the vectors."""
+        return self.in_strides is not None or self.out_strides is not None
 
     def mv(self, x: PyTree[Inexact[Array, ' _a']]) -> PyTree[Inexact[Array, ' _b']]:
         if isinstance(self.operands, Ensemble):
-            return map_reduce(lambda op, v: op(v), self.operands, 'sum', x)[0]
+            out_spec = _reductions(self.operands.template.out_structure, self.out_strides)
+            if self.in_strides is None:
+                # every member reads x whole, which a HostEnsemble, unable to zip, also supports
+                return map_reduce(lambda op, v: op(v), self.operands, out_spec, x)[0]
+            zipped = self.operands.zip(x, strides=self.in_strides)
+            return map_reduce(lambda member: member[0](member[1]), zipped, out_spec)[0]
         operands = self.operand_leaves
+        if self._strided:
+            return self._list_strided_mv(x)
         if not self.sequential:
             return functools.reduce(tree_add, (operand(x) for operand in operands))
         groups = _group_by_signature(operands)
@@ -516,10 +612,32 @@ class AdditionOperator(AbstractLinearOperator):
             total = tree_add(total, _apply_group([operands[i] for i in group], x_group))
         return total
 
+    def _list_strided_mv(self, x: PyTree[Array]) -> PyTree[Array]:
+        """The sum over a list of operands, each reading and writing its entries of the vectors."""
+        ins, outs = _thawed(self.in_strides), _thawed(self.out_strides)
+        total = None
+        for g, operand in enumerate(self.operand_leaves):
+            if total is not None and self.sequential:
+                # as for the groups of a sequential sum: the next operand waits for the total
+                total, x = jax.lax.optimization_barrier((total, x))
+            y = operand(_entries(ins, x, g))
+            # the entries of the operand, as a list of one to append to the total's
+            y = jax.tree.map(lambda s, v: v if s is None else [v], outs, y, is_leaf=_is_none)
+            if total is not None:
+                y = jax.tree.map(
+                    lambda s, t, v: tree_add(t, v) if s is None else t + v,
+                    outs,
+                    total,
+                    y,
+                    is_leaf=_is_none,
+                )
+            total = y
+        return total
+
     def transpose(self) -> AbstractLinearOperator:
-        if isinstance(self.operands, Ensemble):
-            return AdditionOperator(lift(lambda op: op.T, self.operands), self.sequential)
-        return AdditionOperator(self._tree_map(lambda operand: operand.T), self.sequential)
+        in_strides, out_strides = self._given_strides
+        transposed = self._map_operands(lambda op: op.T)
+        return AdditionOperator(transposed, self.sequential, out_strides, in_strides)
 
     def __add__(self, other: AbstractLinearOperator) -> 'AdditionOperator':
         if not isinstance(other, AbstractLinearOperator):
@@ -528,10 +646,10 @@ class AdditionOperator(AbstractLinearOperator):
             raise ValueError('Incompatible linear operator input structures')
         if not structure_equal(self.out_structure, other.out_structure):
             raise ValueError('Incompatible linear operator output structures')
-        if isinstance(self.operands, Ensemble):
-            # the ensemble stays a closed operand of a wider sum
+        if self._is_closed:
+            # the ensemble, or the strided list, stays a closed operand of a wider sum
             return AdditionOperator([self, other], self.sequential)
-        if isinstance(other, AdditionOperator) and not isinstance(other.operands, Ensemble):
+        if isinstance(other, AdditionOperator) and not other._is_closed:
             operands = other.operand_leaves
             sequential = self.sequential or other.sequential
         else:
@@ -546,35 +664,58 @@ class AdditionOperator(AbstractLinearOperator):
             raise ValueError('Incompatible linear operator input structures')
         if not structure_equal(self.out_structure, other.out_structure):
             raise ValueError('Incompatible linear operator output structures')
-        if isinstance(self.operands, Ensemble):
+        if self._is_closed:
             return AdditionOperator([other, self], self.sequential)
         return AdditionOperator([other] + self.operand_leaves, self.sequential)
 
     def __neg__(self) -> 'AdditionOperator':
-        if isinstance(self.operands, Ensemble):
-            return AdditionOperator(lift(lambda op: (-1) * op, self.operands), self.sequential)
-        return AdditionOperator(self._tree_map(lambda operand: (-1) * operand), self.sequential)
+        negated = self._map_operands(lambda op: (-1) * op)
+        return AdditionOperator(negated, self.sequential, *self._given_strides)
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
         if isinstance(self.operands, Ensemble):
-            return self.operands.template.out_structure
+            member = self.operands.template
+            return _strided_structure(member.out_structure, self.out_strides, self.operands)
+        if self._strided:
+            return self._list_out_structure
         return self.operand_leaves[0].out_structure
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
+        if self._strided:
+            return super().as_matrix()
         return functools.reduce(jnp.add, (operand.as_matrix() for operand in self.operand_leaves))
 
     def reduce(self) -> AbstractLinearOperator:
         from .rules import AdditiveReductionRule
 
-        if isinstance(self.operands, Ensemble):
-            return AdditionOperator(lift(lambda op: op.reduce(), self.operands), self.sequential)
+        if self._is_closed:
+            reduced = self._map_operands(lambda op: op.reduce())
+            return AdditionOperator(reduced, self.sequential, *self._given_strides)
         operands = [operand.reduce() for operand in self.operand_leaves]
         if not self.sequential:
             operands = AdditiveReductionRule().apply(operands)
         if len(operands) == 1:
             return operands[0]
         return AdditionOperator(operands, self.sequential)
+
+    @property
+    def _is_closed(self) -> bool:
+        """Whether the sum takes no more operands: over an ensemble, or a strided list."""
+        return isinstance(self.operands, Ensemble) or self._strided
+
+    @property
+    def _given_strides(self) -> tuple[PyTree[Stride], PyTree[Stride]]:
+        """The input and output strides, as the constructor takes them."""
+        if isinstance(self.operands, Ensemble):
+            return self.in_strides, self.out_strides
+        return _thawed(self.in_strides), _thawed(self.out_strides)
+
+    def _map_operands(self, f: Callable[[Any], Any]) -> Any:
+        """`f` of each operand, as an ensemble of the results over an ensemble."""
+        if isinstance(self.operands, Ensemble):
+            return lift(f, self.operands)
+        return self._tree_map(f)
 
     @property
     def operand_leaves(self) -> list[AbstractLinearOperator]:
@@ -592,6 +733,55 @@ class AdditionOperator(AbstractLinearOperator):
             *args,
             is_leaf=lambda x: isinstance(x, AbstractLinearOperator),
         )
+
+
+def _frozen_strides(strides: PyTree[Stride]) -> tuple[Any, tuple[Stride, ...]] | None:
+    """The strides of a list sum, hashable as static data; None if every stride is None.
+
+    Raises:
+        ValueError: If a stride is not None or 1.
+    """
+    leaves, treedef = jax.tree.flatten(strides, is_leaf=_is_none)
+    for s in leaves:
+        if s not in (None, 1) or isinstance(s, bool):
+            raise ValueError(f'stride {s!r}: the strides of a sum over a list are None or 1')
+    return None if all(s is None for s in leaves) else (treedef, tuple(leaves))
+
+
+def _thawed(frozen: tuple[Any, tuple[Stride, ...]] | None) -> PyTree[Stride]:
+    """The strides `_frozen_strides` froze."""
+    return None if frozen is None else frozen[0].unflatten(frozen[1])
+
+
+def _list_strided_structure(
+    frozen: tuple[Any, tuple[Stride, ...]] | None, structures: list[PyTree[Any]]
+) -> PyTree[Any]:
+    """The structure of a vector of a list sum, from that of each operand's.
+
+    Raises:
+        ValueError: If the operands differ on a part they all read, or write to, whole.
+    """
+
+    def combined(s: Stride, *parts: PyTree[Any]) -> PyTree[Any]:
+        if s is not None:
+            return list(parts)
+        if not all(structure_equal(part, parts[0]) for part in parts[1:]):
+            raise ValueError('the operands differ on a part of stride None, which they share')
+        return parts[0]
+
+    try:
+        return jax.tree.map(combined, _thawed(frozen), *structures, is_leaf=_is_none)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f'the strides do not fit the operands: {error}') from error
+
+
+def _entries(strides: PyTree[Stride], x: PyTree[Any], g: int) -> PyTree[Any]:
+    """What operand `g` of a list sum reads of `x`: its entry where the stride is 1."""
+    return jax.tree.map(lambda s, v: v if s is None else v[g], strides, x, is_leaf=_is_none)
+
+
+def _is_none(x: Any) -> bool:
+    return x is None
 
 
 def _apply_group(members: list[AbstractLinearOperator], x: PyTree[Array]) -> PyTree[Array]:

@@ -38,11 +38,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GapTreatment.EXPLICIT` models each gap by a B-spline of degree up to 3 on intervals of `ExplicitGapsConfig.resolution` seconds, whose amplitudes are solved for with the map; a detector needing more amplitudes than its bucket's budget is dropped and counted in the `over_gap_budget` columns (#480)
 - `furax.math.bspline.cardinal_bspline` evaluates the cardinal B-splines of degree 0 to 3 (#480)
 - `ObservationProbe.good_ranges` reports the good ranges of the samples of an observation before it is read, from which the mapmaker sizes the amplitudes of the explicit gaps under `ExplicitGapsConfig.probe`; `LazyPreprocSOTODLibObservation` reads them from the preprocessing metadata (#481)
+- `AdditionOperator` over an ensemble takes `in_strides` and `out_strides`, so that each member reads and writes only its own entries (stride 1) or those of its segment (`'segment'`) of a leaf (#498)
+- `Ensemble.zip` takes `strides`, to hand a leaf whole to every member or per segment (#498)
+- The strides and member axes of an ensemble may be given as a prefix of the pytree they describe, one value for a whole subtree (#498)
+- `DeferredOperator(build, *members)`, the operator `build(*members)` built when applied: lifted over a `StackedEnsemble`, it keeps the ensemble's arrays at their strides (#499)
+- `AdditionOperator` over a list of operands takes `in_strides` and `out_strides`, None or 1: where 1, the vector holds a list with one entry per operand, which reads and writes its own (#503)
+- `HostEnsemble.zip` pairs the members read from the host with arrays the devices hold, read per member, per segment or whole (#506)
+- `StackedEnsemble.by_segment` views an ensemble grouped in segments as one member per segment (#507)
 
 ### Changed
 
 - **Breaking:** `MultiObservationMapMaker` takes only the configuration: `run` and `make_maps` take the observations, and `prepare` returns their `MapMakingRun`, so one mapmaker maps successive datasets (#491)
 - `op @ IdentityOperator(...)` returns `op` instead of a composition (#458)
+- `StackedEnsemble.shard` places an array that several leaves hold once (#496)
 - `map_reduce`, `size_per_device` and `Policy.from_budget` read the mesh of a laid-out ensemble from the shardings of its leaves, falling back to the ambient mesh (#441)
 - `furax-so-map` refuses an output directory that holds the output of an earlier run, unless given `--overwrite`, which deletes that output first (#402)
 - `furax-so-map` logs to `furax-so-map.rank<N>.log` in the output directory by default (#402)
@@ -58,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax-so-map` logs the excluded observations as a warning with their reasons, and adds one line per observation read, the start of each solve and a progress line every 10 CG steps (#432)
 - `furax-so-map` shows the messages below WARNING of process 0 only on the console, and its log files also hold the messages logged before they were created (#432)
 - The multi-observation mapmaker's pass over the data runs on the ensemble engine: a `HostEnsemble` of each bucket's slots replaces the hand-rolled accumulation loop (#401)
-- The multi-observation mapmaker's left-hand side (`BucketNormalOperator`, `MemberOperator`) runs on the ensemble engine (#414)
+- The multi-observation mapmaker's left-hand side runs on the ensemble engine (#414)
 - `LazyPreprocSOTODLibObservation` now caches each preprocessing group in a file of its own, shared by runs that select or join the wafers differently (#450)
 - `furax-so-map` and `furax-so-cache` select every wafer by default, instead of `ws0`; `--wafer` selects a subset, and the value `all` is removed (#449)
 - Documentation: the navigation is pinned in the left sidebar, and the user-guide URLs use dashes, e.g. `user-guide/getting-started/` (#460)
@@ -82,6 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** the classes `IsoAngles`, `LonLatAngles`, `AzElAngles` and `XiEtaAngles` are replaced by functions; the last angle (`psi` or `gamma`) defaults to zero, and the inverse returns a tuple (#509)
   - `IsoAngles(theta, phi, psi).to_quaternion()` → `iso_to_quat(theta, phi, psi)`, `IsoAngles.from_quaternion(q)` → `quat_to_iso(q)`
   - likewise `lonlat_to_quat` / `quat_to_lonlat`, `azel_to_quat` / `quat_to_azel`, `xieta_to_quat` / `quat_to_xieta`
+- `lift` keeps the arrays an operator constructor passes through, `'segment'` and strided leaves included, instead of copying them to every member (#500)
 
 ### Fixed
 

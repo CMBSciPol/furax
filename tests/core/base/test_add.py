@@ -5,10 +5,23 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jaxtyping import PyTree
-from numpy.testing import assert_array_equal
+from numpy.testing import assert_allclose, assert_array_equal
 
-from furax import AbstractLinearOperator, HomothetyOperator, IdentityOperator, square
-from furax.core import AdditionOperator, CompositionOperator, TransposeOperator
+import furax
+from furax import (
+    AbstractLinearOperator,
+    DiagonalOperator,
+    HomothetyOperator,
+    IdentityOperator,
+    square,
+)
+from furax.core import (
+    AdditionOperator,
+    BlockRowOperator,
+    CompositionOperator,
+    DenseBlockDiagonalOperator,
+    TransposeOperator,
+)
 
 
 class Op(AbstractLinearOperator):
@@ -179,3 +192,80 @@ def test_add_invalid_out_structure() -> None:
 
     with pytest.raises(ValueError, match='Incompatible linear operator output structures'):
         _ = Op(1, in_structure=_op_structure) + Op_(1, in_structure=_op_structure)
+
+
+# A sum over a list of operands whose own amplitudes differ in size, which share the map
+_SIZES = (2, 3)
+_LIST_STRIDES = {'map': None, 'own': 1}
+
+
+def _struct(n: int) -> jax.ShapeDtypeStruct:
+    return jax.ShapeDtypeStruct((n,), jnp.float64)
+
+
+def _list_joint() -> list[AbstractLinearOperator]:
+    """The joint operators, from `{'map', 'own'}` to a TOD of the size of each one's own part."""
+    keys = jax.random.split(jax.random.key(0), 2 * len(_SIZES))
+    return [
+        BlockRowOperator(
+            {
+                'map': DenseBlockDiagonalOperator(
+                    jax.random.normal(keys[2 * g], (n, 4)),
+                    in_structure=_struct(4),
+                ),
+                'own': DiagonalOperator(jax.random.normal(keys[2 * g + 1], (n,))),
+            }
+        )
+        for g, n in enumerate(_SIZES)
+    ]
+
+
+def _list_unknowns() -> dict:
+    keys = jax.random.split(jax.random.key(1), 1 + len(_SIZES))
+    own = [jax.random.normal(k, (n,)) for k, n in zip(keys[1:], _SIZES)]
+    return {'map': jax.random.normal(keys[0], (4,)), 'own': own}
+
+
+@pytest.mark.parametrize('sequential', [False, True])
+def test_list_strided_sum_applies_each_operand_to_its_parts(sequential: bool) -> None:
+    joint = _list_joint()
+    normal = AdditionOperator([J.T @ J for J in joint], sequential, in_strides=_LIST_STRIDES)
+    x = _list_unknowns()
+    parts = [(J.T @ J)({'map': x['map'], 'own': x['own'][g]}) for g, J in enumerate(joint)]
+    expected = {'map': sum(p['map'] for p in parts), 'own': [p['own'] for p in parts]}
+    assert normal.in_structure == normal.out_structure == furax.tree.as_structure(x)
+    jax.tree.map(lambda a, b: assert_allclose(a, b, rtol=1e-12), normal(x), expected)
+
+
+def test_list_strided_sum_transposes_with_its_strides() -> None:
+    # non-square: the unknowns to the TOD of each operand, one entry each
+    op = AdditionOperator(_list_joint(), in_strides=_LIST_STRIDES, out_strides=1)
+    assert [s.shape for s in op.out_structure] == [(n,) for n in _SIZES]
+    assert_allclose(op.T.as_matrix(), op.as_matrix().T, rtol=1e-12)
+    assert_allclose((op.T @ op).as_matrix(), op.as_matrix().T @ op.as_matrix(), rtol=1e-12)
+
+
+def test_list_strided_sum_tags_need_the_same_strides_on_both_sides() -> None:
+    structures = [{'map': _struct(4), 'own': _struct(n)} for n in _SIZES]
+    scalings = [HomothetyOperator(2.0, in_structure=structure) for structure in structures]
+    scaled = AdditionOperator(scalings, in_strides=_LIST_STRIDES)
+    assert scaled.is_symmetric
+    # a closed operand of a wider sum, as a sum over an ensemble is
+    assert (scaled + scaled).operand_leaves == [scaled, scaled]
+    joint = AdditionOperator(_list_joint(), in_strides=_LIST_STRIDES, out_strides=1)
+    assert not joint.is_square and not joint.is_symmetric
+
+
+@pytest.mark.parametrize(
+    ('strides', 'match'),
+    [
+        ('segment', 'None or 1'),
+        (None, 'differ on a part of stride None'),
+        ({'map': None, 'other': 1}, 'do not fit the operands'),
+    ],
+    ids=['segment', 'shared-part-differs', 'not-a-prefix'],
+)
+def test_list_strided_sum_rejects_invalid_strides(strides, match) -> None:
+    operands = [J.T @ J for J in _list_joint()]
+    with pytest.raises(ValueError, match=match):
+        AdditionOperator(operands, in_strides=strides, out_strides=_LIST_STRIDES)

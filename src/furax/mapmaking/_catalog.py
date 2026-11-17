@@ -18,9 +18,9 @@ from jaxtyping import Bool, Float64, Int64
 
 from furax.obs.coords import quat_to_xieta
 
-from ._model import DROP_REASONS
 from ._observation import ObservationBufferShape
 from ._reader import ObservationRecord
+from ._tile import DROP_REASONS
 from .results import _OBSERVATIONS_SCHEMA
 
 type Read = ObservationRecord | str

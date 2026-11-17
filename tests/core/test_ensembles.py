@@ -11,7 +11,7 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 from numpy.testing import assert_allclose
 
-from furax import DiagonalOperator
+from furax import BlockRowOperator, DiagonalOperator
 from furax.core import (
     CompositionOperator,
     HostEnsemble,
@@ -324,13 +324,11 @@ def test_stacked_leaves_match_their_strides():
 
 def test_zip_pairs_each_member_with_its_slice():
     v = jnp.arange(float(N))
-    for ensemble in (_stacked(), _list()):
+    for ensemble in (_stacked(), _list(), _host()):
         member, entry = ensemble.zip({'v': v}).fetch(2)
         assert_allclose(member['x'], _xs()[2])
         assert_allclose(member['t'], _shared())
         assert_allclose(entry['v'], v[2])
-    with pytest.raises(NotImplementedError, match='zipped'):
-        _host().zip({'v': v})
 
 
 def test_strides_are_canonicalized_at_construction():
@@ -465,6 +463,16 @@ def test_lift_keeps_the_leaves_and_strides_of_a_structural_function():
     assert rearranged.strides == (2, 1)
 
 
+def test_lift_shares_the_arrays_a_structural_function_closes_over():
+    xs = _xs()
+    shared = jnp.arange(float(N_SAMPS))
+    paired = lift(lambda m: (m, shared), StackedEnsemble(N, xs))
+    assert isinstance(paired, StackedEnsemble)
+    assert paired.stacked[0] is xs and paired.stacked[1] is shared  # nothing copied or stacked
+    assert paired.strides == (1, None)
+    assert_allclose(paired.fetch(2)[1], shared)
+
+
 def _holding_none() -> StackedEnsemble:
     xs, by_2 = _xs(), jnp.ones((N // 2, N_SAMPS))
     return StackedEnsemble(
@@ -547,6 +555,17 @@ def test_strides_misaligned_with_the_stacked_pytree_are_rejected(strides):
         StackedEnsemble(N, {'x': _xs(), 'b': jnp.ones((N // 2, N_SAMPS))}, strides)
 
 
+def test_strides_and_axes_may_be_a_prefix_of_the_stacked_pytree():
+    # a single value where the pytree has a subtree applies to each of its leaves
+    pair = (jnp.ones((N // 2, N_SAMPS)), jnp.zeros((N_SAMPS, N // 2)))
+    ensemble = StackedEnsemble(
+        N, {'x': _xs(), 'pair': pair}, {'x': 1, 'pair': 2}, {'x': 0, 'pair': (0, 1)}
+    )
+    assert ensemble.strides == (2, 2, 1) and ensemble.axes == (0, 1, 0)
+    zipped = ensemble.zip({'y': (_xs(), _xs().T)}, axes={'y': (0, 1)}, strides=1)
+    assert_allclose(zipped.fetch(3)[1]['y'][1], _xs()[3])
+
+
 def test_lifted_operators_with_an_unset_field_apply_through_the_engine():
     # as an operator paired with an inverse not yet computed
     diagonals = _xs() + 1
@@ -580,17 +599,17 @@ def test_lift_checks_the_sizes():
         lift(lambda a, b: a, _list(), ListEnsemble([{'x': jnp.zeros(N_SAMPS)}]))
 
 
-def test_lift_falls_back_when_the_constructor_indexes_with_a_member_leaf():
+def test_lift_keeps_the_index_array_of_an_index_operator():
     x = jnp.arange(float(N_SAMPS))
     structure = jax.ShapeDtypeStruct((N_SAMPS,), x.dtype)
     pointings = jnp.array([[0, 2, 4], [1, 3, 0]])
-    # IndexOperator's constructor indexes with the member leaf to derive its output structure,
-    # which the structural probe's abstract sentinels cannot do: lift vectorizes instead.
+    # IndexOperator's constructor indexes with the member leaf to derive its output structure
     operators = lift(
         lambda m: IndexOperator(m['p'], in_structure=structure),
         StackedEnsemble(2, {'p': pointings}),
     )
     assert isinstance(operators, StackedEnsemble)
+    assert jax.tree.leaves(operators.stacked)[0] is pointings
     out, _ = map_reduce(lambda op, v: op(v), operators, 1, x)
     assert_allclose(out, x[pointings])
 
@@ -674,6 +693,53 @@ def test_segments_combine_over_their_members(representation, batch):
         assert_allclose(out[key], expected[key])
 
 
+def _zipped() -> tuple[dict[str, jax.Array], dict[str, int | str | None]]:
+    """Arrays a host ensemble of `_host_segmented` is zipped with, and their strides."""
+    ys = 10 * _xs()
+    per_segment = -_offsets()
+    shared = jnp.full(N_SAMPS, 3.0)
+    x = {'y': ys, 's': per_segment, 'c': shared}
+    return x, {'y': 1, 's': 'segment', 'c': None}
+
+
+def _zipped_apply(member):
+    m, z = member
+    return {
+        'member': m['x'] + z['y'],
+        'segment': z['s'] + m['o'],
+        'total': z['c'] * m['x'],
+    }
+
+
+@pytest.mark.parametrize('batch', [1, 2, 8])
+def test_host_zip_matches_the_resident_zip(batch):
+    x, strides = _zipped()
+    policy = Policy(batch=batch)
+    resident = _segmented(policy=policy).zip(x, strides=strides)
+    expected, expected_kinds = map_reduce(_zipped_apply, resident, SEGMENT_SPEC)
+    host = _host_segmented(policy=policy).zip(x, strides=strides)
+    out, kinds = map_reduce(_zipped_apply, host, SEGMENT_SPEC)
+    assert kinds == expected_kinds == {'member': 1, 'segment': 'segment', 'total': 'segment_sum'}
+    for key in expected:
+        assert_allclose(out[key], expected[key])
+    _, entry = host.fetch(5)
+    assert_allclose(entry['s'], x['s'][OWNER[5]])
+
+
+@pytest.mark.parametrize(
+    ('x', 'strides', 'axes', 'match'),
+    [
+        (jnp.zeros((N - 1, 2)), 1, 0, 'stride-1 leaf of 8 members'),
+        (jnp.zeros((N, 2)), 'segment', 0, 'segment leaf of 4 segments'),
+        (jnp.zeros((2, N)), 1, 1, 'member-leading'),
+    ],
+    ids=['members', 'segments', 'axes'],
+)
+def test_host_zip_rejects(x, strides, axes, match):
+    with pytest.raises(ValueError, match=match):
+        _host_segmented().zip(x, axes=axes, strides=strides)
+
+
 @pytest.mark.parametrize('batch', [1, 2])
 def test_padded_members_drop_from_their_segment(batch):
     # member 4 is the only one of segment 2, which keeps zeros
@@ -731,20 +797,85 @@ def test_segment_ensembles_are_validated(build, match):
         build()
 
 
-def test_lift_keeps_the_segment_leaves_of_a_structural_function():
+def test_by_segment_has_one_member_per_segment():
+    ensemble = StackedEnsemble(
+        N,
+        {'o': _offsets(), 't': _shared()},
+        {'o': 'segment', 't': None},
+        owner=jnp.asarray(OWNER),
+        policy=Policy(batch=2),
+    )
+    view = ensemble.by_segment()
+    assert view.size == N_SEGMENTS and view.owner is None
+    assert view.policy.batch == 1  # the batch counted members
+    out, kinds = map_reduce(lambda m: m['o'] + m['t'], view, 'auto')
+    assert kinds == 1
+    assert_allclose(out, _offsets() + _shared())
+
+
+@pytest.mark.parametrize(
+    ('ensemble', 'match'),
+    [(_segmented, 'varies with the member'), (_stacked, 'not grouped')],
+    ids=['member-leaf', 'no-segments'],
+)
+def test_by_segment_rejects(ensemble, match):
+    with pytest.raises(ValueError, match=match):
+        ensemble().by_segment()
+
+
+_SHARED = jnp.ones(N_SAMPS)
+
+
+@pytest.mark.parametrize(
+    ('f', 'kept', 'strides'),
+    [
+        (lambda m: (m['o'], m['x']), ['o', 'x'], ('segment', 1)),
+        (lambda m: DiagonalOperator(m['o']), ['o'], ('segment',)),
+        (
+            lambda m: BlockRowOperator([DiagonalOperator(m['x']), DiagonalOperator(m['o'])]),
+            ['x', 'o'],
+            (1, 'segment'),
+        ),
+        (
+            lambda m: (DiagonalOperator(m['x']) @ DiagonalOperator(m['o'])).T,
+            ['o', 'x'],
+            ('segment', 1),
+        ),
+        (lambda m: (m['o'], _SHARED), ['o', None], ('segment', None)),
+    ],
+    ids=['rearranged', 'diagonal', 'block-row', 'composition-transpose', 'closed-over'],
+)
+def test_lift_keeps_the_arrays_a_structural_function_passes_through(f, kept, strides):
     ensemble = _segmented()
-    rearranged = lift(lambda m: (m['o'], m['x']), ensemble)
-    assert isinstance(rearranged, StackedEnsemble)
-    assert rearranged.strides == ('segment', 1)
-    assert rearranged.owner is ensemble.owner
-    assert_allclose(rearranged.fetch(4)[0], _offsets()[OWNER[4]])
+    lifted = lift(f, ensemble)
+    assert isinstance(lifted, StackedEnsemble)
+    sources = [_SHARED if key is None else ensemble.stacked[key] for key in kept]
+    # the arrays are reused, not copied
+    assert all(a is b for a, b in zip(jax.tree.leaves(lifted.stacked), sources, strict=True))
+    assert lifted.strides == strides
+    assert lifted.owner is ensemble.owner
+    member = {'x': _xs()[4], 'o': _offsets()[OWNER[4]]}
+    jax.tree.map(assert_allclose, lifted.fetch(4), f(member))
 
 
-def test_lift_gathers_the_segment_leaves_of_a_computed_function():
-    lifted = lift(lambda m: m['x'] + m['o'], _segmented())
+@pytest.mark.parametrize(
+    'f',
+    [lambda m: DiagonalOperator(2 * m['o']), lambda m: m['x'] + m['o']],
+    ids=['operator', 'array'],
+)
+def test_lift_gathers_the_segment_leaves_of_a_computed_function(f):
+    lifted = lift(f, _segmented())
     assert isinstance(lifted, StackedEnsemble)
     assert lifted.strides == (1,)
-    assert_allclose(lifted.stacked, _segment_expected()['member'])
+    member = {'x': _xs()[4], 'o': _offsets()[OWNER[4]]}
+    jax.tree.map(assert_allclose, lifted.fetch(4), f(member))
+
+
+def test_lift_reads_a_shared_leaf_concretely():
+    n = 3
+    ensemble = StackedEnsemble(N, {'x': _xs(), 'n': jnp.array(n)}, {'x': 1, 'n': None})
+    lifted = lift(lambda m: m['x'][: int(m['n'])], ensemble)
+    assert_allclose(lifted.stacked, _xs()[:, :n])
 
 
 def test_lift_of_ensembles_sharing_their_owner_runs_under_jit():
@@ -853,7 +984,7 @@ class TestSharded:
 
     def test_hand_built_policy_evaluates_without_the_ambient_mesh(self):
         # a policy built directly with the axis, without `shard` -- the pattern of
-        # `bucket_apply` and of the mapmaker -- carries no mesh: the engine reads it from
+        # `bucket_tiles` and `tile_reads` -- carries no mesh: the engine reads it from
         # the laid-out leaves
         reference, _ = map_reduce(
             _apply, _stacked(), {'sum': 'sum', 'stack': 1, 'shared': None}, 3.0
@@ -956,9 +1087,33 @@ class TestSharded:
             for key in expected:
                 assert_allclose(out[key], expected[key])
 
+    @pytest.mark.parametrize('batch', [1, 2])
+    def test_host_zip_reads_the_entries_of_each_device(self, batch):
+        x, strides = _zipped()
+        valid = np.array([True] * 7 + [False])
+        expected, _ = map_reduce(
+            _zipped_apply,
+            _segmented(valid=jnp.asarray(valid)).zip(x, strides=strides),
+            SEGMENT_SPEC,
+        )
+        with jax.set_mesh(self._pair_mesh()):
+            policy = Policy(axis='obs', batch=batch)
+            host = _host_segmented(valid=valid, policy=policy).zip(x, strides=strides)
+            out, _ = map_reduce(_zipped_apply, host, SEGMENT_SPEC)
+            for key in expected:
+                assert_allclose(out[key], expected[key])
+
     def test_members_must_own_segments_of_their_device(self):
         # member 3, on the first device, owning segment 2 of the second
         owner = jnp.asarray([0, 0, 0, 2, 2, 3, 3, 3])
         ensemble = StackedEnsemble(N, {'o': _offsets()}, 'segment', owner=owner)
         with jax.set_mesh(self._pair_mesh()), pytest.raises(ValueError, match='own segments'):
             ensemble.shard('obs')
+
+    def test_shard_places_an_array_held_twice_once(self):
+        xs = _xs()
+        ensemble = StackedEnsemble(N, {'a': xs, 'b': xs})
+        with jax.set_mesh(self._mesh()):
+            sharded = ensemble.shard('obs')
+        assert sharded.stacked['a'] is sharded.stacked['b']
+        assert sharded.stacked['a'].sharding.spec == P('obs')

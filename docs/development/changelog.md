@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GapTreatment.EXPLICIT` models each gap by a B-spline of degree up to 3 on intervals of `ExplicitGapsConfig.resolution` seconds, whose amplitudes are solved for with the map; a detector needing more amplitudes than its bucket's budget is dropped and counted in the `over_gap_budget` columns (#480)
 - `furax.math.bspline.cardinal_bspline` evaluates the cardinal B-splines of degree 0 to 3 (#480)
 - `ObservationProbe.good_ranges` reports the good ranges of the samples of an observation before it is read, from which the mapmaker sizes the amplitudes of the explicit gaps under `ExplicitGapsConfig.probe`; `LazyPreprocSOTODLibObservation` reads them from the preprocessing metadata (#481)
+- `AdditionOperator` over an ensemble takes `in_strides` and `out_strides`, so that each member reads and writes only its own entries (stride 1) or those of its segment (`'segment'`) of a leaf (#498)
+- `Ensemble.zip` takes `strides`, to hand a leaf whole to every member or per segment (#498)
+- The strides and member axes of an ensemble may be given as a prefix of the pytree they describe, one value for a whole subtree (#498)
 
 ### Changed
 

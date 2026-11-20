@@ -9,12 +9,12 @@ the templates of one TOD.
 """
 
 from ._builders import (
+    GLOBAL_TEMPLATE_NAMES,
     azimuth_hwp_synchronous_templates,
     azimuth_synchronous_templates,
     binned_azimuth_hwp_synchronous_templates,
     build_templates,
     common_mode_templates,
-    global_template_names,
     hwp_synchronous_templates,
     polarization_field_couplings,
     polynomial_couplings,
@@ -31,8 +31,8 @@ from ._operator import Template, TemplateOperator
 __all__ = [
     'Template',
     'TemplateOperator',
+    'GLOBAL_TEMPLATE_NAMES',
     'build_templates',
-    'global_template_names',
     'required_reader_fields',
     'spline_drift_templates',
     'azimuth_synchronous_templates',

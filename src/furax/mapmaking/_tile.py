@@ -35,7 +35,7 @@ from .acquisition import build_acquisition_operator
 from .config import GapTreatment, MapMakingConfig, NoiseSource, TemplatesConfig, WeightingMode
 from .lowrank import LowRankNoiseModel, ModesCore, low_rank_spectra
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
-from .templates import TemplateOperator, build_templates, global_template_names
+from .templates import GLOBAL_TEMPLATE_NAMES, Template, TemplateOperator, build_templates
 from .templates.fit import TemplateFit
 from .templates.gram import BlockGram, factor, template_gram, template_gram_diagonal
 from .templates.pomme import PommeProjectionOperator
@@ -542,27 +542,17 @@ def assemble_templates(
         assert implicit.gram_inverse is not None  # set by `create`
         weight = MarginalizedWeightOperator.create(tile.W, op, implicit.gram_inverse)
 
-    global_names = global_template_names(tcfg)
-
-    def of_kind(kind):
-        def is_kind(name, template):
-            if name in global_names:
-                return kind == GLOBAL_TEMPLATES
-            return kind == (TEMPLATES if template.per_detector else SHARED_TEMPLATES)
-
-        chosen = {n: t for n, t in explicit_templates.items() if is_kind(n, t)}
-        return TemplateOperator(chosen) if chosen else None
-
+    of_kind = _by_kind(explicit_templates)
     explicit: dict[TemplateKind, TemplateBundle] = {}
     shared_gram = global_diagonal = None
-    if (op := of_kind(TEMPLATES)) is not None:
+    if (op := of_kind.get(TEMPLATES)) is not None:
         explicit[TEMPLATES] = TemplateBundle.create(op, gram_weight, tcfg, pomme_tau=pomme_tau)
-    if (op := of_kind(SHARED_TEMPLATES)) is not None:
+    if (op := of_kind.get(SHARED_TEMPLATES)) is not None:
         shared_gram = template_gram(
             op, weight, pomme_tau=pomme_tau, batch_size=tcfg.gram_batch_size
         )
         explicit[SHARED_TEMPLATES] = TemplateBundle(op, None, None)
-    if (op := of_kind(GLOBAL_TEMPLATES)) is not None:
+    if (op := of_kind.get(GLOBAL_TEMPLATES)) is not None:
         # Too many amplitudes for a dense Gram: its diagonal under the weight without the implicit
         # templates nor Pomme preconditions them
         global_diagonal = template_gram_diagonal(op, gram_weight)
@@ -881,13 +871,7 @@ def _deprojection_parts(
     explicit, implicit = build_templates(
         config.templates, data, tod_format, temperature=temperature
     )
-    templates = {**explicit, **implicit}
-    global_names = global_template_names(config.templates)
-    global_ = {name: t for name, t in templates.items() if name in global_names}
-    local = {name: t for name, t in templates.items() if t.per_detector}
-    shared = {
-        name: t for name, t in templates.items() if not t.per_detector and name not in global_names
-    }
+    of_kind = _by_kind({**explicit, **implicit})
     samples = tod_format.as_array(data[ReaderField.SAMPLE_DATA])  # (stream, det, sample)
     valid = _sample_mask(data, config) & (jnp.arange(tod_format.n_samples) < n_real)
     pairs = valid[..., 1:] & valid[..., :-1]
@@ -898,8 +882,24 @@ def _deprojection_parts(
     sample_weight = tod_format.diagonal(valid[None].astype(samples.dtype))
     weight = (channel_weight @ sample_weight).reduce()
     return _DeprojectionParts(
-        *(TemplateOperator(t) if t else None for t in (local, shared, global_)), weight
+        of_kind.get(TEMPLATES), of_kind.get(SHARED_TEMPLATES), of_kind.get(GLOBAL_TEMPLATES), weight
     )
+
+
+def _by_kind(templates: dict[str, Template]) -> dict[TemplateKind, TemplateOperator]:
+    """The operator of the templates of each kind of amplitudes among `templates`, if any.
+
+    The amplitudes are each detector's own, those the detectors of the observation share, or those
+    every observation shares (see [`GLOBAL_TEMPLATE_NAMES`][furax.mapmaking.templates]).
+    """
+    grouped: dict[TemplateKind, dict[str, Template]] = {}
+    for name, template in templates.items():
+        if name in GLOBAL_TEMPLATE_NAMES:
+            kind: TemplateKind = GLOBAL_TEMPLATES
+        else:
+            kind = TEMPLATES if template.per_detector else SHARED_TEMPLATES
+        grouped.setdefault(kind, {})[name] = template
+    return {kind: TemplateOperator(chosen) for kind, chosen in grouped.items()}
 
 
 _DEPROJECTION_STEPS = 50

@@ -384,7 +384,7 @@ def probe_normal_system(maker: MapMakingRun, seed: int = 0) -> tuple[dict, dict]
         BJ = block_jacobi(buckets, maker.config.binned)
         valid = maker.pixel_selection(totals.hit_map, BJ.blocks)
         S = IndexOperator((..., *jnp.where(valid)), in_structure=maker.landscape.structure)
-        system = MapMakingSystem.create(buckets, totals.rhs, S, BJ, global_gram=totals.global_gram)
+        system = MapMakingSystem.create(buckets, totals.rhs, S, BJ, whole_grams=totals.whole_grams)
         x = tree.normal_like(system.A.in_structure, jax.random.key(seed))
         per_tile = [k for k in buckets[0].template.kinds if AMPLITUDE_STRIDES[k] == 1]
         x |= {kind: tree.zeros_like(x[kind]) for kind in per_tile}

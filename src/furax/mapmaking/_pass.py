@@ -10,7 +10,7 @@ stacked ensemble. The pass returns the tiles of each bucket, and what it sums ov
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import jax
@@ -46,7 +46,7 @@ from .gap_filling import gap_fill
 from .layout import TileBucket, TilePlacement
 from .lowrank import LowRankNoiseModel, ModesCore, fit_low_rank_spectra
 from .noise import NoiseModel
-from .templates.gram import factor
+from .templates.gram import BlockGram, factor, factor_diagonal
 from .weight import WeightOperator
 
 _REDUCTIONS_OF_STRIDES = {1: 1, 'segment': 'segment_sum', None: 'sum'}
@@ -93,9 +93,11 @@ class PassTotals:
     r"""Under a low-rank noise model, the amplitudes $\sum_t T_t^\top D_t^{-1} M_t d_t$ of the
     correlated modes of the data of each bucket, `(segment, frequency, mode, 2)` (see
     [`Tile.modes`][furax.mapmaking._tile.Tile.modes]); `None` otherwise."""
-    global_gram: tuple[AbstractLinearOperator, AbstractLinearOperator | None] | None = None
-    """The inverse of the diagonal of the Gram of the templates every observation shares, summed
-    over every tile, and the ridge added to it; `None` without them."""
+    whole_grams: dict[str, tuple[AbstractLinearOperator, AbstractLinearOperator | None]] = field(
+        default_factory=dict
+    )
+    """For each kind of amplitudes every bucket reads whole, those every observation shares, the
+    inverse of the diagonal of their Gram, summed over every tile, and the ridge added to it."""
 
 
 def pass_kernel(
@@ -174,11 +176,8 @@ def residual_kernel(
 
     def kernel(member, sky, solution):
         (data, padding, _), (tile, amplitudes) = member
-        data = _prepared(data, padding, sky, config, sky_landscape, replaces)
+        data, _, _ = _model_fields(data, padding, sky, config, landscape, sky_landscape, replaces)
         tod = data[ReaderField.SAMPLE_DATA]
-        if config.read_stokes != landscape.stokes:
-            # The extra streams read, the I one for the T2P template, stay out of the model
-            _, tod = restrict_streams(data, tod, landscape.stokes)
         return tile_statistics(tile, tod, solution | amplitudes, diagnostics)
 
     return kernel
@@ -290,16 +289,11 @@ def shared_fit_amplitudes(
     def solve(member):
         amplitudes = {}
         if member['gram'] is not None:
-            gram = replace(member['gram'], coarse=member['coarse'])
-            inverse, _ = factor(gram, regularization=regularization)
+            inverse, _ = _factored(member['gram'], member['coarse'], regularization)
             amplitudes |= inverse(member['rhs'])
         if member['global_diagonal'] is not None:
-            # the amplitudes no weighted sample sees come back zero
-            amplitudes |= jax.tree.map(
-                lambda d, b: jnp.where(d > 0, b / jnp.where(d > 0, d, 1), 0),
-                member['global_diagonal'],
-                member['global_rhs'],
-            )
+            inverse, _ = factor_diagonal(member['global_diagonal'], regularization=regularization)
+            amplitudes |= inverse(member['global_rhs'])
         return amplitudes
 
     amplitudes, _ = map_reduce(solve, segments, 1)
@@ -558,12 +552,19 @@ def _factor_shared_gram(
         tiles.segments, (gram, coarse), policy=Policy(axis=tiles.policy.axis)
     )
 
-    def factor_one(member):
-        gram, coarse = member
-        return factor(replace(gram, coarse=coarse), regularization=regularization)
-
-    inverse, kinds = map_reduce(factor_one, ensemble, 'auto')
+    inverse, kinds = map_reduce(lambda member: _factored(*member, regularization), ensemble, 'auto')
     return _per_segment(inverse, tiles, kinds)
+
+
+def _factored(
+    gram: BlockGram, coarse: Any, regularization: float
+) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
+    """The inverse and ridge of the Gram of an observation's shared templates.
+
+    The Gram is summed over the tiles of the observation, and factored by
+    [`factor`][furax.mapmaking.templates.gram.factor] with its coarse amplitudes.
+    """
+    return factor(replace(gram, coarse=coarse), regularization=regularization)
 
 
 def _per_segment(stacked: Any, tiles: StackedEnsemble, kinds: Any = None) -> StackedEnsemble:

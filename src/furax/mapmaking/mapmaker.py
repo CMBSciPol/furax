@@ -224,7 +224,7 @@ class MapMakingRun[T]:
 
             response_sky = injected_sky if is_response else None
             system = MapMakingSystem.create(
-                buckets, totals.rhs, S, BJ, response_sky, totals.modes, totals.global_gram
+                buckets, totals.rhs, S, BJ, response_sky, totals.modes, totals.whole_grams
             )
             if (two_level := self.config.solver.two_level) is not None:
                 system = system.deflate(two_level)
@@ -305,26 +305,31 @@ class MapMakingRun[T]:
             hit_map = hit_map + outputs['hit_map']
             bucket_rhs = outputs['rhs']
             rhs['map'] = furax.tree.add(rhs['map'], bucket_rhs.pop('map'))
-            # the amplitudes every observation shares are summed over the buckets, as the map is
-            if (global_rhs := bucket_rhs.pop(GLOBAL_TEMPLATES)) is not None:
-                rhs[GLOBAL_TEMPLATES] = _summed(rhs.get(GLOBAL_TEMPLATES), global_rhs)
-                global_diagonal = _summed(global_diagonal, outputs['global_diagonal'])
             for kind, kind_rhs in bucket_rhs.items():
-                if kind_rhs is not None:  # a kind of amplitudes the run has
+                if kind_rhs is None:  # a kind of amplitudes the run does not have
+                    continue
+                if (
+                    AMPLITUDE_STRIDES[kind] is None
+                ):  # read whole, summed over the buckets as the map
+                    rhs[kind] = _summed(rhs.get(kind), kind_rhs)
+                else:
                     rhs.setdefault(kind, []).append(kind_rhs)
+            if outputs['global_diagonal'] is not None:
+                global_diagonal = _summed(global_diagonal, outputs['global_diagonal'])
             if outputs['modes'] is not None:
                 modes.append(outputs['modes'])
             # the unfactored shared Gram must not stay on the devices through the next pass
             del outputs
             buckets.append(tiles)
-        global_inverse = None
+        whole_grams = {}
         if global_diagonal is not None:
             templates = self.fit_config.templates
             assert templates is not None  # a global Gram comes with templates
-            global_inverse = factor_diagonal(
-                global_diagonal, regularization=templates.regularization
+            regularization = templates.regularization
+            whole_grams[GLOBAL_TEMPLATES] = factor_diagonal(
+                global_diagonal, regularization=regularization
             )
-        return buckets, PassTotals(hit_map, rhs, modes or None, global_inverse)
+        return buckets, PassTotals(hit_map, rhs, modes or None, whole_grams)
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -564,14 +569,12 @@ class MapMakingRun[T]:
             before its normalization, if turned on. Under a low-rank noise model, the correlated
             modes are marginalized from the $\chi^2$ once the tiles of each observation are summed.
         """
-        kinds = [k for k in buckets[0].template.kinds if AMPLITUDE_STRIDES[k] is not None]
+        all_kinds = buckets[0].template.kinds
+        kinds = [k for k in all_kinds if AMPLITUDE_STRIDES[k] is not None]
         shared_sky = None if scanned_sky is None else self.placement.broadcast(scanned_sky)
         # the unknowns every tile reads whole
-        solution = {
-            kind: self.placement.broadcast(x[kind])
-            for kind in ('map', GLOBAL_TEMPLATES)
-            if kind in x
-        }
+        whole = ['map', *(k for k in all_kinds if AMPLITUDE_STRIDES[k] is None)]
+        solution = {kind: self.placement.broadcast(x[kind]) for kind in whole}
         names = ['good', *(n for n in ('chi2', 'bands') if getattr(diagnostics, n))]
         if diagnostics.bands:
             names.append('band_samples')
@@ -634,14 +637,14 @@ class MapMakingRun[T]:
         detectors = max(self._buffer_shapes[i].detector_count for i in bucket.observations)
         capacity = -(-detectors // bucket.tile_size) * bucket.tile_size
         sample_rate = self._probed_sample_rate
-        first = _first_detectors(bucket)
-        extra: tuple[Any, ...] = (first,)
-        strides: tuple[Any, ...] = (1,)
-        if (shared := self._fit_shared_templates(bucket, reader, sky)) is not None:
-            extra, strides = (first, shared), (1, 'segment')
+        shared = self._fit_shared_templates(bucket, reader, sky)
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         reads = tile_reads(bucket, reader, self.placement.axis, self._prefetches_reads)
-        reads = reads.zip(extra, strides=strides)
+        first = _first_detectors(bucket)
+        if shared is None:
+            reads = reads.zip((first,))
+        else:
+            reads = reads.zip((first, shared), strides=(1, 'segment'))
         kernel = fit_kernel(self.fit_config, self.landscape, capacity, sample_rate)
         (spectra, level, n_real), _ = map_reduce(
             kernel, reads, ('segment_sum', 'segment_sum', 'segment'), sky
@@ -676,6 +679,7 @@ class MapMakingRun[T]:
             or not templates.detectors_share_amplitudes
         ):
             return None
+        logger.info('Reading the data once more to fit the templates the detectors share')
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         reads = tile_reads(bucket, reader, self.placement.axis, self._prefetches_reads)
         kernel = shared_fit_kernel(self.fit_config, self.landscape)

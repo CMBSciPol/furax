@@ -179,7 +179,7 @@ def test_use_templates_follows_the_enabled_templates(templates: TemplatesConfig,
         (lambda: AzimuthSynchronousConfig(bins=BinsConfig(), per_wafer=True), 'per_wafer'),
         (
             lambda: AzimuthSynchronousConfig(
-                bin_size=2.0, azimuth_range=(0.0, 90.0), across_observations=True, explicit=True
+                bin_size=2.0, azimuth_range=[(0.0, 90.0)], across_observations=True, explicit=True
             ),
             'across_observations',
         ),

@@ -681,10 +681,10 @@ def test_per_wafer_templates_share_their_amplitudes_within_a_wafer(config, shape
 
 
 def test_bins_on_a_fixed_range_hold_the_same_azimuth_in_every_observation():
-    bins = BinsConfig(4)
+    bins = BinsConfig()
     one, other = jnp.linspace(0.0, 1.0, N_SAMPS), jnp.linspace(-0.5, 1.5, N_SAMPS)
     weights = [
-        azimuth_bins_basis(bins, azimuth, jnp.float64, bounds=(0.0, 2.0)).values
+        azimuth_bins_basis(bins, azimuth, jnp.float64, intervals=[(0.0, 2.0, 4)]).values
         for azimuth in (one, other)
     ]
     # bin j is [j / 2, (j + 1) / 2) whatever the range scanned; outside [0, 2), no bin
@@ -701,7 +701,7 @@ def test_bins_on_a_fixed_range_hold_the_same_azimuth_in_every_observation():
 def test_azimuth_template_across_observations_sees_the_nearest_setting(elevation, roll, setting):
     config = AzimuthSynchronousConfig(
         bin_size=30.0,
-        azimuth_range=(-60.0, 60.0),
+        azimuth_range=[(-60.0, 60.0)],
         across_observations=True,
         elevations=(50.0, 55.0, 60.0),
         rolls=(-45.0, 45.0),
@@ -719,8 +719,34 @@ def test_azimuth_template_across_observations_sees_the_nearest_setting(elevation
     assert_array_equal(template.coupling, jnp.eye(6)[setting].reshape(1, 1, 6))
 
 
+def test_disjoint_azimuth_intervals_have_bins_of_their_own():
+    # [0, 40) and [100, 125), the second widened to whole bins: [100, 140)
+    config = AzimuthSynchronousConfig(bin_size=20.0, azimuth_range=[(0.0, 40.0), (100.0, 125.0)])
+    assert config.azimuth_range == [(0.0, 40.0), (100.0, 140.0)]
+    azimuth_deg = jnp.array([5.0, 25.0, 70.0, 105.0, 135.0, 150.0])
+    data = _data(None) | {ReaderField.AZIMUTH: jnp.resize(jnp.radians(azimuth_deg), N_SAMPS)}
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64)
+    (template,) = azimuth_synchronous_templates(config, data, tod_format).values()
+    values = template.basis.values[:, :6]
+    # the samples between and past the intervals are in no bin
+    assert_array_equal(
+        jnp.where(values.any(axis=0), values.argmax(axis=0), -1), [0, 1, -1, 2, 3, -1]
+    )
+
+
+def test_azimuth_intervals_that_overlap_once_widened_are_merged():
+    # widened to whole bins, [0, 30) becomes [0, 40) and overlaps [35, 60): one interval on the
+    # grid of the first, [0, 60), which holds [5, 10); [100, 110), apart, stays; the order does
+    # not matter
+    config = AzimuthSynchronousConfig(
+        bin_size=20.0, azimuth_range=[(100.0, 110.0), (35.0, 60.0), (0.0, 30.0), (5.0, 10.0)]
+    )
+    assert config.azimuth_range == [(0.0, 60.0), (100.0, 120.0)]
+    assert config.n_bins == 4
+
+
 def test_bin_size_widens_the_azimuth_range_to_whole_bins():
-    config = AzimuthSynchronousConfig(bin_size=25.0, azimuth_range=(0.0, 60.0))
+    config = AzimuthSynchronousConfig(bin_size=25.0, azimuth_range=[(0.0, 60.0)])
     assert config.n_bins == 3  # [0, 75)
     azimuth = jnp.radians(0.1 + 0.58 * jnp.arange(N_SAMPS))  # up to 69 deg, off the bin edges
     tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64)

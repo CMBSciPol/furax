@@ -305,6 +305,13 @@ class Template(AbstractLinearOperator):
         """The signal on stream number `stream`: `(n_dets or 1, samp)`, 1 if the same on all."""
         rows = self._rows(a, stream)
         if self._in_set_space:
+            coupling = self._coupling_on(stream)
+            if coupling.shape[0] == 1:
+                # the same coupling on every detector: the modes are combined before the basis
+                expanded = self.basis(_einsum('o...m,m->o...', rows, coupling[0]))  # (set, samp)
+                if self.det_groups is None:
+                    return expanded
+                return _einsum('do,os->ds', self._groups, expanded)
             expanded = self.basis(jnp.moveaxis(rows, -1, 1))  # (set, mode, samp)
             return _einsum('dom,oms->ds', self._weights(stream), expanded)
         return self._expand_basis(self._coefficients(rows, stream))
@@ -312,6 +319,13 @@ class Template(AbstractLinearOperator):
     def _project(self, signal: Float[Array, 'det samp'], stream: int) -> Array:
         """The transpose of `_expand` on stream `stream`: rows `(set, *basis.shape, mode)`."""
         if self._in_set_space:
+            coupling = self._coupling_on(stream)
+            if coupling.shape[0] == 1:  # see `_expand`
+                if self.det_groups is None:
+                    summed = jnp.sum(signal, axis=0, keepdims=True)
+                else:
+                    summed = _einsum('ds,do->os', signal, self._groups)
+                return _einsum('o...,m->o...m', self.basis.T(summed), coupling[0])
             weighted = _einsum('ds,dom->oms', signal, self._weights(stream))
             return jnp.moveaxis(self.basis.T(weighted), 1, -1)
         if self.per_detector:
@@ -346,8 +360,13 @@ class Template(AbstractLinearOperator):
         coupling = self._coupling_on(stream)[:, None, :]  # every detector sees the single set
         if self.det_groups is None:
             return coupling
-        groups = self.det_groups.reshape(self.tod_format.n_dets, -1)
-        return groups[..., None] * coupling
+        return self._groups[..., None] * coupling
+
+    @property
+    def _groups(self) -> Float[Array, 'det group']:
+        """The one-hot group of each detector, `(n_dets, n_groups)`, in the dtype of the TOD."""
+        assert self.det_groups is not None
+        return self.det_groups.reshape(self.tod_format.n_dets, -1).astype(self.tod_format.dtype)
 
     def _coupling_on(self, stream: int) -> Float[Array, 'det mode']:
         """The coupling on stream number `stream`: `(n_dets or 1, n_modes)`."""

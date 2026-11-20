@@ -46,7 +46,6 @@ from .bases import Basis, DecimatedBasis, KroneckerBasis, SplineBasis, TensorBas
 
 __all__ = [
     'build_templates',
-    'global_template_names',
     'required_reader_fields',
     'spline_drift_templates',
     'azimuth_synchronous_templates',
@@ -64,13 +63,8 @@ __all__ = [
 ]
 
 
-GLOBAL_AZIMUTH_SYNCHRONOUS: Final = 'azimuth_synchronous'
-"""The name of the azimuth template shared by the observations of a run, when it is."""
-
-
-def global_template_names(config: TemplatesConfig) -> frozenset[str]:
-    """The names of the templates `config` enables whose amplitudes every observation shares."""
-    return frozenset({GLOBAL_AZIMUTH_SYNCHRONOUS} if config.across_observations else ())
+GLOBAL_TEMPLATE_NAMES: Final = frozenset({'global_azimuth_synchronous'})
+"""The names of the templates whose amplitudes every observation of the run shares."""
 
 
 def build_templates(
@@ -104,18 +98,17 @@ def build_templates(
         )
     explicit: dict[str, Template] = {}
     implicit: dict[str, Template] = {}
+    det_groups = None
+    if ReaderField.WAFER_SLOTS in required_reader_fields(config):
+        det_groups = wafer_groups(data[ReaderField.WAFER_SLOTS], config.wafer_slots)
     builders = {
         'spline_drift': spline_drift_templates,
-        'azimuth_synchronous': azimuth_synchronous_templates,
+        'azimuth_synchronous': partial(azimuth_synchronous_templates, det_groups=det_groups),
         'hwp_synchronous': hwp_synchronous_templates,
         'azimuth_hwp_synchronous': azimuth_hwp_synchronous_templates,
         'binned_azimuth_hwp_synchronous': binned_azimuth_hwp_synchronous_templates,
         'spline_hwp_synchronous': spline_hwp_synchronous_templates,
     }
-    det_groups = None
-    if ReaderField.WAFER_SLOTS in required_reader_fields(config):
-        det_groups = wafer_groups(data[ReaderField.WAFER_SLOTS], config.wafer_slots)
-    builders['azimuth_synchronous'] = partial(azimuth_synchronous_templates, det_groups=det_groups)
     implicit_names = config.implicit_names()
     for name, build in builders.items():
         if (section := getattr(config, name)) is not None:
@@ -204,38 +197,32 @@ def azimuth_synchronous_templates(
     alike (see `_stream_groups`). With `config.per_wafer`, the detectors of each group of
     `det_groups`, such as a wafer, share their amplitudes.
     """
-    if not config.per_wafer:
-        det_groups = None
-    elif det_groups is None:
-        raise ValueError('per-wafer azimuth templates need the groups of the detectors')
+    det_groups = _wafer_groups_of(config.per_wafer, det_groups)
     azimuth, dtype = data[ReaderField.AZIMUTH], tod_format.dtype
     scan_masks = None
     if config.split_scans:
         scan_masks = (data[ReaderField.LEFT_SCAN_MASK], data[ReaderField.RIGHT_SCAN_MASK])
-    if config.bins is not None:
-        return _stream_groups(
-            'azimuth_synchronous',
-            config.bins,
-            lambda bins: azimuth_bins_basis(bins, azimuth, dtype, scan_masks=scan_masks),
-            tod_format,
-            det_groups=det_groups,
-        )
-    if config.bin_size is not None:
-        assert config.azimuth_range is not None and config.n_bins is not None  # by the config
-        lo = config.azimuth_range[0]
-        bounds = (math.radians(lo), math.radians(lo + config.n_bins * config.bin_size))
-        basis = azimuth_bins_basis(
-            BinsConfig(config.n_bins), azimuth, dtype, scan_masks=scan_masks, bounds=bounds
-        )
+    if config.bins is not None or config.bin_size is not None:
+        if config.bins is not None:
+            bins, intervals = config.bins, None
+        else:
+            bins = BinsConfig(config.n_bins)
+            assert config.azimuth_range is not None and config.bin_size is not None  # with bins
+            intervals = [
+                (math.radians(lo), math.radians(hi), round((hi - lo) / config.bin_size))
+                for lo, hi in config.azimuth_range
+            ]
+
+        def bins_basis(bins: BinsConfig) -> Basis:
+            return azimuth_bins_basis(
+                bins, azimuth, dtype, scan_masks=scan_masks, intervals=intervals
+            )
+
         if config.across_observations:
-            template = _across_observations(basis, config, data, tod_format, det_groups)
-            return {GLOBAL_AZIMUTH_SYNCHRONOUS: template}
+            template = _across_observations(bins_basis(bins), config, data, tod_format, det_groups)
+            return {'global_azimuth_synchronous': template}
         return _stream_groups(
-            'azimuth_synchronous',
-            BinsConfig(config.n_bins),
-            lambda _: basis,
-            tod_format,
-            det_groups=det_groups,
+            'azimuth_synchronous', bins, bins_basis, tod_format, det_groups=det_groups
         )
     assert config.n_knots is not None  # exactly one alternative is set
 
@@ -430,8 +417,7 @@ def common_mode_templates(
     over the whole observation for each mode of the pattern. With `config.per_wafer`, each group
     of `det_groups`, such as a wafer, has its own amplitudes of the pattern.
     """
-    if config.per_wafer and det_groups is None:
-        raise ValueError('a per-wafer common mode needs the groups of the detectors')
+    det_groups = _wafer_groups_of(config.per_wafer, det_groups)
     streams = _qu_streams(tod_format)
     if not streams:
         return {}
@@ -462,9 +448,9 @@ def common_mode_templates(
         basis,
         tod_format,
         streams=streams,
-        per=('det',) if config.per_wafer else (),
+        per=() if det_groups is None else ('det',),
         coupling=coupling.astype(tod_format.dtype),
-        det_groups=det_groups if config.per_wafer else None,
+        det_groups=det_groups,
     )
     return {'common_mode': template}
 
@@ -475,6 +461,19 @@ def wafer_groups(slots: Int[Array, 'det 1'], n_slots: int) -> Bool[Array, 'det g
     A detector whose slot is outside `range(n_slots)` belongs to no group.
     """
     return slots == jnp.arange(n_slots)
+
+
+def _wafer_groups_of(
+    per_wafer: bool, det_groups: Bool[Array, 'det group'] | None
+) -> Bool[Array, 'det group'] | None:
+    """The groups of the detectors a template `per_wafer` shares its amplitudes by; `None` if not.
+
+    Raises:
+        ValueError: If the template is per wafer, but the groups are not given.
+    """
+    if per_wafer and det_groups is None:
+        raise ValueError('a per-wafer template needs the groups of the detectors')
+    return det_groups if per_wafer else None
 
 
 def zernike_couplings(
@@ -730,38 +729,29 @@ def _bin_weights(
     """Assign each sample to a bin of `x`.
 
     Splits the range of `x`, or `bounds` if given, into `n_bins` equal bins. Entry `[j, s]` is how
-    much sample `s` belongs to bin `j`; a sample outside `bounds` belongs to none. With `interpolate=False` this is one-hot: 1 for the bin the sample falls in, 0
-    elsewhere. With `interpolate=True` a sample near a bin edge is shared with its neighbour
-    (triangular weights, or sin² hats if `smooth`), each sample's weights summing to 1.
+    much sample `s` belongs to bin `j`; a sample outside `bounds` belongs to none. With
+    `interpolate=False` this is one-hot: 1 for the bin the sample falls in, 0 elsewhere. With
+    `interpolate=True` a sample near a bin edge is shared with its neighbour (triangular weights,
+    or sin² hats if `smooth`), each sample's weights summing to 1.
 
     Each row is then one basis function of a binned template (a bin's time profile).
     """
+    n_samps = x.size
     if bounds is None:
         lo = jnp.min(x)
         hi = jnp.max(x) + 1e-8  # nudge so the global max falls in the last bin
-        return _bin_weights_between(x, lo, hi, n_bins, interpolate, smooth).astype(dtype)
-    lo, hi = bounds
-    inside = (x >= lo) & (x < hi)
-    weights = _bin_weights_between(jnp.clip(x, lo, hi), lo, hi, n_bins, interpolate, smooth)
-    return (weights * inside).astype(dtype)
-
-
-def _bin_weights_between(
-    x: Float[Array, ' samp'],
-    lo: Float[Array, ''] | float,
-    hi: Float[Array, ''] | float,
-    n_bins: int,
-    interpolate: bool,
-    smooth: bool,
-) -> Float[Array, '{n_bins} samp']:
-    """The bin weights of `x` (see `_bin_weights`), within `[lo, hi]`, over `n_bins` equal bins between them."""
-    n_samps = x.size
+        inside = jnp.ones(n_samps, bool)
+    else:
+        lo, hi = bounds
+        inside = (x >= lo) & (x < hi)
+        x = jnp.clip(x, lo, hi)
     edges = jnp.linspace(lo, hi, n_bins + 1)
 
     if not interpolate:
         # Hard assignment: each sample contributes 1.0 to exactly its bin; `hi` to the last.
         sample_bin = jnp.minimum(jnp.digitize(x, edges[1:]), n_bins - 1)
-        return jnp.zeros((n_bins, n_samps)).at[sample_bin, jnp.arange(n_samps)].set(1.0)
+        bins = jnp.zeros((n_bins, n_samps)).at[sample_bin, jnp.arange(n_samps)].set(1.0)
+        return (bins * inside).astype(dtype)
 
     # Soft assignment: triangular weights peaking at each bin centre, falling
     # linearly to zero one bin-width (`delta`) away. Shape (n_bins, n_samps).
@@ -777,7 +767,7 @@ def _bin_weights_between(
         # Linear interpolation; clamp samples beyond the end centres to the edge bins.
         bins = triangular.at[0, x < centres[0]].set(1.0).at[-1, x > centres[-1]].set(1.0)
 
-    return bins
+    return (bins * inside).astype(dtype)
 
 
 def _legendre_values(
@@ -945,16 +935,23 @@ def azimuth_bins_basis(
     dtype: DTypeLike,
     *,
     scan_masks: Sequence[Array] | None = None,
-    bounds: tuple[float, float] | None = None,
+    intervals: Sequence[tuple[float, float, int]] | None = None,
 ) -> Basis:
     """One amplitude per azimuth bin, one set per scan mask if given.
 
-    The bins split the azimuth range of the observation, or `bounds` if given, where a sample
-    outside them is in no bin.
+    The bins split the azimuth range of the observation into `bins.n_bins`, or, with `intervals`,
+    each interval `(start, end, n)` into `n` bins, the intervals in turn; a sample outside them
+    is in no bin.
     """
-    weights = _bin_weights(
-        azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype, bounds=bounds
-    )
+    if intervals is None:
+        weights = _bin_weights(azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype)
+    else:
+        weights = jnp.concatenate(
+            [
+                _bin_weights(azimuth, n, bins.interpolate, bins.smooth, dtype, bounds=(lo, hi))
+                for lo, hi, n in intervals
+            ]
+        )
     return TensorBasis(_by_scan(weights, scan_masks))
 
 

@@ -621,7 +621,7 @@ class AzimuthSynchronousConfig:
 
             azimuth_synchronous:
                 bin_size: 2.0
-                azimuth_range: [100.0, 260.0]
+                azimuth_range: [[100.0, 260.0]]
                 split_scans: true
                 per_wafer: true
                 across_observations: true
@@ -651,10 +651,14 @@ class AzimuthSynchronousConfig:
     bin_size: float | None = None
     """The width of the azimuth bins, in degrees, over `azimuth_range`."""
 
-    azimuth_range: tuple[float, float] | None = None
-    """The azimuth range in degrees that bins of `bin_size` split, the same for every
-    observation, widened to a whole number of bins; a sample outside it is in no bin. The range
-    does not wrap: it follows the convention of the observations' azimuths, such as [0, 360)."""
+    azimuth_range: list[tuple[float, float]] | None = None
+    """The azimuth intervals in degrees that bins of `bin_size` split, the same for every
+    observation: one, such as `[[100, 260]]`, or several disjoint ones, such as the separate
+    patches a run scans. Each interval is widened to a whole number of bins from its start, and
+    intervals that then overlap are merged into one, on the grid of the first; the intervals are
+    kept so, in increasing order. A sample outside every interval is in no bin. An interval does
+    not wrap: it follows the convention of the observations' azimuths, such as [0, 360), and a
+    region across the cut is two intervals, such as `[[0, 10], [350, 360]]`."""
 
     across_observations: bool = False
     """Whether every observation sees the same function of the azimuth at each setting of the
@@ -690,10 +694,10 @@ class AzimuthSynchronousConfig:
             )
         if (self.bin_size is None) != (self.azimuth_range is None):
             raise ValueError("'bin_size' and 'azimuth_range' go together")
-        if self.bin_size is not None and self.bin_size <= 0:
-            raise ValueError(f"'bin_size' must be positive, got {self.bin_size}")
-        if self.azimuth_range is not None and not self.azimuth_range[0] < self.azimuth_range[1]:
-            raise ValueError(f"'azimuth_range' must be increasing, got {self.azimuth_range}")
+        if self.bin_size is not None and self.azimuth_range is not None:
+            if self.bin_size <= 0:
+                raise ValueError(f"'bin_size' must be positive, got {self.bin_size}")
+            self.azimuth_range = _bin_intervals(self.azimuth_range, self.bin_size)
         if self.across_observations and (
             self.bin_size is None or not self.elevations or not self.explicit
         ):
@@ -708,17 +712,32 @@ class AzimuthSynchronousConfig:
                 raise ValueError(f'n_knots must be >= 4, got {self.n_knots}')
 
     @property
-    def n_bins(self) -> int | None:
-        """The number of bins of `bin_size` covering `azimuth_range`; `None` without them."""
-        if self.bin_size is None or self.azimuth_range is None:
-            return None
-        lo, hi = self.azimuth_range
-        return max(1, math.ceil((hi - lo) / self.bin_size - 1e-9))
+    def n_bins(self) -> int:
+        """The number of bins of `bin_size` covering `azimuth_range`."""
+        assert self.bin_size is not None and self.azimuth_range is not None
+        return sum(round((hi - lo) / self.bin_size) for lo, hi in self.azimuth_range)
 
     @property
     def n_settings(self) -> int:
         """The number of settings, elevation and roll, with their own function of the azimuth."""
         return len(self.elevations or (None,)) * len(self.rolls or (None,))
+
+
+def _bin_intervals(intervals: list[tuple[float, float]], size: float) -> list[tuple[float, float]]:
+    """`intervals` in increasing order, each widened to whole bins of `size`, overlaps merged.
+
+    Raises:
+        ValueError: If an interval does not increase.
+    """
+    merged: list[tuple[float, float]] = []
+    for lo, hi in sorted(intervals):
+        if not lo < hi:
+            raise ValueError(f"'azimuth_range' intervals must be increasing, got {intervals}")
+        if merged and lo < merged[-1][1]:  # merged into the previous interval, on its grid
+            lo, end = merged.pop()
+            hi = max(hi, end)
+        merged.append((lo, lo + size * math.ceil((hi - lo) / size - 1e-9)))
+    return merged
 
 
 @dataclass

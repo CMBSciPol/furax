@@ -272,15 +272,9 @@ def factor_diagonal(
         lambda d, r: jnp.where(d > 0, 1 / jnp.where(d > 0, d + r, 1), 1), diagonal, ridges
     )
 
-    def operator(values: PyTree[Array]) -> AbstractLinearOperator:
-        return BlockDiagonalOperator(
-            jax.tree.map(
-                lambda v: DiagonalOperator(v, in_structure=jax.ShapeDtypeStruct(v.shape, v.dtype)),
-                values,
-            )
-        )
-
-    return operator(inverses), operator(ridges) if regularization else None
+    structure = tree.as_structure(diagonal)
+    inverse = _ridge_operator(inverses, structure)  # a diagonal operator, as the ridge
+    return inverse, _ridge_operator(ridges, structure) if regularization else None
 
 
 def factor(

@@ -482,7 +482,7 @@ def test_low_rank_fit_deprojects_shared_templates_whatever_the_tiles(across_obse
     """The templates the detectors share are deprojected over whole observations."""
     extra = {'across_observations': True, 'elevations': (46.0,)} if across_observations else {}
     azimuth = AzimuthSynchronousConfig(
-        bin_size=120.0, azimuth_range=(-60.0, 660.0), per_wafer=True, explicit=True, **extra
+        bin_size=120.0, azimuth_range=[(-60.0, 660.0)], per_wafer=True, explicit=True, **extra
     )
     systems = []
     for tile_size in (0, 4):

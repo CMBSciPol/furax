@@ -460,7 +460,7 @@ def test_detector_batches_give_the_same_system_under_a_correlated_weight():
 # the fakes scan azimuths from 0 to 10 rad (573 deg) at an elevation of 0.8 rad (46 deg)
 _ACROSS_OBSERVATIONS = AzimuthSynchronousConfig(
     bin_size=120.0,
-    azimuth_range=(-60.0, 660.0),
+    azimuth_range=[(-60.0, 660.0)],
     split_scans=True,
     per_wafer=True,
     across_observations=True,

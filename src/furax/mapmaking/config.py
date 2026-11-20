@@ -1163,9 +1163,26 @@ class ExplicitGapsConfig:
     fraction of the samples of each detector.
     """
 
+    preconditioner: Literal['block', 'diagonal'] = 'block'
+    """How the gap amplitudes are preconditioned in the solve.
+
+    - `'block'`: the inverse of their Gram under the per-detector noise, white and correlated, on
+      blocks of `block_size` consecutive amplitudes of each detector. The correlated noise leaves
+      the slow shapes of a long gap far less constrained than its white level says, which the
+      diagonal misses. It needs the low-rank weighting; under another, the diagonal is used.
+    - `'diagonal'`: the inverse of the diagonal of their Gram under the white noise level.
+    """
+
+    block_size: int = 64
+    """The number of consecutive amplitudes of a detector in a block of the `'block'`
+    preconditioner. Larger blocks precondition better and take memory in proportion: a tile holds
+    `block_size` numbers per gap amplitude."""
+
     def __post_init__(self) -> None:
         if self.resolution < 0:
             raise ValueError(f"'resolution' must be >= 0, got {self.resolution}")
+        if self.block_size < 1:
+            raise ValueError(f"'block_size' must be >= 1, got {self.block_size}")
 
 
 @dataclass

@@ -438,11 +438,16 @@ def _config(
         GapsConfig(treatment=GapTreatment.INNER_MASK),
         GapsConfig(
             treatment=GapTreatment.EXPLICIT,
-            explicit=ExplicitGapsConfig(resolution=0.04),
+            explicit=ExplicitGapsConfig(resolution=0.04, block_size=8),
+            max_flagged_fraction=0.5,
+        ),
+        GapsConfig(
+            treatment=GapTreatment.EXPLICIT,
+            explicit=ExplicitGapsConfig(resolution=0.04, preconditioner='diagonal'),
             max_flagged_fraction=0.5,
         ),
     ],
-    ids=['inner-mask', 'explicit-bridge'],
+    ids=['inner-mask', 'explicit-bridge', 'explicit-bridge-diagonal'],
 )
 def test_low_rank_weight_on_detector_tiles_gives_the_map_of_whole_observations(gaps):
     """The low-rank fit and its correlated modes span the tiles of each observation."""

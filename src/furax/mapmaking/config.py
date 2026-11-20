@@ -1022,6 +1022,17 @@ class TemplatesConfig:
         )
 
     @property
+    def detectors_share_amplitudes(self) -> bool:
+        """Whether an enabled template has amplitudes that several detectors share."""
+        t2p = self.t2p is not None and (
+            self.t2p.zernike_order is not None or self.t2p.quadrupole_order is not None
+        )
+        azimuth = self.azimuth_synchronous is not None and (
+            self.azimuth_synchronous.per_wafer or self.azimuth_synchronous.across_observations
+        )
+        return t2p or azimuth or self.common_mode is not None
+
+    @property
     def across_observations(self) -> bool:
         """Whether an enabled template has amplitudes shared by every observation of the run."""
         section = self.azimuth_synchronous

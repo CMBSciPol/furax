@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental import multihost_utils as mhu
-from jaxtyping import Array, Bool, Float, Integer
+from jaxtyping import Array, Bool, Float, Integer, PyTree
 
 import furax.linalg
 import furax.tree
@@ -35,12 +35,15 @@ from ._observation import (
 )
 from ._pass import (
     PASS_REDUCTIONS,
+    SHARED_FIT_REDUCTIONS,
     PassTotals,
     bucket_tiles,
     fit_kernel,
     fit_low_rank,
     pass_kernel,
     residual_kernel,
+    shared_fit_amplitudes,
+    shared_fit_kernel,
 )
 from ._provenance import provenance
 from ._reader import ObservationReader, detector_tile_structure, tile_reads
@@ -629,9 +632,14 @@ class MapMakingRun[T]:
         detectors = max(self._buffer_shapes[i].detector_count for i in bucket.observations)
         capacity = -(-detectors // bucket.tile_size) * bucket.tile_size
         sample_rate = self._probed_sample_rate
+        first = _first_detectors(bucket)
+        extra: tuple[Any, ...] = (first,)
+        strides: tuple[Any, ...] = (1,)
+        if (shared := self._fit_shared_templates(bucket, reader, sky)) is not None:
+            extra, strides = (first, shared), (1, 'segment')
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         reads = tile_reads(bucket, reader, self.placement.axis, self._prefetches_reads)
-        reads = reads.zip(_first_detectors(bucket))
+        reads = reads.zip(extra, strides=strides)
         kernel = fit_kernel(self.fit_config, self.landscape, capacity, sample_rate)
         (spectra, level, n_real), _ = map_reduce(
             kernel, reads, ('segment_sum', 'segment_sum', 'segment'), sky
@@ -648,6 +656,31 @@ class MapMakingRun[T]:
             self.placement.axis,
         )
         return models, cores
+
+    def _fit_shared_templates(
+        self, bucket: TileBucket, reader: ObservationReader[T], sky: StokesType | None
+    ) -> PyTree[Array] | None:
+        """A pass over a bucket fitting the templates its detectors share, for the low-rank fit.
+
+        The low-rank fit deprojects them from the data. The amplitudes are fitted over each observation, so that the data the noise is estimated
+        from does not depend on how the detectors are tiled (see
+        [`shared_deprojection`][furax.mapmaking._tile.shared_deprojection]). `None` unless the
+        fit deprojects templates that the detectors share.
+        """
+        templates = self.fit_config.templates
+        if (
+            templates is None
+            or not self.fit_config.weighting.low_rank.deproject
+            or not templates.detectors_share_amplitudes
+        ):
+            return None
+        reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
+        reads = tile_reads(bucket, reader, self.placement.axis, self._prefetches_reads)
+        kernel = shared_fit_kernel(self.fit_config, self.landscape)
+        outputs, _ = map_reduce(kernel, reads, SHARED_FIT_REDUCTIONS, sky)
+        return shared_fit_amplitudes(
+            outputs, bucket.n_segments, templates.regularization, self.placement.axis
+        )
 
     @cached_property
     def _prefetches_reads(self) -> bool:

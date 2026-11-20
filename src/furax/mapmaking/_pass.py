@@ -39,6 +39,7 @@ from ._tile import (
     assemble_templates,
     low_rank_tile_spectra,
     restrict_streams,
+    shared_deprojection,
 )
 from .config import DiagnosticsConfig, GapTreatment, InjectionMode, MapMakingConfig, WeightingMode
 from .gap_filling import gap_fill
@@ -188,7 +189,9 @@ def fit_kernel(
 ) -> Callable[[tuple[Any, Array], StokesType | None], tuple[Array, Array, Array]]:
     """The kernel of the pass that fits the low-rank noise model of each observation.
 
-    The member is one tile's read, as for [`pass_kernel`][], and its first detector. The spectrum
+    The member is one tile's read, as for [`pass_kernel`][], and the tuple of its first detector
+    and, when the detectors share templates, their amplitudes in its observation, fitted over it by
+    the pass of [`shared_fit_kernel`][]. The spectrum
     and white level of each channel of the tile (see
     [`low_rank_tile_spectra`][furax.mapmaking._tile.low_rank_tile_spectra]) go to its rows of
     arrays `(stream, capacity, ...)`, zero elsewhere, so that their sum over the tiles of an
@@ -204,16 +207,13 @@ def fit_kernel(
     replaces = config.injection is not None and config.injection.mode == InjectionMode.REPLACE
 
     def kernel(member, sky):
-        (data, padding, use), start = member
-        data = _prepared(data, padding, sky, config, sky_landscape, replaces)
-        tod = data[ReaderField.SAMPLE_DATA]
-        temperature = None
-        if config.read_stokes != landscape.stokes:
-            temperature = tod.i
-            data, tod = restrict_streams(data, tod, landscape.stokes)
-        tod_format = _tod_format_of(tod)
+        (data, padding, use), (start, *shared) = member
+        shared_amplitudes = shared[0] if shared else None
+        data, tod_format, temperature = _model_fields(
+            data, padding, sky, config, landscape, sky_landscape, replaces
+        )
         spectra, level, n_real = low_rank_tile_spectra(
-            data, config, tod_format, padding, sample_rate, temperature
+            data, config, tod_format, padding, sample_rate, temperature, shared_amplitudes
         )
         n_streams = 1 if tod_format.stokes is None else tod_format.n_streams
         zero = jnp.zeros((), jnp.int32)
@@ -230,6 +230,88 @@ def fit_kernel(
         return (*placed, n_real)
 
     return kernel
+
+
+def shared_fit_kernel(
+    config: MapMakingConfig, landscape: StokesLandscape
+) -> Callable[[Any, StokesType | None], dict[str, Any]]:
+    """The kernel of the pass that fits the templates the detectors of an observation share.
+
+    It precedes the pass of [`fit_kernel`][], whose TOD it rids of those templates, fitted over
+    the whole observation rather than over each tile. The member is one tile's read, as for
+    [`pass_kernel`][]; the kernel returns its share of their Gram and right-hand side (see
+    [`shared_deprojection`][furax.mapmaking._tile.shared_deprojection]), keyed as
+    [`SHARED_FIT_REDUCTIONS`][].
+
+    Args:
+        config: The mapmaking configuration.
+        landscape: The landscape of the maps.
+    """
+    sky_landscape = landscape.with_stokes(config.read_stokes)
+    replaces = config.injection is not None and config.injection.mode == InjectionMode.REPLACE
+
+    def kernel(member, sky):
+        data, padding, use = member
+        data, tod_format, temperature = _model_fields(
+            data, padding, sky, config, landscape, sky_landscape, replaces
+        )
+        terms = shared_deprojection(data, config, tod_format, padding, temperature)
+        assert terms is not None  # the pass runs only when the detectors share templates
+        gram, rhs = terms
+        # padding tiles and failed observations contribute nothing
+        gram, rhs = jax.tree.map(lambda x: x * use, (replace(gram, coarse=None), rhs))
+        return {'gram': gram, 'coarse': terms[0].coarse, 'rhs': rhs}
+
+    return kernel
+
+
+SHARED_FIT_REDUCTIONS = {'gram': 'segment_sum', 'coarse': 'segment', 'rhs': 'segment_sum'}
+"""How the engine combines the outputs of [`shared_fit_kernel`][] over the tiles of a bucket: the
+Gram and the right-hand side summed over the tiles of each observation, the coarse amplitudes of
+the Gram, which follow from the bases alone, kept per observation."""
+
+
+def shared_fit_amplitudes(
+    outputs: dict[str, Any], n_segments: int, regularization: float, axis: str
+) -> PyTree[Array]:
+    """The amplitudes of the templates the detectors of each observation share, `(segment, ...)`.
+
+    The outputs of [`shared_fit_kernel`][], combined over the tiles of each observation, are
+    solved for on the device that holds it.
+    """
+    segments = StackedEnsemble(
+        n_segments, (outputs['gram'], outputs['coarse'], outputs['rhs']), policy=Policy(axis=axis)
+    )
+
+    def solve(member):
+        gram, coarse, rhs = member
+        inverse, _ = factor(replace(gram, coarse=coarse), regularization=regularization)
+        return inverse(rhs)
+
+    amplitudes, _ = map_reduce(solve, segments, 1)
+    return amplitudes
+
+
+def _model_fields(
+    data: dict[str, Any],
+    padding: Any,
+    sky: StokesType | None,
+    config: MapMakingConfig,
+    landscape: StokesLandscape,
+    sky_landscape: StokesLandscape,
+    replaces: bool,
+) -> tuple[dict[str, Any], TODFormat, Array | None]:
+    """The fields of a tile for its model, its TOD format, and the I stream read for T2P.
+
+    The I stream, read for the T2P template only, stays out of the model; `None` if not read.
+    """
+    data = _prepared(data, padding, sky, config, sky_landscape, replaces)
+    tod = data[ReaderField.SAMPLE_DATA]
+    temperature = None
+    if config.read_stokes != landscape.stokes:
+        temperature = tod.i
+        data, tod = restrict_streams(data, tod, landscape.stokes)
+    return data, _tod_format_of(tod), temperature
 
 
 def fit_low_rank(

@@ -19,6 +19,7 @@ from furax.obs.stokes import StokesType
 
 from ._bucket import bucket_normal, bucket_response, modes_correction, preconditioner, ridge
 from ._checkpoint import CHECKPOINT_FILES, SolveCheckpoint
+from ._tile import AMPLITUDE_STRIDES, GLOBAL_TEMPLATES
 from .config import SolverConfig, TwoLevelConfig
 from .layout import TilePlacement
 from .preconditioner import BJPreconditioner, make_two_level_preconditioner
@@ -67,6 +68,7 @@ class MapMakingSystem:
         BJ: BJPreconditioner,
         sky: StokesType | None = None,
         modes: list[Array] | None = None,
+        global_gram: tuple[AbstractLinearOperator, AbstractLinearOperator | None] | None = None,
     ) -> 'MapMakingSystem':
         r"""The GLS normal system $J^\top W' J x = J^\top W' d$ over the selected pixels.
 
@@ -81,18 +83,26 @@ class MapMakingSystem:
                 data of each bucket (see
                 [`PassTotals.modes`][furax.mapmaking._pass.PassTotals.modes]), whose share the
                 system takes from the right-hand side.
+            global_gram: The inverse of the Gram of the amplitudes every observation shares, and
+                its ridge (see [`PassTotals.global_gram`][furax.mapmaking._pass.PassTotals]).
 
         Returns:
             The system to solve. Its unknowns are a dictionary of the selected sky pixels, under
-            `'map'`, and of the amplitudes of each kind, one block per bucket.
+            `'map'`, and of the amplitudes of each kind, one block per bucket, but for those every
+            observation shares, which are one block that every bucket reads whole, as the map.
         """
         # Explicit templates and gaps are configured for the run, so every bucket has them or none.
         kinds = buckets[0].template.kinds
 
         # The unknowns are the selected sky pixels, then, per kind of amplitudes present, one block
-        # per bucket, of which each bucket's system reads and writes its own
+        # per bucket, of which each bucket's system reads and writes its own, or a single block
+        # that every bucket reads whole
         b = rhs | {'map': S(rhs['map'])}
-        strides = {'map': None} | dict.fromkeys(kinds, 1)
+        strides = {'map': None} | {
+            kind: None if AMPLITUDE_STRIDES[kind] is None else 1 for kind in kinds
+        }
+        per_bucket = [kind for kind in kinds if strides[kind] is not None]
+        assert (GLOBAL_TEMPLATES in kinds) == (global_gram is not None)
         normals = [bucket_normal(tiles, S) for tiles in buckets]
         terms: list[AbstractLinearOperator] = [
             AdditionOperator(normals, sequential=True, in_strides=strides)
@@ -112,16 +122,26 @@ class MapMakingSystem:
 
         # The ridge the Gram inverses were factored with acts on the amplitudes alone, so it is
         # one term over them all, outside the passes over the TOD.
-        for kind in kinds:
+        ridges: dict[str, AbstractLinearOperator] = {}
+        for kind in per_bucket:
             ridged = [ridge(tiles, kind) for tiles in buckets]
             assert all(r is None for r in ridged) or all(r is not None for r in ridged)
             if ridged[0] is not None:
-                amplitudes = BlockSelectOperator(kind, in_structure=terms[0].in_structure)
-                terms.append((amplitudes.T @ BlockDiagonalOperator(ridged) @ amplitudes).reduce())
+                ridges[kind] = BlockDiagonalOperator(ridged)
+        if global_gram is not None and global_gram[1] is not None:
+            ridges[GLOBAL_TEMPLATES] = global_gram[1]
+        for kind, ridged_kind in ridges.items():
+            amplitudes = BlockSelectOperator(kind, in_structure=terms[0].in_structure)
+            terms.append((amplitudes.T @ ridged_kind @ amplitudes).reduce())
 
         # The map is preconditioned by the block-Jacobi preconditioner restricted to the selected
-        # pixels, the amplitudes of each kind block-diagonally over the buckets
-        inverses = {kind: [preconditioner(tiles, kind) for tiles in buckets] for kind in kinds}
+        # pixels, the amplitudes of each kind block-diagonally over the buckets, and those every
+        # observation shares by the inverse of their Gram
+        inverses: dict[str, Any] = {
+            kind: [preconditioner(tiles, kind) for tiles in buckets] for kind in per_bucket
+        }
+        if global_gram is not None:
+            inverses[GLOBAL_TEMPLATES] = global_gram[0]
         M = BlockDiagonalOperator({'map': (S @ BJ.I @ S.T).reduce()} | inverses)
         A = AdditionOperator(terms, sequential=True)
         return cls(A, b, M, injected_b)

@@ -679,6 +679,38 @@ def test_per_wafer_templates_share_their_amplitudes_within_a_wafer(config, shape
     assert template.in_structure.shape == shape
 
 
+def test_bins_on_a_fixed_range_hold_the_same_azimuth_in_every_observation():
+    bins = BinsConfig(4)
+    one, other = jnp.linspace(0.0, 1.0, N_SAMPS), jnp.linspace(-0.5, 1.5, N_SAMPS)
+    weights = [
+        azimuth_bins_basis(bins, azimuth, jnp.float64, bounds=(0.0, 2.0)).values
+        for azimuth in (one, other)
+    ]
+    # bin j is [j / 2, (j + 1) / 2) whatever the range scanned; outside [0, 2), no bin
+    for azimuth, w in zip((one, other), weights, strict=True):
+        inside = (azimuth >= 0) & (azimuth < 2)
+        expected = jnp.where(inside, jnp.floor(azimuth * 2), -1)
+        assert_array_equal(jnp.where(w.any(axis=0), w.argmax(axis=0), -1), expected)
+
+
+@pytest.mark.parametrize(('elevation', 'mode'), [(0.87, 0), (0.95, 1), (1.2, 2)])
+def test_azimuth_template_across_observations_sees_the_nearest_elevation(elevation, mode):
+    config = AzimuthSynchronousConfig(
+        bins=BinsConfig(4),
+        azimuth_range=(-1.0, 1.0),
+        across_observations=True,
+        elevations=(0.87, 0.96, 1.05),
+        explicit=True,
+    )
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='QU')
+    data = _data('QU') | {ReaderField.ELEVATION: jnp.full(N_SAMPS, elevation)}
+    templates = TemplatesConfig(azimuth_synchronous=config)
+    assert ReaderField.ELEVATION in required_reader_fields(templates)
+    (template,) = build_templates(templates, data, tod_format)[0].values()
+    assert template.in_structure.shape == (2, 4, 3)  # (stream, bin, elevation)
+    assert_array_equal(template.coupling, jnp.eye(3)[mode].reshape(1, 1, 3))
+
+
 def test_common_mode_needs_the_q_and_u_streams():
     tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='I')
     assert common_mode_templates(CommonModeConfig(), _field_data('I'), tod_format) == {}

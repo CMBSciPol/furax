@@ -90,7 +90,8 @@ class MapMakingResults:
 
     template_amplitudes: dict[str, Any] | None = None
     """Estimated amplitudes of the explicit templates, keyed by template name: per observation, the
-    amplitudes of [`Template`][furax.mapmaking.templates.Template], streams then detectors first"""
+    amplitudes of [`Template`][furax.mapmaking.templates.Template], streams then detectors first;
+    those every observation shares once, without the observation axis"""
 
     injected_map: StokesType | None = None
     """The map of the simulated sky through the run (`injection.mode=response`)"""

@@ -10,7 +10,7 @@ observation's data, and [`build_templates`][furax.mapmaking.templates.build_temp
 
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
-from typing import Any
+from typing import Any, Final
 
 import jax
 import jax.numpy as jnp
@@ -45,6 +45,7 @@ from .bases import Basis, DecimatedBasis, KroneckerBasis, SplineBasis, TensorBas
 
 __all__ = [
     'build_templates',
+    'global_template_names',
     'required_reader_fields',
     'spline_drift_templates',
     'azimuth_synchronous_templates',
@@ -60,6 +61,15 @@ __all__ = [
     'polynomial_couplings',
     'polarization_field_couplings',
 ]
+
+
+GLOBAL_AZIMUTH_SYNCHRONOUS: Final = 'azimuth_synchronous'
+"""The name of the azimuth template shared by the observations of a run, when it is."""
+
+
+def global_template_names(config: TemplatesConfig) -> frozenset[str]:
+    """The names of the templates `config` enables whose amplitudes every observation shares."""
+    return frozenset({GLOBAL_AZIMUTH_SYNCHRONOUS} if config.across_observations else ())
 
 
 def build_templates(
@@ -151,6 +161,8 @@ def required_reader_fields(config: TemplatesConfig) -> set[str]:
         for section in (config.azimuth_synchronous, config.common_mode)
     ):
         fields |= {ReaderField.WAFER_SLOTS}
+    if config.across_observations:
+        fields |= {ReaderField.ELEVATION}
     if config.common_mode is not None:
         fields |= {
             ReaderField.TIMESTAMPS,
@@ -197,12 +209,20 @@ def azimuth_synchronous_templates(
     if config.split_scans:
         scan_masks = (data[ReaderField.LEFT_SCAN_MASK], data[ReaderField.RIGHT_SCAN_MASK])
     if config.bins is not None:
+
+        def bins_basis(bins: BinsConfig) -> Basis:
+            return azimuth_bins_basis(
+                bins, azimuth, dtype, scan_masks=scan_masks, bounds=config.azimuth_range
+            )
+
+        if config.across_observations:
+            return {
+                GLOBAL_AZIMUTH_SYNCHRONOUS: _across_observations(
+                    bins_basis(config.bins), config, data, tod_format, det_groups
+                )
+            }
         return _stream_groups(
-            'azimuth_synchronous',
-            config.bins,
-            lambda bins: azimuth_bins_basis(bins, azimuth, dtype, scan_masks=scan_masks),
-            tod_format,
-            det_groups=det_groups,
+            'azimuth_synchronous', config.bins, bins_basis, tod_format, det_groups=det_groups
         )
     assert config.n_knots is not None  # exactly one alternative is set
 
@@ -211,6 +231,35 @@ def azimuth_synchronous_templates(
 
     return _stream_groups(
         'azimuth_synchronous', config.n_knots, spline, tod_format, det_groups=det_groups
+    )
+
+
+def _across_observations(
+    basis: Basis,
+    config: AzimuthSynchronousConfig,
+    data: Mapping[str, Any],
+    tod_format: TODFormat,
+    det_groups: Bool[Array, 'det group'] | None,
+) -> Template:
+    """The azimuth template whose amplitudes every observation of the run shares.
+
+    Its modes are the elevations of `config`: an observation, at constant elevation, sees only
+    the nearest, through a coupling one-hot on it, the same for every detector and stream.
+    """
+    assert config.elevations is not None  # guaranteed by the config
+    # the first sample is never padding
+    elevation = data[ReaderField.ELEVATION][0]
+    nearest = jnp.argmin(jnp.abs(jnp.asarray(config.elevations) - elevation))
+    coupling = (jnp.arange(len(config.elevations)) == nearest).astype(tod_format.dtype)
+    streams = None if tod_format.stokes is None else tod_format.stokes.lower()
+    leading = (1, 1) if streams is not None else (1,)  # every stream, every detector
+    return Template(
+        basis,
+        tod_format,
+        streams=streams,
+        per=('stream', 'det') if det_groups is not None else ('stream',),
+        coupling=coupling.reshape(*leading, -1),
+        det_groups=det_groups,
     )
 
 
@@ -655,26 +704,44 @@ def _bin_weights(
     interpolate: bool,
     smooth: bool,
     dtype: DTypeLike,
+    *,
+    bounds: tuple[float, float] | None = None,
 ) -> Float[Array, '{n_bins} samp']:
     """Assign each sample to a bin of `x`.
 
-    Splits the range of `x` into `n_bins` equal bins. Entry `[j, s]` is how much sample `s` belongs
-    to bin `j`. With `interpolate=False` this is one-hot: 1 for the bin the sample falls in, 0
+    Splits the range of `x`, or `bounds` if given, into `n_bins` equal bins. Entry `[j, s]` is how
+    much sample `s` belongs to bin `j`; a sample outside `bounds` belongs to none. With `interpolate=False` this is one-hot: 1 for the bin the sample falls in, 0
     elsewhere. With `interpolate=True` a sample near a bin edge is shared with its neighbour
     (triangular weights, or sin² hats if `smooth`), each sample's weights summing to 1.
 
     Each row is then one basis function of a binned template (a bin's time profile).
     """
+    if bounds is None:
+        lo = jnp.min(x)
+        hi = jnp.max(x) + 1e-8  # nudge so the global max falls in the last bin
+        return _bin_weights_between(x, lo, hi, n_bins, interpolate, smooth).astype(dtype)
+    lo, hi = bounds
+    inside = (x >= lo) & (x < hi)
+    weights = _bin_weights_between(jnp.clip(x, lo, hi), lo, hi, n_bins, interpolate, smooth)
+    return (weights * inside).astype(dtype)
+
+
+def _bin_weights_between(
+    x: Float[Array, ' samp'],
+    lo: Float[Array, ''] | float,
+    hi: Float[Array, ''] | float,
+    n_bins: int,
+    interpolate: bool,
+    smooth: bool,
+) -> Float[Array, '{n_bins} samp']:
+    """The bin weights of `x` (see `_bin_weights`), within `[lo, hi]`, over `n_bins` equal bins between them."""
     n_samps = x.size
-    lo = jnp.min(x)
-    hi = jnp.max(x) + 1e-8  # nudge so the global max falls in the last bin
     edges = jnp.linspace(lo, hi, n_bins + 1)
 
     if not interpolate:
-        # Hard assignment: each sample contributes 1.0 to exactly its bin.
-        sample_bin = jnp.digitize(x, edges[1:])
-        bins = jnp.zeros((n_bins, n_samps)).at[sample_bin, jnp.arange(n_samps)].set(1.0)
-        return bins.astype(dtype)
+        # Hard assignment: each sample contributes 1.0 to exactly its bin; `hi` to the last.
+        sample_bin = jnp.minimum(jnp.digitize(x, edges[1:]), n_bins - 1)
+        return jnp.zeros((n_bins, n_samps)).at[sample_bin, jnp.arange(n_samps)].set(1.0)
 
     # Soft assignment: triangular weights peaking at each bin centre, falling
     # linearly to zero one bin-width (`delta`) away. Shape (n_bins, n_samps).
@@ -690,7 +757,7 @@ def _bin_weights(
         # Linear interpolation; clamp samples beyond the end centres to the edge bins.
         bins = triangular.at[0, x < centres[0]].set(1.0).at[-1, x > centres[-1]].set(1.0)
 
-    return bins.astype(dtype)
+    return bins
 
 
 def _legendre_values(
@@ -858,9 +925,16 @@ def azimuth_bins_basis(
     dtype: DTypeLike,
     *,
     scan_masks: Sequence[Array] | None = None,
+    bounds: tuple[float, float] | None = None,
 ) -> Basis:
-    """One amplitude per azimuth bin, one set per scan mask if given."""
-    weights = _bin_weights(azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype)
+    """One amplitude per azimuth bin, one set per scan mask if given.
+
+    The bins split the azimuth range of the observation, or `bounds` if given, where a sample
+    outside them is in no bin.
+    """
+    weights = _bin_weights(
+        azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype, bounds=bounds
+    )
     return TensorBasis(_by_scan(weights, scan_masks))
 
 

@@ -632,6 +632,25 @@ class AzimuthSynchronousConfig:
     """Whether the detectors of a wafer share one function of the azimuth, instead of each
     detector fitting its own. Needs `explicit`: shared amplitudes are solved for with the map."""
 
+    azimuth_range: tuple[float, float] | None = None
+    """The azimuth range in radians that `bins` split, the same for every observation, where a
+    sample outside it is in no bin; `None` for the range of each observation."""
+
+    across_observations: bool = False
+    """Whether every observation sees the same function of the azimuth at each of `elevations`,
+    one set of amplitudes for the run. Needs `bins`, `azimuth_range`, `elevations` and `explicit`;
+    the detectors share it, per wafer if `per_wafer`.
+
+    The sky moves across the azimuth range from one observation to the next, while the pickup
+    stays, which separates them. Within one observation, a constant over the bins it scans is
+    degenerate with its offsets or drift (Pomme, `spline_drift`): `TemplatesConfig.regularization`
+    settles such directions."""
+
+    elevations: tuple[float, ...] | None = None
+    """The elevations in radians at which the run observes, each with its own function of the
+    azimuth when `across_observations`. An observation, at constant elevation, sees that of the
+    nearest of them: list every elevation of the run."""
+
     explicit: bool = False
     """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
@@ -642,6 +661,20 @@ class AzimuthSynchronousConfig:
             raise ValueError(
                 "'per_wafer' needs 'explicit': shared amplitudes cannot be marginalized"
             )
+        if self.across_observations and (
+            self.bins is None
+            or self.azimuth_range is None
+            or not self.elevations
+            or not self.explicit
+        ):
+            raise ValueError(
+                "'across_observations' needs 'bins', 'azimuth_range', 'elevations' and 'explicit'"
+            )
+        if self.azimuth_range is not None:
+            if self.bins is None:
+                raise ValueError("'azimuth_range' sets the range of the 'bins'")
+            if not self.azimuth_range[0] < self.azimuth_range[1]:
+                raise ValueError(f"'azimuth_range' must be increasing, got {self.azimuth_range}")
         if self.n_knots is not None:
             values = self.n_knots.values() if isinstance(self.n_knots, dict) else [self.n_knots]
             if any(value < 4 for value in values):
@@ -987,6 +1020,12 @@ class TemplatesConfig:
             for field in fields(self)
             if field.metadata.get('template', True)
         )
+
+    @property
+    def across_observations(self) -> bool:
+        """Whether an enabled template has amplitudes shared by every observation of the run."""
+        section = self.azimuth_synchronous
+        return section is not None and section.across_observations
 
     def implicit_names(self) -> tuple[str, ...]:
         """The enabled templates whose amplitudes are marginalized rather than solved for."""

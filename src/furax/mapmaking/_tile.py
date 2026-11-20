@@ -35,13 +35,13 @@ from .acquisition import build_acquisition_operator
 from .config import GapTreatment, MapMakingConfig, NoiseSource, TemplatesConfig, WeightingMode
 from .lowrank import LowRankNoiseModel, ModesCore, low_rank_spectra
 from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
-from .templates import TemplateOperator, build_templates
+from .templates import TemplateOperator, build_templates, global_template_names
 from .templates.fit import TemplateFit
 from .templates.gram import BlockGram, factor, template_gram
 from .templates.pomme import PommeProjectionOperator
 from .weight import MarginalizedWeightOperator, NestedWeightOperator, WeightOperator
 
-TemplateKind = Literal['templates', 'shared_templates']
+TemplateKind = Literal['templates', 'shared_templates', 'global_templates']
 """A kind of template amplitudes solved for with the map."""
 
 AmplitudeKind = TemplateKind | Literal['gaps']
@@ -53,16 +53,20 @@ TEMPLATES: Final = 'templates'
 SHARED_TEMPLATES: Final = 'shared_templates'
 """The amplitudes of the explicit templates the detectors of an observation share."""
 
+GLOBAL_TEMPLATES: Final = 'global_templates'
+"""The amplitudes of the explicit templates every observation of the run shares."""
+
 GAPS: Final = 'gaps'
 """The gap amplitudes of each detector."""
 
-AMPLITUDE_STRIDES: dict[AmplitudeKind, Literal[1, 'segment']] = {
+AMPLITUDE_STRIDES: dict[AmplitudeKind, Literal[1, 'segment'] | None] = {
     TEMPLATES: 1,
     SHARED_TEMPLATES: 'segment',
+    GLOBAL_TEMPLATES: None,
     GAPS: 1,
 }
-"""How the tiles hold each kind of amplitudes: per tile (stride 1), or per observation
-(`'segment'`)."""
+"""How the tiles hold each kind of amplitudes: per tile (stride 1), per observation
+(`'segment'`), or once for the run, read whole by every tile as the map is (`None`)."""
 
 DROP_REASONS = ('over_flagged', 'over_gap_budget')
 """Why a detector is dropped: the fields of [`Tile`][] marking the detectors dropped for each."""
@@ -482,12 +486,15 @@ def assemble_templates(
     config: MapMakingConfig,
     tile: Tile,
     temperature: Float[Array, 'det samp'] | None = None,
-) -> tuple[TemplateBundle | None, dict[TemplateKind, TemplateBundle], BlockGram | None]:
+) -> tuple[
+    TemplateBundle | None, dict[TemplateKind, TemplateBundle], BlockGram | None, BlockGram | None
+]:
     """The templates of a tile.
 
     The Grams of the implicit templates, and of the explicit ones of each detector, are factored.
-    That of the templates the detectors of the observation share is only assembled: it is the
-    tile's share of theirs, taken under the weight with the implicit templates marginalized.
+    Those of the templates the detectors of the observation share, and of those every observation
+    shares, are only assembled: each is the tile's share of theirs, taken under the weight with
+    the implicit templates marginalized.
 
     Args:
         data: The fields read for the tile's detectors.
@@ -498,8 +505,9 @@ def assemble_templates(
 
     Returns:
         The implicit templates, `None` if absent; the explicit ones by the kind of their
-        amplitudes, those the detectors share without their Gram inverse; and the tile's share of
-        the Gram of the latter, `None` without them.
+        amplitudes, those the detectors or the observations share without their Gram inverse; and
+        the tile's share of the Gram of the templates the detectors of the observation share, then
+        of those every observation shares, `None` without them.
     """
     if (tcfg := config.templates) is None:
         raise ValueError('templates config required to build template operators')
@@ -529,20 +537,28 @@ def assemble_templates(
         assert implicit.gram_inverse is not None  # set by `create`
         weight = MarginalizedWeightOperator.create(tile.W, op, implicit.gram_inverse)
 
-    def by_detectors(per_detector):
-        chosen = {n: t for n, t in explicit_templates.items() if t.per_detector == per_detector}
+    global_names = global_template_names(tcfg)
+
+    def of_kind(kind):
+        def is_kind(name, template):
+            if name in global_names:
+                return kind == GLOBAL_TEMPLATES
+            return kind == (TEMPLATES if template.per_detector else SHARED_TEMPLATES)
+
+        chosen = {n: t for n, t in explicit_templates.items() if is_kind(n, t)}
         return TemplateOperator(chosen) if chosen else None
 
     explicit: dict[TemplateKind, TemplateBundle] = {}
-    shared_gram = None
-    if (op := by_detectors(True)) is not None:
+    grams: dict[TemplateKind, BlockGram | None] = {SHARED_TEMPLATES: None, GLOBAL_TEMPLATES: None}
+    if (op := of_kind(TEMPLATES)) is not None:
         explicit[TEMPLATES] = TemplateBundle.create(op, gram_weight, tcfg, pomme_tau=pomme_tau)
-    if (op := by_detectors(False)) is not None:
-        shared_gram = template_gram(
-            op, weight, pomme_tau=pomme_tau, batch_size=tcfg.gram_batch_size
-        )
-        explicit[SHARED_TEMPLATES] = TemplateBundle(op, None, None)
-    return implicit, explicit, shared_gram
+    for kind in grams:
+        if (op := of_kind(kind)) is not None:
+            grams[kind] = template_gram(
+                op, weight, pomme_tau=pomme_tau, batch_size=tcfg.gram_batch_size
+            )
+            explicit[kind] = TemplateBundle(op, None, None)
+    return implicit, explicit, grams[SHARED_TEMPLATES], grams[GLOBAL_TEMPLATES]
 
 
 def acquisition_operator(

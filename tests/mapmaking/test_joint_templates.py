@@ -20,6 +20,7 @@ from furax.mapmaking._bucket import bucket_map_normal, bucket_normal
 from furax.mapmaking._tile import TEMPLATES
 from furax.mapmaking.config import (
     AzimuthSynchronousConfig,
+    BinsConfig,
     CommonModeConfig,
     GapsConfig,
     GapTreatment,
@@ -455,3 +456,35 @@ def test_detector_batches_give_the_same_system_under_a_correlated_weight():
     cfg = _toeplitz_config(templates, precomputed=True, demodulated=True)
     whole, batched = _detector_batch_systems(cfg)
     assert_same_system(batched, whole)
+
+
+_ACROSS_OBSERVATIONS = AzimuthSynchronousConfig(
+    bins=BinsConfig(5),
+    split_scans=True,
+    per_wafer=True,
+    azimuth_range=(-1.0, 11.0),
+    across_observations=True,
+    elevations=(0.8, 1.0),
+    explicit=True,
+)
+
+
+def test_azimuth_template_across_observations_gives_the_same_system_in_detector_batches():
+    # every tile of every observation reads the same amplitudes, whose Gram sums over them all
+    templates = TemplatesConfig(azimuth_synchronous=_ACROSS_OBSERVATIONS, regularization=1e-3)
+    cfg = replace(_config(None), templates=templates, sotodlib=SotodlibConfig(demodulated=True))
+    whole, batched = _detector_batch_systems(cfg, _ground_obs)
+    assert_same_system(batched, whole)
+
+
+def test_azimuth_amplitudes_across_observations_are_reported_once():
+    templates = TemplatesConfig(azimuth_synchronous=_ACROSS_OBSERVATIONS, regularization=1e-3)
+    cfg = replace(_config(None), templates=templates, sotodlib=SotodlibConfig(demodulated=True))
+    results = MultiObservationMapMaker(cfg).make_maps(_ground_obs(n_obs=3))
+    (amplitudes,) = results.template_amplitudes.values()
+    # (stream, wafer, direction x bin, elevation): no observation axis
+    assert amplitudes.shape == (3, 7, 10, 2)
+    assert jnp.all(jnp.isfinite(amplitudes))
+    # the detectors are on the first two wafers, the observations at the first elevation
+    assert jnp.all(jnp.any(amplitudes[:, :2, :, 0] != 0, axis=-1))
+    assert not jnp.any(amplitudes[:, 2:]) and not jnp.any(amplitudes[..., 1])

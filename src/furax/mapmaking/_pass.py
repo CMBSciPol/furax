@@ -48,18 +48,20 @@ from .noise import NoiseModel
 from .templates.gram import factor
 from .weight import WeightOperator
 
+_REDUCTIONS_OF_STRIDES = {1: 1, 'segment': 'segment_sum', None: 'sum'}
+"""How the pass combines the right-hand side of amplitudes held with each stride."""
+
 PASS_REDUCTIONS = {
     'hit_map': 'sum',
     # keyed as the unknowns: the map RHS summed, that of each kind of amplitudes held as the
     # tiles hold them
     'rhs': {'map': 'sum'}
-    | {
-        kind: 'segment_sum' if stride == 'segment' else stride
-        for kind, stride in AMPLITUDE_STRIDES.items()
-    },
+    | {kind: _REDUCTIONS_OF_STRIDES[stride] for kind, stride in AMPLITUDE_STRIDES.items()},
     # the Gram of the templates an observation's detectors share, summed over its tiles, paired
     # with its coarse amplitudes, which follow from the bases alone, the same in every tile
     'shared_gram': {'gram': 'segment_sum', 'coarse': 'segment'},
+    # the Gram of the templates every observation shares, summed over every tile
+    'global_gram': 'sum',
     # what the tiles of an observation share (boresight pointing, bases of the shared templates,
     # ...) is kept once per segment, the rest per tile
     'tile': 'auto',
@@ -84,11 +86,15 @@ class PassTotals:
     sky under `'map'`, replicated on every device, and for each kind of amplitudes present (see
     [`AMPLITUDE_STRIDES`][furax.mapmaking._tile.AMPLITUDE_STRIDES]) a list with the right-hand
     side of each bucket, `(tile, ...)`, or `(segment, ...)` for the amplitudes the detectors of an
-    observation share."""
+    observation share; that of the amplitudes every observation shares is summed over the
+    buckets, as the map RHS is."""
     modes: list[Array] | None = None
     r"""Under a low-rank noise model, the amplitudes $\sum_t T_t^\top D_t^{-1} M_t d_t$ of the
     correlated modes of the data of each bucket, `(segment, frequency, mode, 2)` (see
     [`Tile.modes`][furax.mapmaking._tile.Tile.modes]); `None` otherwise."""
+    global_gram: tuple[AbstractLinearOperator, AbstractLinearOperator | None] | None = None
+    """The inverse of the Gram of the templates every observation shares, summed over every tile,
+    and the ridge it was factored with; `None` without them."""
 
 
 def pass_kernel(
@@ -111,6 +117,8 @@ def pass_kernel(
     - `'shared_gram'`: the templates its observation's detectors share, under `'gram'` its share
       of their Gram and under `'coarse'` their coarse amplitudes, both `None` without them. The
       Gram is factored once summed over the tiles;
+    - `'global_gram'`: its share of the Gram of the templates every observation shares, `None`
+      without them;
     - `'tile'`: the [`Tile`][furax.mapmaking._tile.Tile], the Gram of the templates its
       observation's detectors share not yet factored;
     - `'modes'`: under a low-rank noise model, the amplitudes $T^\top D^{-1} M d$ of the
@@ -145,13 +153,14 @@ def pass_kernel(
 
 def residual_kernel(
     config: MapMakingConfig, landscape: StokesLandscape, diagnostics: DiagnosticsConfig
-) -> Callable[[tuple[Any, tuple[Tile, dict[str, Any]]], StokesType | None, StokesType], Any]:
+) -> Callable[[tuple[Any, tuple[Tile, dict[str, Any]]], StokesType | None, dict[str, Any]], Any]:
     """The kernel of the residual pass: the statistics of one detector tile.
 
     The member is one tile's read, as for [`pass_kernel`][], paired with the
     [`Tile`][furax.mapmaking._tile.Tile] the pass over the data built from it and the amplitudes
-    of each kind it reads, solved for. The sky to inject, if any, and the map solved for, on the
-    whole sky, are shared inputs. The kernel returns the statistics of
+    of each kind it reads, solved for. The sky to inject, if any, and the unknowns every tile
+    reads whole, the map solved for on the whole sky, under `'map'`, and the amplitudes every
+    observation shares, are shared inputs. The kernel returns the statistics of
     [`tile_statistics`][furax.mapmaking._diagnostics.tile_statistics].
 
     Args:
@@ -169,7 +178,7 @@ def residual_kernel(
         if config.read_stokes != landscape.stokes:
             # The extra streams read, the I one for the T2P template, stay out of the model
             _, tod = restrict_streams(data, tod, landscape.stokes)
-        return tile_statistics(tile, tod, {'map': solution} | amplitudes, diagnostics)
+        return tile_statistics(tile, tod, solution | amplitudes, diagnostics)
 
     return kernel
 
@@ -342,9 +351,11 @@ def _contribution(
     masked = jax.tree.leaves(tile.M.to_boolean_mask())[0]
     hits = jnp.int64(hit_pointing.T(StokesI(masked)).i)
 
-    gram = None
+    gram = global_gram = None
     if config.use_templates:
-        implicit, explicit, gram = assemble_templates(data, config, tile, temperature)
+        implicit, explicit, gram, global_gram = assemble_templates(data, config, tile, temperature)
+        # the bases of the templates every observation shares are not time-local
+        assert global_gram is None or global_gram.coarse is None
         tile = replace(tile, implicit=implicit, explicit=explicit)
 
     modes = None
@@ -365,6 +376,7 @@ def _contribution(
             'gram': None if gram is None else replace(gram, coarse=None),
             'coarse': None if gram is None else gram.coarse,
         },
+        'global_gram': global_gram,
         'tile': tile,
         'modes': modes,
     }

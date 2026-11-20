@@ -15,7 +15,7 @@ from jaxtyping import Array, PyTree
 
 from furax.core import StackedEnsemble, lift
 
-from ._tile import DROP_REASONS, SHARED_TEMPLATES, TEMPLATES
+from ._tile import DROP_REASONS, GLOBAL_TEMPLATES, SHARED_TEMPLATES, TEMPLATES
 from .layout import TilePlacement
 from .noise import NoiseModel
 
@@ -26,7 +26,8 @@ def template_amplitudes(
     """The template amplitudes solved for, by template, per observation, from the unknowns `x`.
 
     Every device holds the same replicated copy after the gather, so the host array is
-    complete on every process; then back to observation order.
+    complete on every process; then back to observation order. The amplitudes every observation
+    shares have no observation axis.
     """
     amplitudes = {}
     if (per_detector := x.get(TEMPLATES)) is not None:
@@ -46,6 +47,8 @@ def template_amplitudes(
             lambda *leaves: placement.layout.to_observation_order(leaves),
             *[placement.gather(a) for a in shared],
         )
+    if (global_ := x.get(GLOBAL_TEMPLATES)) is not None:
+        amplitudes |= placement.gather(global_)
     return amplitudes
 
 

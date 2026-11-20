@@ -45,7 +45,7 @@ from ._pass import (
 from ._provenance import provenance
 from ._reader import ObservationReader, detector_tile_structure, tile_reads
 from ._solve import MapMakingSystem
-from ._tile import AMPLITUDE_STRIDES, Tile
+from ._tile import AMPLITUDE_STRIDES, GLOBAL_TEMPLATES, Tile
 from .config import (
     DiagnosticsConfig,
     GapTreatment,
@@ -58,6 +58,7 @@ from .layout import TileBucket, TileLayout, TilePlacement
 from .lowrank import LowRankNoiseModel, ModesCore
 from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
 from .templates import required_reader_fields
+from .templates.gram import factor
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +220,9 @@ class MapMakingRun[T]:
             )
 
             response_sky = injected_sky if is_response else None
-            system = MapMakingSystem.create(buckets, totals.rhs, S, BJ, response_sky, totals.modes)
+            system = MapMakingSystem.create(
+                buckets, totals.rhs, S, BJ, response_sky, totals.modes, totals.global_gram
+            )
             if (two_level := self.config.solver.two_level) is not None:
                 system = system.deflate(two_level)
             solved = system.solve(
@@ -293,11 +296,16 @@ class MapMakingRun[T]:
             sky = self.placement.broadcast(scanned_sky)
         buckets = []
         modes: list[Array] = []
+        global_gram = None
         for b in range(len(self.readers)):
             tiles, outputs = self._read_bucket(b, sky)
             hit_map = hit_map + outputs['hit_map']
             bucket_rhs = outputs['rhs']
             rhs['map'] = furax.tree.add(rhs['map'], bucket_rhs.pop('map'))
+            # the amplitudes every observation shares are summed over the buckets, as the map is
+            if (global_rhs := bucket_rhs.pop(GLOBAL_TEMPLATES)) is not None:
+                rhs[GLOBAL_TEMPLATES] = _summed(rhs.get(GLOBAL_TEMPLATES), global_rhs)
+                global_gram = _summed(global_gram, outputs['global_gram'])
             for kind, kind_rhs in bucket_rhs.items():
                 if kind_rhs is not None:  # a kind of amplitudes the run has
                     rhs.setdefault(kind, []).append(kind_rhs)
@@ -306,7 +314,12 @@ class MapMakingRun[T]:
             # the unfactored shared Gram must not stay on the devices through the next pass
             del outputs
             buckets.append(tiles)
-        return buckets, PassTotals(hit_map, rhs, modes or None)
+        global_inverse = None
+        if global_gram is not None:
+            templates = self.fit_config.templates
+            assert templates is not None  # a global Gram comes with templates
+            global_inverse = factor(global_gram, regularization=templates.regularization)
+        return buckets, PassTotals(hit_map, rhs, modes or None, global_inverse)
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -546,9 +559,14 @@ class MapMakingRun[T]:
             before its normalization, if turned on. Under a low-rank noise model, the correlated
             modes are marginalized from the $\chi^2$ once the tiles of each observation are summed.
         """
-        kinds = buckets[0].template.kinds
+        kinds = [k for k in buckets[0].template.kinds if AMPLITUDE_STRIDES[k] is not None]
         shared_sky = None if scanned_sky is None else self.placement.broadcast(scanned_sky)
-        solution = self.placement.broadcast(x['map'])
+        # the unknowns every tile reads whole
+        solution = {
+            kind: self.placement.broadcast(x[kind])
+            for kind in ('map', GLOBAL_TEMPLATES)
+            if kind in x
+        }
         names = ['good', *(n for n in ('chi2', 'bands') if getattr(diagnostics, n))]
         if diagnostics.bands:
             names.append('band_samples')
@@ -898,3 +916,8 @@ def _excluded_message(failures: list[tuple[str, str]], limit: int = 5) -> str:
     if len(failures) > limit:
         lines.append(f'  and {len(failures) - limit} more')
     return '\n'.join(lines)
+
+
+def _summed(total: Any, term: Any) -> Any:
+    """`total + term`, leaf by leaf, from `term` alone when `total` is `None`."""
+    return term if total is None else furax.tree.add(total, term)

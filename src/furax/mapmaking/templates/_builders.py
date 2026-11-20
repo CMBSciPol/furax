@@ -270,7 +270,8 @@ def t2p_templates(
     of the sample data. Q and U each fit their own amplitudes per detector, or, with
     `config.zernike_order` or `config.quadrupole_order`, a few amplitudes shared by the detectors:
     the leakage follows a polarization field over the focal plane, from the detector quaternions
-    in `data`.
+    in `data`. With `config.quadratic`, the square of the temperature stream leaks too, with
+    amplitudes of its own.
     """
     streams = _qu_streams(tod_format)
     if not streams:
@@ -283,6 +284,7 @@ def t2p_templates(
         fit_band=config.fit_band,
         sample_rate=_sample_rate(data[ReaderField.TIMESTAMPS]),
         decimation_factor=config.decimation_factor,
+        quadratic=config.quadratic,
     )
     if config.zernike_order is None and config.quadrupole_order is None:
         return {'t2p': Template(basis, tod_format, streams=streams)}
@@ -748,11 +750,18 @@ def t2p_basis(
     fit_band: tuple[float, float] | None = None,
     sample_rate: Float[Array, ''] | float = 1.0,
     decimation_factor: int = 1,
+    quadratic: bool = False,
 ) -> Basis:
-    """Per-detector basis for a temperature-to-polarization leakage template.
+    r"""Per-detector basis for a temperature-to-polarization leakage template.
 
     Each detector's basis is just its own temperature stream, so fitting one amplitude per detector
     estimates how much temperature leaks into its polarization.
+
+    With `quadratic`, each detector has a second function, the square of its temperature stream
+    less its mean, $(T - \bar T)^2$, for a leakage nonlinear in the loading: the amplitudes are
+    `(det, 2)`, linear term first. Removing the mean before squaring leaves the cross term
+    $2 \bar T (T - \bar T)$ of a leakage $b T^2$ to the linear amplitude, so the two terms do not
+    depend on the unknown absolute level of the temperature stream.
 
     `fit_band=(f0, f1)` restricts the temperature basis to that frequency band (Hz), so the leakage
     is both estimated and removed only there, keeping the template a clean linear operator. The
@@ -778,18 +787,21 @@ def t2p_basis(
         freqs = jnp.fft.rfftfreq(n_full, d=1.0 / sample_rate)
         band = (freqs > f0) & (freqs < f1)
 
-    def filter_and_decimate(t: Float[Array, ' samp']) -> Float[Array, ' dec']:
+    def filter_and_decimate(t: Float[Array, ' samp']) -> Float[Array, 'k dec']:
+        t = t[None]
+        if quadratic:
+            t = jnp.concatenate([t, (t - t.mean()) ** 2])
         if band is not None:
-            t = jnp.fft.irfft(jnp.fft.rfft(detrend(t)) * band, n=n_full)
+            t = jnp.fft.irfft(jnp.fft.rfft(detrend(t, axis=-1)) * band, n=n_full)
         if q > 1:
             # Block-average onto a q-times coarser grid: pad the tail to a whole block,
-            # reshape (n_dec, q) and mean. `DecimatedBasis` hold-upsamples back to `n_full` in
+            # reshape (k, n_dec, q) and mean. `DecimatedBasis` hold-upsamples back to `n_full` in
             # synthesis (band-limits above sample_rate / 2q).
-            t = jnp.pad(t, (0, n_dec * q - n_full)).reshape(n_dec, q).mean(axis=-1)
+            t = jnp.pad(t, ((0, 0), (0, n_dec * q - n_full))).reshape(-1, n_dec, q).mean(axis=-1)
         return t.astype(dtype)
 
     t = jax.lax.map(filter_and_decimate, temperature, batch_size=_T2P_BATCH_SIZE)
-    basis = TensorBasis(t[:, None, :], batch_shape=t.shape[:1])  # (det, k=1, dec)
+    basis = TensorBasis(t, batch_shape=t.shape[:1])  # (det, k, dec)
     return basis if q == 1 else DecimatedBasis(basis, q, n_full)
 
 

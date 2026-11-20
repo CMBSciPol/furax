@@ -233,6 +233,15 @@ class TestTemperatureTemplate:
         lam = jr.normal(jr.key(41), (n_dets, 1))
         assert_allclose(op({'t': lam}), lam * T, rtol=TOL)
 
+    def test_quadratic_adds_the_square_of_the_fluctuation(self) -> None:
+        n_dets, n_samps = 4, 200
+        T = jr.normal(jr.key(42), (n_dets, n_samps)) + 3.0
+        op = wrap(t2p_basis(T, jnp.float64, quadratic=True), n_dets)
+        assert op.in_structure['t'].shape == (n_dets, 2)  # linear, then quadratic
+        lam = jr.normal(jr.key(43), (n_dets, 2))
+        square = (T - T.mean(axis=-1, keepdims=True)) ** 2
+        assert_allclose(op({'t': lam}), lam[:, :1] * T + lam[:, 1:] * square, rtol=TOL)
+
     def test_fit_band_limits_the_basis_to_the_band(self) -> None:
         # fit_band band-passes the temperature basis: synthesis lives only in (f0, f1)
         n_dets, n_samps, fs = 2, 1024, 10.0
@@ -476,6 +485,18 @@ def test_t2p_field_shares_its_amplitudes_between_the_detectors(field, joint_qu, 
     assert template.per == per and template.in_structure.shape == shape
     assert not template.per_detector
     assert ReaderField.DETECTOR_QUATERNIONS in required_reader_fields(TemplatesConfig(t2p=config))
+
+
+@pytest.mark.parametrize(
+    ('field', 'shape'),
+    [({}, (N_DETS, 2)), ({'quadrupole_order': 2}, (2, 12))],
+    ids=['per-detector', 'quadrupole'],
+)
+def test_quadratic_t2p_has_amplitudes_for_each_term(field, shape):
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='IQU')
+    config = T2PConfig(**field, quadratic=True)
+    template = t2p_templates(config, _field_data('IQU'), tod_format)['t2p']
+    assert template.in_structure.shape[-len(shape) :] == shape
 
 
 def test_polarization_field_couplings_of_q_and_u_are_the_leakage_of_a_complex_field():

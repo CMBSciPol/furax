@@ -61,8 +61,8 @@ PASS_REDUCTIONS = {
     # the Gram of the templates an observation's detectors share, summed over its tiles, paired
     # with its coarse amplitudes, which follow from the bases alone, the same in every tile
     'shared_gram': {'gram': 'segment_sum', 'coarse': 'segment'},
-    # the Gram of the templates every observation shares, summed over every tile
-    'global_gram': 'sum',
+    # the diagonal of the Gram of the templates every observation shares, summed over every tile
+    'global_diagonal': 'sum',
     # what the tiles of an observation share (boresight pointing, bases of the shared templates,
     # ...) is kept once per segment, the rest per tile
     'tile': 'auto',
@@ -94,8 +94,8 @@ class PassTotals:
     correlated modes of the data of each bucket, `(segment, frequency, mode, 2)` (see
     [`Tile.modes`][furax.mapmaking._tile.Tile.modes]); `None` otherwise."""
     global_gram: tuple[AbstractLinearOperator, AbstractLinearOperator | None] | None = None
-    """The inverse of the Gram of the templates every observation shares, summed over every tile,
-    and the ridge it was factored with; `None` without them."""
+    """The inverse of the diagonal of the Gram of the templates every observation shares, summed
+    over every tile, and the ridge added to it; `None` without them."""
 
 
 def pass_kernel(
@@ -118,8 +118,8 @@ def pass_kernel(
     - `'shared_gram'`: the templates its observation's detectors share, under `'gram'` its share
       of their Gram and under `'coarse'` their coarse amplitudes, both `None` without them. The
       Gram is factored once summed over the tiles;
-    - `'global_gram'`: its share of the Gram of the templates every observation shares, `None`
-      without them;
+    - `'global_diagonal'`: its share of the diagonal of the Gram of the templates every
+      observation shares, `None` without them;
     - `'tile'`: the [`Tile`][furax.mapmaking._tile.Tile], the Gram of the templates its
       observation's detectors share not yet factored;
     - `'modes'`: under a low-rank noise model, the amplitudes $T^\top D^{-1} M d$ of the
@@ -256,18 +256,24 @@ def shared_fit_kernel(
             data, padding, sky, config, landscape, sky_landscape, replaces
         )
         terms = shared_deprojection(data, config, tod_format, padding, temperature)
-        assert terms is not None  # the pass runs only when the detectors share templates
-        gram, rhs = terms
+        gram = terms.pop('gram')
+        coarse = None if gram is None else gram.coarse
+        terms['gram'] = None if gram is None else replace(gram, coarse=None)
         # padding tiles and failed observations contribute nothing
-        gram, rhs = jax.tree.map(lambda x: x * use, (replace(gram, coarse=None), rhs))
-        return {'gram': gram, 'coarse': terms[0].coarse, 'rhs': rhs}
+        return jax.tree.map(lambda x: x * use, terms) | {'coarse': coarse}
 
     return kernel
 
 
-SHARED_FIT_REDUCTIONS = {'gram': 'segment_sum', 'coarse': 'segment', 'rhs': 'segment_sum'}
+SHARED_FIT_REDUCTIONS = {
+    'gram': 'segment_sum',
+    'coarse': 'segment',
+    'rhs': 'segment_sum',
+    'global_diagonal': 'segment_sum',
+    'global_rhs': 'segment_sum',
+}
 """How the engine combines the outputs of [`shared_fit_kernel`][] over the tiles of a bucket: the
-Gram and the right-hand side summed over the tiles of each observation, the coarse amplitudes of
+Grams and the right-hand sides summed over the tiles of each observation, the coarse amplitudes of
 the Gram, which follow from the bases alone, kept per observation."""
 
 
@@ -279,14 +285,22 @@ def shared_fit_amplitudes(
     The outputs of [`shared_fit_kernel`][], combined over the tiles of each observation, are
     solved for on the device that holds it.
     """
-    segments = StackedEnsemble(
-        n_segments, (outputs['gram'], outputs['coarse'], outputs['rhs']), policy=Policy(axis=axis)
-    )
+    segments = StackedEnsemble(n_segments, outputs, policy=Policy(axis=axis))
 
     def solve(member):
-        gram, coarse, rhs = member
-        inverse, _ = factor(replace(gram, coarse=coarse), regularization=regularization)
-        return inverse(rhs)
+        amplitudes = {}
+        if member['gram'] is not None:
+            gram = replace(member['gram'], coarse=member['coarse'])
+            inverse, _ = factor(gram, regularization=regularization)
+            amplitudes |= inverse(member['rhs'])
+        if member['global_diagonal'] is not None:
+            # the amplitudes no weighted sample sees come back zero
+            amplitudes |= jax.tree.map(
+                lambda d, b: jnp.where(d > 0, b / jnp.where(d > 0, d, 1), 0),
+                member['global_diagonal'],
+                member['global_rhs'],
+            )
+        return amplitudes
 
     amplitudes, _ = map_reduce(solve, segments, 1)
     return amplitudes
@@ -433,11 +447,11 @@ def _contribution(
     masked = jax.tree.leaves(tile.M.to_boolean_mask())[0]
     hits = jnp.int64(hit_pointing.T(StokesI(masked)).i)
 
-    gram = global_gram = None
+    gram = global_diagonal = None
     if config.use_templates:
-        implicit, explicit, gram, global_gram = assemble_templates(data, config, tile, temperature)
-        # the bases of the templates every observation shares are not time-local
-        assert global_gram is None or global_gram.coarse is None
+        implicit, explicit, gram, global_diagonal = assemble_templates(
+            data, config, tile, temperature
+        )
         tile = replace(tile, implicit=implicit, explicit=explicit)
 
     modes = None
@@ -458,7 +472,7 @@ def _contribution(
             'gram': None if gram is None else replace(gram, coarse=None),
             'coarse': None if gram is None else gram.coarse,
         },
-        'global_gram': global_gram,
+        'global_diagonal': global_diagonal,
         'tile': tile,
         'modes': modes,
     }

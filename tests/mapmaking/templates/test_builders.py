@@ -19,6 +19,7 @@ from furax.mapmaking.config import (
     TemplatesConfig,
 )
 from furax.mapmaking.templates import (
+    azimuth_synchronous_templates,
     build_templates,
     common_mode_templates,
     polarization_field_couplings,
@@ -693,22 +694,41 @@ def test_bins_on_a_fixed_range_hold_the_same_azimuth_in_every_observation():
         assert_array_equal(jnp.where(w.any(axis=0), w.argmax(axis=0), -1), expected)
 
 
-@pytest.mark.parametrize(('elevation', 'mode'), [(0.87, 0), (0.95, 1), (1.2, 2)])
-def test_azimuth_template_across_observations_sees_the_nearest_elevation(elevation, mode):
+@pytest.mark.parametrize(
+    ('elevation', 'roll', 'setting'),
+    [(50.0, -40.0, 0), (54.0, 50.0, 3), (70.0, 0.0, 4)],  # elevation first, then roll
+)
+def test_azimuth_template_across_observations_sees_the_nearest_setting(elevation, roll, setting):
     config = AzimuthSynchronousConfig(
-        bins=BinsConfig(4),
-        azimuth_range=(-1.0, 1.0),
+        bin_size=30.0,
+        azimuth_range=(-60.0, 60.0),
         across_observations=True,
-        elevations=(0.87, 0.96, 1.05),
+        elevations=(50.0, 55.0, 60.0),
+        rolls=(-45.0, 45.0),
         explicit=True,
     )
     tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='QU')
-    data = _data('QU') | {ReaderField.ELEVATION: jnp.full(N_SAMPS, elevation)}
+    data = _data('QU') | {
+        ReaderField.ELEVATION: jnp.full(N_SAMPS, jnp.radians(elevation)),
+        ReaderField.ROLL: jnp.full(N_SAMPS, jnp.radians(roll)),
+    }
     templates = TemplatesConfig(azimuth_synchronous=config)
-    assert ReaderField.ELEVATION in required_reader_fields(templates)
+    assert {ReaderField.ELEVATION, ReaderField.ROLL} <= required_reader_fields(templates)
     (template,) = build_templates(templates, data, tod_format)[0].values()
-    assert template.in_structure.shape == (2, 4, 3)  # (stream, bin, elevation)
-    assert_array_equal(template.coupling, jnp.eye(3)[mode].reshape(1, 1, 3))
+    assert template.in_structure.shape == (2, 4, 6)  # (stream, bin, setting)
+    assert_array_equal(template.coupling, jnp.eye(6)[setting].reshape(1, 1, 6))
+
+
+def test_bin_size_widens_the_azimuth_range_to_whole_bins():
+    config = AzimuthSynchronousConfig(bin_size=25.0, azimuth_range=(0.0, 60.0))
+    assert config.n_bins == 3  # [0, 75)
+    azimuth = jnp.radians(0.1 + 0.58 * jnp.arange(N_SAMPS))  # up to 69 deg, off the bin edges
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64)
+    data = _data(None) | {ReaderField.AZIMUTH: azimuth}
+    (template,) = azimuth_synchronous_templates(config, data, tod_format).values()
+    values = template.basis.values
+    assert values.shape == (3, N_SAMPS) and jnp.all(values.sum(axis=0) == 1)
+    assert_array_equal(values.argmax(axis=0), jnp.floor(jnp.degrees(azimuth) / 25.0))
 
 
 def test_common_mode_needs_the_q_and_u_streams():

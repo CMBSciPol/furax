@@ -83,8 +83,9 @@ class MapMakingSystem:
                 data of each bucket (see
                 [`PassTotals.modes`][furax.mapmaking._pass.PassTotals.modes]), whose share the
                 system takes from the right-hand side.
-            global_gram: The inverse of the Gram of the amplitudes every observation shares, and
-                its ridge (see [`PassTotals.global_gram`][furax.mapmaking._pass.PassTotals]).
+            global_gram: The inverse of the diagonal of the Gram of the amplitudes every
+                observation shares, and its ridge (see
+                [`PassTotals.global_gram`][furax.mapmaking._pass.PassTotals]).
 
         Returns:
             The system to solve. Its unknowns are a dictionary of the selected sky pixels, under

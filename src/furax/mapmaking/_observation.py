@@ -51,6 +51,7 @@ class ReaderField(StrEnum):
     NOISE_MODEL_FITS = 'noise_model_fits'
     AZIMUTH = 'azimuth'
     ELEVATION = 'elevation'
+    ROLL = 'roll'
     LEFT_SCAN_MASK = 'left_scan_mask'
     RIGHT_SCAN_MASK = 'right_scan_mask'
     SCANNING_INTERVALS = 'scanning_intervals'
@@ -347,6 +348,7 @@ class AbstractGroundObservation[T](AbstractObservation[T]):
             ReaderField.VALID_SCANNING_MASKS,
             ReaderField.AZIMUTH,
             ReaderField.ELEVATION,
+            ReaderField.ROLL,
             ReaderField.LEFT_SCAN_MASK,
             ReaderField.RIGHT_SCAN_MASK,
             ReaderField.SCANNING_INTERVALS,
@@ -359,6 +361,7 @@ class AbstractGroundObservation[T](AbstractObservation[T]):
             ReaderField.VALID_SCANNING_MASKS,
             ReaderField.AZIMUTH,
             ReaderField.ELEVATION,
+            ReaderField.ROLL,
             ReaderField.LEFT_SCAN_MASK,
             ReaderField.RIGHT_SCAN_MASK,
             ReaderField.SCANNING_INTERVALS,
@@ -387,6 +390,10 @@ class AbstractGroundObservation[T](AbstractObservation[T]):
     @abstractmethod
     def get_elevation(self) -> Float[np.ndarray, ' a']:
         """Returns the elevation of the boresight for each sample."""
+
+    def get_roll(self) -> Float[np.ndarray, ' a']:
+        """Returns the boresight roll angle in radians at each sample; zero by default."""
+        return np.zeros(self.n_samples)
 
     def get_scanning_mask(self) -> Bool[np.ndarray, ' samp']:
         """Returns a boolean sample mask from scanning intervals (True=scanning)."""

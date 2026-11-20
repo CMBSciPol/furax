@@ -104,7 +104,7 @@ class ObservationReader[T](AbstractReader):
     - `detector_quaternions`: the detector quaternions.
     - `boresight_quaternions`: the boresight quaternions.
     - `noise_model_fits`: the fitted parameters for the noise model (1/f noise by default).
-    - `azimuth`, `elevation`: the boresight scan angles (ground observations).
+    - `azimuth`, `elevation`, `roll`: the boresight angles (ground observations).
     - `left_scan_mask`, `right_scan_mask`: per-sample masks splitting left/right-going scans.
     - `scanning_intervals`: per-scan [start, end) sample-index pairs (ground observations).
     - `wafer_slots`: the wafer slot of each detector, `(det, 1)`.
@@ -303,7 +303,7 @@ class ObservationReader[T](AbstractReader):
             data[ReaderField.HWP_ANGLES] = np.pad(
                 valid, (0, pad_size), mode='linear_ramp', end_values=valid[-1] + dphi * pad_size
             ) % (2 * np.pi)
-        for angle_field in (ReaderField.AZIMUTH, ReaderField.ELEVATION):
+        for angle_field in (ReaderField.AZIMUTH, ReaderField.ELEVATION, ReaderField.ROLL):
             if angle_field in data_field_names:
                 # Hold the last valid value (telescope stopped moving). Keeps min/ptp of the
                 # scan unchanged, so Legendre/bin basis normalisation is unaffected.
@@ -366,6 +366,7 @@ class ObservationReader[T](AbstractReader):
             ),
             ReaderField.AZIMUTH: jax.ShapeDtypeStruct((n_samples,), dtype),
             ReaderField.ELEVATION: jax.ShapeDtypeStruct((n_samples,), dtype),
+            ReaderField.ROLL: jax.ShapeDtypeStruct((n_samples,), dtype),
             ReaderField.LEFT_SCAN_MASK: jax.ShapeDtypeStruct((n_samples,), jnp.bool),
             ReaderField.RIGHT_SCAN_MASK: jax.ShapeDtypeStruct((n_samples,), jnp.bool),
             ReaderField.SCANNING_INTERVALS: jax.ShapeDtypeStruct((n_intervals, 2), jnp.int32),
@@ -437,6 +438,7 @@ class ObservationReader[T](AbstractReader):
             ReaderField.NOISE_MODEL_FITS: get_noise_model_fits,
             ReaderField.AZIMUTH: lambda obs: cast(obs.get_azimuth()),
             ReaderField.ELEVATION: lambda obs: cast(obs.get_elevation()),
+            ReaderField.ROLL: lambda obs: cast(obs.get_roll()),
             ReaderField.LEFT_SCAN_MASK: lambda obs: cast_bool(obs.get_left_scan_mask()),
             ReaderField.RIGHT_SCAN_MASK: lambda obs: cast_bool(obs.get_right_scan_mask()),
             ReaderField.SCANNING_INTERVALS: lambda obs: np.asarray(

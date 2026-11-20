@@ -176,7 +176,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             fields.add('flags.left_scan')
         if ReaderField.RIGHT_SCAN_MASK in requested:
             fields.add('flags.right_scan')
-        if {ReaderField.AZIMUTH, ReaderField.ELEVATION} & requested:
+        if {ReaderField.AZIMUTH, ReaderField.ELEVATION, ReaderField.ROLL} & requested:
             fields.add('boresight')
         if ReaderField.TIMESTAMPS in requested:
             fields.add('timestamps')
@@ -435,6 +435,10 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
     def get_elevation(self) -> Float[np.ndarray, ' a']:
         """Returns the elevation of the boresight for each sample."""
         return np.asarray(self.data.boresight.el)
+
+    def get_roll(self) -> Float[np.ndarray, ' a']:
+        """Returns the boresight roll angle in radians at each sample."""
+        return np.asarray(self.data.boresight.roll, dtype=np.float64)
 
     def get_wcs_shape_and_kernel(
         self,

@@ -61,7 +61,7 @@ from .layout import TileBucket, TileLayout, TilePlacement
 from .lowrank import LowRankNoiseModel, ModesCore
 from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
 from .templates import required_reader_fields
-from .templates.gram import factor
+from .templates.gram import factor_diagonal
 
 logger = logging.getLogger(__name__)
 
@@ -299,7 +299,7 @@ class MapMakingRun[T]:
             sky = self.placement.broadcast(scanned_sky)
         buckets = []
         modes: list[Array] = []
-        global_gram = None
+        global_diagonal = None
         for b in range(len(self.readers)):
             tiles, outputs = self._read_bucket(b, sky)
             hit_map = hit_map + outputs['hit_map']
@@ -308,7 +308,7 @@ class MapMakingRun[T]:
             # the amplitudes every observation shares are summed over the buckets, as the map is
             if (global_rhs := bucket_rhs.pop(GLOBAL_TEMPLATES)) is not None:
                 rhs[GLOBAL_TEMPLATES] = _summed(rhs.get(GLOBAL_TEMPLATES), global_rhs)
-                global_gram = _summed(global_gram, outputs['global_gram'])
+                global_diagonal = _summed(global_diagonal, outputs['global_diagonal'])
             for kind, kind_rhs in bucket_rhs.items():
                 if kind_rhs is not None:  # a kind of amplitudes the run has
                     rhs.setdefault(kind, []).append(kind_rhs)
@@ -318,10 +318,12 @@ class MapMakingRun[T]:
             del outputs
             buckets.append(tiles)
         global_inverse = None
-        if global_gram is not None:
+        if global_diagonal is not None:
             templates = self.fit_config.templates
             assert templates is not None  # a global Gram comes with templates
-            global_inverse = factor(global_gram, regularization=templates.regularization)
+            global_inverse = factor_diagonal(
+                global_diagonal, regularization=templates.regularization
+            )
         return buckets, PassTotals(hit_map, rhs, modes or None, global_inverse)
 
     def pixel_selection(

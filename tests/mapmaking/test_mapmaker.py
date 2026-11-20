@@ -17,7 +17,6 @@ from furax.mapmaking import AbstractLazyObservation, MapMakingConfig, MultiObser
 from furax.mapmaking._reader import detector_tile_structure
 from furax.mapmaking.config import (
     AzimuthSynchronousConfig,
-    BinsConfig,
     CirculantBridgeConfig,
     DiagnosticsConfig,
     ExplicitGapsConfig,
@@ -481,9 +480,9 @@ def test_low_rank_weight_on_detector_tiles_gives_the_map_of_whole_observations(g
 @pytest.mark.parametrize('across_observations', [False, True], ids=['per-observation', 'global'])
 def test_low_rank_fit_deprojects_shared_templates_whatever_the_tiles(across_observations):
     """The templates the detectors share are deprojected over whole observations."""
-    extra = {'across_observations': True, 'elevations': (0.8,)} if across_observations else {}
+    extra = {'across_observations': True, 'elevations': (46.0,)} if across_observations else {}
     azimuth = AzimuthSynchronousConfig(
-        bins=BinsConfig(5), per_wafer=True, azimuth_range=(-1.0, 11.0), explicit=True, **extra
+        bin_size=120.0, azimuth_range=(-60.0, 660.0), per_wafer=True, explicit=True, **extra
     )
     systems = []
     for tile_size in (0, 4):

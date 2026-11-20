@@ -8,6 +8,7 @@ observation's data, and [`build_templates`][furax.mapmaking.templates.build_temp
 [`TemplatesConfig`][furax.mapmaking.config.TemplatesConfig] enables.
 """
 
+import math
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
 from typing import Any, Final
@@ -163,6 +164,9 @@ def required_reader_fields(config: TemplatesConfig) -> set[str]:
         fields |= {ReaderField.WAFER_SLOTS}
     if config.across_observations:
         fields |= {ReaderField.ELEVATION}
+        section = config.azimuth_synchronous
+        if section is not None and section.rolls is not None:
+            fields |= {ReaderField.ROLL}
     if config.common_mode is not None:
         fields |= {
             ReaderField.TIMESTAMPS,
@@ -209,20 +213,29 @@ def azimuth_synchronous_templates(
     if config.split_scans:
         scan_masks = (data[ReaderField.LEFT_SCAN_MASK], data[ReaderField.RIGHT_SCAN_MASK])
     if config.bins is not None:
-
-        def bins_basis(bins: BinsConfig) -> Basis:
-            return azimuth_bins_basis(
-                bins, azimuth, dtype, scan_masks=scan_masks, bounds=config.azimuth_range
-            )
-
-        if config.across_observations:
-            return {
-                GLOBAL_AZIMUTH_SYNCHRONOUS: _across_observations(
-                    bins_basis(config.bins), config, data, tod_format, det_groups
-                )
-            }
         return _stream_groups(
-            'azimuth_synchronous', config.bins, bins_basis, tod_format, det_groups=det_groups
+            'azimuth_synchronous',
+            config.bins,
+            lambda bins: azimuth_bins_basis(bins, azimuth, dtype, scan_masks=scan_masks),
+            tod_format,
+            det_groups=det_groups,
+        )
+    if config.bin_size is not None:
+        assert config.azimuth_range is not None and config.n_bins is not None  # by the config
+        lo = config.azimuth_range[0]
+        bounds = (math.radians(lo), math.radians(lo + config.n_bins * config.bin_size))
+        basis = azimuth_bins_basis(
+            BinsConfig(config.n_bins), azimuth, dtype, scan_masks=scan_masks, bounds=bounds
+        )
+        if config.across_observations:
+            template = _across_observations(basis, config, data, tod_format, det_groups)
+            return {GLOBAL_AZIMUTH_SYNCHRONOUS: template}
+        return _stream_groups(
+            'azimuth_synchronous',
+            BinsConfig(config.n_bins),
+            lambda _: basis,
+            tod_format,
+            det_groups=det_groups,
         )
     assert config.n_knots is not None  # exactly one alternative is set
 
@@ -243,14 +256,16 @@ def _across_observations(
 ) -> Template:
     """The azimuth template whose amplitudes every observation of the run shares.
 
-    Its modes are the elevations of `config`: an observation, at constant elevation, sees only
-    the nearest, through a coupling one-hot on it, the same for every detector and stream.
+    Its modes are the settings of `config`, each elevation then each roll: an observation, at
+    constant elevation and roll, sees only the nearest setting, through a coupling one-hot on it,
+    the same for every detector and stream.
     """
     assert config.elevations is not None  # guaranteed by the config
     # the first sample is never padding
-    elevation = data[ReaderField.ELEVATION][0]
-    nearest = jnp.argmin(jnp.abs(jnp.asarray(config.elevations) - elevation))
-    coupling = (jnp.arange(len(config.elevations)) == nearest).astype(tod_format.dtype)
+    setting = _nearest(config.elevations, data[ReaderField.ELEVATION][0])
+    if config.rolls is not None:
+        setting = setting * len(config.rolls) + _nearest(config.rolls, data[ReaderField.ROLL][0])
+    coupling = (jnp.arange(config.n_settings) == setting).astype(tod_format.dtype)
     streams = None if tod_format.stokes is None else tod_format.stokes.lower()
     leading = (1, 1) if streams is not None else (1,)  # every stream, every detector
     return Template(
@@ -261,6 +276,11 @@ def _across_observations(
         coupling=coupling.reshape(*leading, -1),
         det_groups=det_groups,
     )
+
+
+def _nearest(degrees: Sequence[float], angle: Float[Array, '']) -> Int[Array, '']:
+    """The index of the angle of `degrees` nearest to `angle`, in radians."""
+    return jnp.argmin(jnp.abs(jnp.radians(jnp.asarray(degrees)) - angle))
 
 
 def hwp_synchronous_templates(

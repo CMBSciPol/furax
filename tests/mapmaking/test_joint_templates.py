@@ -20,7 +20,6 @@ from furax.mapmaking._bucket import bucket_map_normal, bucket_normal
 from furax.mapmaking._tile import TEMPLATES
 from furax.mapmaking.config import (
     AzimuthSynchronousConfig,
-    BinsConfig,
     CommonModeConfig,
     GapsConfig,
     GapTreatment,
@@ -458,13 +457,14 @@ def test_detector_batches_give_the_same_system_under_a_correlated_weight():
     assert_same_system(batched, whole)
 
 
+# the fakes scan azimuths from 0 to 10 rad (573 deg) at an elevation of 0.8 rad (46 deg)
 _ACROSS_OBSERVATIONS = AzimuthSynchronousConfig(
-    bins=BinsConfig(5),
+    bin_size=120.0,
+    azimuth_range=(-60.0, 660.0),
     split_scans=True,
     per_wafer=True,
-    azimuth_range=(-1.0, 11.0),
     across_observations=True,
-    elevations=(0.8, 1.0),
+    elevations=(46.0, 60.0),
     explicit=True,
 )
 
@@ -483,7 +483,7 @@ def test_azimuth_amplitudes_across_observations_are_reported_once():
     results = MultiObservationMapMaker(cfg).make_maps(_ground_obs(n_obs=3))
     (amplitudes,) = results.template_amplitudes.values()
     # (stream, wafer, direction x bin, elevation): no observation axis
-    assert amplitudes.shape == (3, 7, 10, 2)
+    assert amplitudes.shape == (3, 7, 12, 2)
     assert jnp.all(jnp.isfinite(amplitudes))
     # the detectors are on the first two wafers, the observations at the first elevation
     assert jnp.all(jnp.any(amplitudes[:, :2, :, 0] != 0, axis=-1))

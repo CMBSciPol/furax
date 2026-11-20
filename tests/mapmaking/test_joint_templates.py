@@ -279,9 +279,18 @@ _COMMON_MODE_WITH_DRIFT = TemplatesConfig(
 
 
 _T2P_QUADRUPOLE = TemplatesConfig(t2p=T2PConfig(quadrupole_order=1))
+_PER_WAFER = TemplatesConfig(
+    azimuth_synchronous=AzimuthSynchronousConfig(
+        n_knots={'qu': 6}, split_scans=True, per_wafer=True, explicit=True
+    ),
+    common_mode=CommonModeConfig(samples_per_knot=128, per_wafer=True),
+    regularization=1e-3,
+)
 _QUADRUPOLAR = [
     pytest.param(_T2P_QUADRUPOLE, id='t2p-quadrupole'),
     pytest.param(_COMMON_MODE_WITH_DRIFT, id='common-mode-with-drift'),
+    # the wafers alternate between detectors, so every batch holds a part of each
+    pytest.param(_PER_WAFER, id='per-wafer'),
 ]
 
 

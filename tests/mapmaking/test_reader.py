@@ -70,6 +70,14 @@ def test_quaternions_are_zero_padded():
     assert not np.any(qdet[2:])
 
 
+def test_wafer_slots_have_a_detector_axis():
+    observations = [FakeLazyObservation(n_dets=2), FakeLazyObservation(n_dets=3)]
+    reader = ObservationReader.from_observations(observations, requested_fields=['wafer_slots'])
+    data, _, _ = reader.read(0)
+    # the fakes alternate between two wafers; padded to the largest observation with slot 0
+    assert_array_equal(data['wafer_slots'], [[0], [1], [0]])
+
+
 @pytest.mark.parametrize('demodulated', [False, True], ids=['modulated', 'demodulated'])
 def test_sample_data_reaches_a_cpu_device_without_a_copy(demodulated: bool):
     observations = [FakeLazyObservation(n_dets=2, n_samples=500), FakeLazyObservation(n_dets=3)]

@@ -14,7 +14,7 @@ import so3g.proj
 import sotodlib.preprocess.preprocess_util as pu
 import yaml
 from astropy.wcs import WCS
-from jaxtyping import Array, Bool, Float, Integer
+from jaxtyping import Array, Bool, Float, Int, Integer
 from numpy.typing import NDArray
 from sotodlib import coords
 from sotodlib.coords.helpers import get_deflected_sightline
@@ -188,6 +188,8 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
                 fields |= {'wobble_params', 'det_info', 'hwp_angle'}
         if ReaderField.DETECTOR_QUATERNIONS in requested:
             fields.add('focal_plane')
+        if ReaderField.WAFER_SLOTS in requested:
+            fields.add('det_info')
         if ReaderField.NOISE_MODEL_FITS in requested:
             if sotodlib_config.noise_source == 'mapmaking':
                 fields.add('preprocess.noiseQ_mapmaking')
@@ -606,6 +608,11 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         fp = self.data.focal_plane
         quats = so3g.proj.quat.rotation_xieta(fp.xi, fp.eta, fp.gamma)
         return np.atleast_2d(np.asarray(quats, dtype=np.float64))
+
+    def get_wafer_slots(self) -> Int[np.ndarray, ' det']:
+        """Returns the index of the wafer slot of each detector, N for slot `'wsN'`."""
+        slots = self.data.det_info.wafer_slot
+        return np.array([int(slot.removeprefix('ws')) for slot in slots], dtype=np.int32)
 
 
 class LazySOTODLibObservation(FileBackedLazyObservation[AxisManager]):

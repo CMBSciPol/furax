@@ -107,6 +107,7 @@ class ObservationReader[T](AbstractReader):
     - `azimuth`, `elevation`: the boresight scan angles (ground observations).
     - `left_scan_mask`, `right_scan_mask`: per-sample masks splitting left/right-going scans.
     - `scanning_intervals`: per-scan [start, end) sample-index pairs (ground observations).
+    - `wafer_slots`: the wafer slot of each detector, `(det, 1)`.
 
     Attributes:
         stokes: Stokes components of the demodulated TOD; `None` for detector timestreams.
@@ -368,6 +369,7 @@ class ObservationReader[T](AbstractReader):
             ReaderField.LEFT_SCAN_MASK: jax.ShapeDtypeStruct((n_samples,), jnp.bool),
             ReaderField.RIGHT_SCAN_MASK: jax.ShapeDtypeStruct((n_samples,), jnp.bool),
             ReaderField.SCANNING_INTERVALS: jax.ShapeDtypeStruct((n_intervals, 2), jnp.int32),
+            ReaderField.WAFER_SLOTS: jax.ShapeDtypeStruct((n_detectors, 1), jnp.int32),
         }
         if fields is None:
             return structures
@@ -440,6 +442,9 @@ class ObservationReader[T](AbstractReader):
             ReaderField.SCANNING_INTERVALS: lambda obs: np.asarray(
                 obs.get_scanning_intervals(), dtype=np.int32
             ),
+            ReaderField.WAFER_SLOTS: lambda obs: np.asarray(obs.get_wafer_slots(), dtype=np.int32)[
+                :, None
+            ],
         }
 
     def _failure_filler(self) -> dict[str, Any]:

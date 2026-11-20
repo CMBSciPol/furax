@@ -17,7 +17,7 @@ import jax.numpy as jnp
 from fastquat import Quaternion
 from jax import Array
 from jax.scipy.signal import detrend
-from jaxtyping import Complex, DTypeLike, Float
+from jaxtyping import Bool, Complex, DTypeLike, Float, Int
 
 from furax.math import bspline
 from furax.math.legendre import legvander
@@ -54,6 +54,7 @@ __all__ = [
     'spline_hwp_synchronous_templates',
     't2p_templates',
     'common_mode_templates',
+    'wafer_groups',
     'zernike_couplings',
     'winding_couplings',
     'polynomial_couplings',
@@ -100,6 +101,10 @@ def build_templates(
         'binned_azimuth_hwp_synchronous': binned_azimuth_hwp_synchronous_templates,
         'spline_hwp_synchronous': spline_hwp_synchronous_templates,
     }
+    det_groups = None
+    if ReaderField.WAFER_SLOTS in required_reader_fields(config):
+        det_groups = wafer_groups(data[ReaderField.WAFER_SLOTS], config.wafer_slots)
+    builders['azimuth_synchronous'] = partial(azimuth_synchronous_templates, det_groups=det_groups)
     implicit_names = config.implicit_names()
     for name, build in builders.items():
         if (section := getattr(config, name)) is not None:
@@ -109,7 +114,9 @@ def build_templates(
     if config.t2p is not None:
         explicit.update(t2p_templates(config.t2p, data, tod_format, temperature=temperature))
     if config.common_mode is not None:
-        explicit.update(common_mode_templates(config.common_mode, data, tod_format))
+        explicit.update(
+            common_mode_templates(config.common_mode, data, tod_format, det_groups=det_groups)
+        )
     if not explicit and not implicit:
         raise ValueError('config.templates is set but no template is active.')
     return explicit, implicit
@@ -139,6 +146,11 @@ def required_reader_fields(config: TemplatesConfig) -> set[str]:
         fields |= {ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS}
         if config.t2p.zernike_order is not None or config.t2p.quadrupole_order is not None:
             fields |= {ReaderField.DETECTOR_QUATERNIONS}
+    if any(
+        section is not None and section.per_wafer
+        for section in (config.azimuth_synchronous, config.common_mode)
+    ):
+        fields |= {ReaderField.WAFER_SLOTS}
     if config.common_mode is not None:
         fields |= {
             ReaderField.TIMESTAMPS,
@@ -164,13 +176,22 @@ def spline_drift_templates(
 
 
 def azimuth_synchronous_templates(
-    config: AzimuthSynchronousConfig, data: Mapping[str, Any], tod_format: TODFormat
+    config: AzimuthSynchronousConfig,
+    data: Mapping[str, Any],
+    tod_format: TODFormat,
+    *,
+    det_groups: Bool[Array, 'det group'] | None = None,
 ) -> dict[str, Template]:
     """Functions of the azimuth, by scan direction if `config.split_scans`.
 
     Bins or a cubic B-spline, whichever `config` sets. One template per group of streams fitted
-    alike (see `_stream_groups`).
+    alike (see `_stream_groups`). With `config.per_wafer`, the detectors of each group of
+    `det_groups`, such as a wafer, share their amplitudes.
     """
+    if not config.per_wafer:
+        det_groups = None
+    elif det_groups is None:
+        raise ValueError('per-wafer azimuth templates need the groups of the detectors')
     azimuth, dtype = data[ReaderField.AZIMUTH], tod_format.dtype
     scan_masks = None
     if config.split_scans:
@@ -181,13 +202,16 @@ def azimuth_synchronous_templates(
             config.bins,
             lambda bins: azimuth_bins_basis(bins, azimuth, dtype, scan_masks=scan_masks),
             tod_format,
+            det_groups=det_groups,
         )
     assert config.n_knots is not None  # exactly one alternative is set
 
     def spline(n_knots: int) -> Basis:
         return azimuth_spline_basis(n_knots, azimuth, dtype, scan_masks=scan_masks)
 
-    return _stream_groups('azimuth_synchronous', config.n_knots, spline, tod_format)
+    return _stream_groups(
+        'azimuth_synchronous', config.n_knots, spline, tod_format, det_groups=det_groups
+    )
 
 
 def hwp_synchronous_templates(
@@ -324,14 +348,21 @@ def t2p_templates(
 
 
 def common_mode_templates(
-    config: CommonModeConfig, data: Mapping[str, Any], tod_format: TODFormat
+    config: CommonModeConfig,
+    data: Mapping[str, Any],
+    tod_format: TODFormat,
+    *,
+    det_groups: Bool[Array, 'det group'] | None = None,
 ) -> dict[str, Template]:
     """The polarization common to the detectors on the Q and U streams of the TOD, none without.
 
     The detectors see one polarization pattern over the focal plane, `winding_couplings` from the
     detector quaternions in `data`, with a time dependence they share: a cubic B-spline of time
-    over the whole observation for each mode of the pattern.
+    over the whole observation for each mode of the pattern. With `config.per_wafer`, each group
+    of `det_groups`, such as a wafer, has its own amplitudes of the pattern.
     """
+    if config.per_wafer and det_groups is None:
+        raise ValueError('a per-wafer common mode needs the groups of the detectors')
     streams = _qu_streams(tod_format)
     if not streams:
         return {}
@@ -359,9 +390,22 @@ def common_mode_templates(
             streams=streams,
         )
     template = Template(
-        basis, tod_format, streams=streams, per=(), coupling=coupling.astype(tod_format.dtype)
+        basis,
+        tod_format,
+        streams=streams,
+        per=('det',) if config.per_wafer else (),
+        coupling=coupling.astype(tod_format.dtype),
+        det_groups=det_groups if config.per_wafer else None,
     )
     return {'common_mode': template}
+
+
+def wafer_groups(slots: Int[Array, 'det 1'], n_slots: int) -> Bool[Array, 'det group']:
+    """The one-hot wafer of each detector, `(det, n_slots)`, from its wafer slot.
+
+    A detector whose slot is outside `range(n_slots)` belongs to no group.
+    """
+    return slots == jnp.arange(n_slots)
 
 
 def zernike_couplings(
@@ -559,19 +603,22 @@ def _stream_groups[T](
     per_stream: T | dict[str, T],
     basis: Callable[[T], Basis],
     tod_format: TODFormat,
+    *,
+    det_groups: Bool[Array, 'det group'] | None = None,
 ) -> dict[str, Template]:
     """One template per group of streams fitted with the same option, such as Legendre orders.
 
     It is named `name` if every stream of the TOD is fitted alike, `<name>_<streams>` otherwise,
-    such as `spline_drift_qu`. Options per stream need a demodulated TOD.
+    such as `spline_drift_qu`. Options per stream need a demodulated TOD. The detectors of each
+    group of `det_groups` share their amplitudes; by default, each detector has its own.
     """
     if tod_format.stokes is None:
         assert not isinstance(per_stream, dict)  # per-stream options need demodulation
-        return {name: Template(basis(per_stream), tod_format)}
+        return {name: Template(basis(per_stream), tod_format, det_groups=det_groups)}
     streams = tod_format.stokes.lower()
     return {
         name if group == streams else f'{name}_{group}': Template(
-            basis(value), tod_format, streams=group
+            basis(value), tod_format, streams=group, det_groups=det_groups
         )
         for group, value in _per_stream_groups(per_stream, streams).items()
     }

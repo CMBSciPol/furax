@@ -628,12 +628,20 @@ class AzimuthSynchronousConfig:
     split_scans: bool = False
     """Whether the left- and right-going scans have their own function of the azimuth."""
 
+    per_wafer: bool = False
+    """Whether the detectors of a wafer share one function of the azimuth, instead of each
+    detector fitting its own. Needs `explicit`: shared amplitudes are solved for with the map."""
+
     explicit: bool = False
     """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
     def __post_init__(self) -> None:
         if (self.bins is None) == (self.n_knots is None):
             raise ValueError("set exactly one of 'bins' and 'n_knots'")
+        if self.per_wafer and not self.explicit:
+            raise ValueError(
+                "'per_wafer' needs 'explicit': shared amplitudes cannot be marginalized"
+            )
         if self.n_knots is not None:
             values = self.n_knots.values() if isinstance(self.n_knots, dict) else [self.n_knots]
             if any(value < 4 for value in values):
@@ -864,6 +872,10 @@ class CommonModeConfig:
     radius: float = 0.31
     """Focal-plane radius $R$ in radians, scaling the detector coordinates of the field."""
 
+    per_wafer: bool = False
+    """Whether each wafer has its own amplitudes of the field, instead of one for the whole focal
+    plane."""
+
     def __post_init__(self) -> None:
         if self.samples_per_knot < 1:
             raise ValueError(f"'samples_per_knot' must be >= 1, got {self.samples_per_knot}")
@@ -935,6 +947,10 @@ class TemplatesConfig:
 
     ground: GroundConfig | None = None
     """Ground pickup template, binned in (azimuth, elevation)."""
+
+    wafer_slots: int = field(default=7, metadata={'template': False})
+    """Number of wafer slots of the focal plane, over which the templates `per_wafer` group the
+    detectors (see [`ReaderField.WAFER_SLOTS`][furax.mapmaking.ReaderField])."""
 
     regularization: float = field(default=0.0, metadata={'template': False})
     """Ridge regularization strength applied to the template regression."""

@@ -21,6 +21,7 @@ from ._builders import (
     spline_drift_templates,
     spline_hwp_synchronous_templates,
     t2p_templates,
+    wafer_groups,
     winding_couplings,
     zernike_couplings,
 )
@@ -39,6 +40,7 @@ __all__ = [
     'spline_hwp_synchronous_templates',
     't2p_templates',
     'common_mode_templates',
+    'wafer_groups',
     'zernike_couplings',
     'polynomial_couplings',
     'winding_couplings',

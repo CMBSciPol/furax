@@ -4,10 +4,11 @@ import jax.random as jr
 import pytest
 from jax import Array
 from jaxtyping import Float
-from numpy.testing import assert_allclose
+from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
+    AzimuthSynchronousConfig,
     BinsConfig,
     CommonModeConfig,
     HWPSynchronousConfig,
@@ -25,6 +26,7 @@ from furax.mapmaking.templates import (
     required_reader_fields,
     spline_drift_templates,
     t2p_templates,
+    wafer_groups,
     winding_couplings,
     zernike_couplings,
 )
@@ -643,6 +645,38 @@ def test_common_mode_has_one_spline_per_mode_shared_by_the_detectors(config, n_m
     assert template.streams == 'qu' and template.per == ()
     assert template.in_structure.shape == (N_SAMPS // 30 + 2, n_modes)  # (spline, mode)
     assert not template.per_detector
+
+
+_PER_WAFER_AZIMUTH = AzimuthSynchronousConfig(
+    bins=BinsConfig(4), split_scans=True, per_wafer=True, explicit=True
+)
+
+
+@pytest.mark.parametrize(
+    ('config', 'shape'),
+    [
+        # (stream, wafer, direction x bin)
+        (TemplatesConfig(azimuth_synchronous=_PER_WAFER_AZIMUTH), (2, 7, 8)),
+        # (wafer, spline, mode)
+        (
+            TemplatesConfig(common_mode=CommonModeConfig(samples_per_knot=30, per_wafer=True)),
+            (7, N_SAMPS // 30 + 2, 4),
+        ),
+    ],
+    ids=['azimuth', 'common-mode'],
+)
+def test_per_wafer_templates_share_their_amplitudes_within_a_wafer(config, shape):
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='QU')
+    data = _field_data('QU') | {
+        ReaderField.LEFT_SCAN_MASK: jnp.arange(N_SAMPS) < 60,
+        ReaderField.RIGHT_SCAN_MASK: jnp.arange(N_SAMPS) >= 60,
+        ReaderField.WAFER_SLOTS: jnp.array([[0], [3], [3]]),
+    }
+    assert ReaderField.WAFER_SLOTS in required_reader_fields(config)
+    (template,) = build_templates(config, data, tod_format)[0].values()
+    assert not template.per_detector
+    assert_array_equal(template.det_groups, wafer_groups(data[ReaderField.WAFER_SLOTS], 7))
+    assert template.in_structure.shape == shape
 
 
 def test_common_mode_needs_the_q_and_u_streams():

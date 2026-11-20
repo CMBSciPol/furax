@@ -54,12 +54,13 @@ class ReaderField(StrEnum):
     LEFT_SCAN_MASK = 'left_scan_mask'
     RIGHT_SCAN_MASK = 'right_scan_mask'
     SCANNING_INTERVALS = 'scanning_intervals'
+    WAFER_SLOTS = 'wafer_slots'
 
     @property
     def per_detector(self) -> bool:
         """Whether the field has a detector axis, always its second-to-last.
 
-        Such a field is `(..., det, samp)` or `(..., det, 4)`. Every other field except the
+        Such a field is `(..., det, samp)`, `(..., det, 4)` or `(det, 1)`. Every other field except the
         metadata is shared by all detectors.
         """
         return self in {
@@ -67,6 +68,7 @@ class ReaderField(StrEnum):
             ReaderField.VALID_SAMPLE_MASKS,
             ReaderField.DETECTOR_QUATERNIONS,
             ReaderField.NOISE_MODEL_FITS,
+            ReaderField.WAFER_SLOTS,
         }
 
 
@@ -129,11 +131,14 @@ class AbstractObservation[T](ABC):
             ReaderField.DETECTOR_QUATERNIONS,
             ReaderField.BORESIGHT_QUATERNIONS,
             ReaderField.NOISE_MODEL_FITS,
+            ReaderField.WAFER_SLOTS,
         }
     )
     """Supported data field names for all observations"""
 
-    OPTIONAL_READER_FIELDS: ClassVar[frozenset[str]] = frozenset({ReaderField.NOISE_MODEL_FITS})
+    OPTIONAL_READER_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {ReaderField.NOISE_MODEL_FITS, ReaderField.WAFER_SLOTS}
+    )
     """Optional data field names"""
 
     def __init__(self, data: T) -> None:
@@ -323,6 +328,10 @@ class AbstractObservation[T](ABC):
     @abstractmethod
     def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
         """Returns the quaternion offsets of the detectors."""
+
+    def get_wafer_slots(self) -> Int[np.ndarray, ' det']:
+        """Returns the index of the wafer slot of each detector; all in slot 0 by default."""
+        return np.zeros(self.n_detectors, dtype=np.int32)
 
 
 class AbstractSatelliteObservation[T](AbstractObservation[T]):

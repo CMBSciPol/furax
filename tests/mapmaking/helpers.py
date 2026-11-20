@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from equinox import tree_equal
-from jaxtyping import Bool, Float
+from jaxtyping import Bool, Float, Int
 from numpy.testing import assert_allclose
 
 from furax import tree
@@ -165,6 +165,10 @@ class FakeObservation(AbstractObservation[None]):
         q = np.zeros((self._n_dets, 4), dtype=np.float64)
         q[:, 0] = 1.0
         return q
+
+    def get_wafer_slots(self) -> Int[np.ndarray, ' det']:
+        # two wafers, the detectors alternating between them
+        return np.arange(self._n_dets, dtype=np.int32) % 2
 
 
 class FakeLazyObservation(AbstractLazyObservation[None]):

@@ -25,6 +25,8 @@ class ScreenSampler(AbstractSampler):
     1. Computes the gnomonic projection of the line of sight onto the plane, giving physical
        coordinates `(x, y)`.
     2. Adds the wind displacement `(vx * t, vy * t)` to obtain the atmosphere sample position.
+       A pattern carried by the wind would be read at `(x - vx * t, y - vy * t)`: with this sign,
+       the screen moves at `(-vx, -vy)`, and `(vx, vy)` is minus the physical wind velocity.
     3. Reads the screen at that position, with the kernel's interpolation.
     4. Optionally weights the sample by the airmass loading modulation `1 / sin(el)` (enabled with
        `elevation_modulation`), accounting for the longer line-of-sight path through the layer at
@@ -71,7 +73,8 @@ class ScreenSampler(AbstractSampler):
             boresight_quaternions: Boresight pointing in the horizon frame, shape (n_samples,).
             detector_quaternions: Detector offset quaternions, shape (n_detectors,).
             wind_velocity: Wind velocity `(vx, vy)` in the same physical units as the landscape
-                height per second.
+                height per second, with the sign convention above: the screen moves at
+                `-wind_velocity`.
             times: Elapsed time for each sample, shape (n_samples,).
             interpolate: Use bilinear interpolation, otherwise nearest neighbour.
             elevation_modulation: Weight each sample by the airmass loading `1 / sin(el)`.

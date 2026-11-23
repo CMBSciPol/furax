@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GapTreatment.EXPLICIT` models each gap by a B-spline of degree up to 3 on intervals of `ExplicitGapsConfig.resolution` seconds, whose amplitudes are solved for with the map; a detector needing more amplitudes than its bucket's budget is dropped and counted in the `over_gap_budget` columns (#480)
 - `furax.math.bspline.cardinal_bspline` evaluates the cardinal B-splines of degree 0 to 3 (#480)
 - `ObservationProbe.good_ranges` reports the good ranges of the samples of an observation before it is read, from which the mapmaker sizes the amplitudes of the explicit gaps under `ExplicitGapsConfig.probe`; `LazyPreprocSOTODLibObservation` reads them from the preprocessing metadata (#481)
+- `furax.linalg.BlockDiagonalSolver`: solve operator inverses (`A.I(solver=...)`, `Config(solver=...)`) by direct inversion of independent per-position blocks, such as the normal matrix of component separation without beams (#TBD)
 
 ### Changed
 

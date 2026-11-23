@@ -8,16 +8,21 @@ import lineax as lx
 import yaml
 
 if TYPE_CHECKING:
-    from furax.linalg import CGResult, CGSolver
+    from furax.linalg import BlockDiagonalResult, BlockDiagonalSolver, CGResult, CGSolver
 
 __all__ = ['Config']
 
 
-def default_solver_callback(solution: 'lx.Solution | CGResult') -> None:
+def default_solver_callback(solution: 'lx.Solution | CGResult | BlockDiagonalResult') -> None:
     pass
 
 
-def verbose_solver_callback(solution: 'lx.Solution | CGResult') -> None:
+def verbose_solver_callback(solution: 'lx.Solution | CGResult | BlockDiagonalResult') -> None:
+    from furax.linalg import BlockDiagonalResult  # deferred: furax.linalg imports furax
+
+    if isinstance(solution, BlockDiagonalResult):
+        print('Solved by direct inversion of the diagonal blocks')
+        return
     if isinstance(solution, lx.Solution):
         num_steps = solution.stats['num_steps']
         ok = num_steps < solution.stats['max_steps']
@@ -36,10 +41,14 @@ def default_solver() -> lx.AbstractLinearSolver[Any]:
 
 @dataclass(frozen=True)
 class ConfigState:
-    solver: 'lx.AbstractLinearSolver[Any] | CGSolver' = field(default_factory=default_solver)
+    solver: 'lx.AbstractLinearSolver[Any] | CGSolver | BlockDiagonalSolver' = field(
+        default_factory=default_solver
+    )
     solver_throw: bool = False
     solver_options: dict[str, Any] = field(default_factory=dict)
-    solver_callback: 'Callable[[lx.Solution | CGResult], None]' = default_solver_callback
+    solver_callback: 'Callable[[lx.Solution | CGResult | BlockDiagonalResult], None]' = (
+        default_solver_callback
+    )
 
     def tree_flatten(self):
         return (), asdict(self)

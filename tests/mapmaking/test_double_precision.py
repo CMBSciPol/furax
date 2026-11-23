@@ -22,8 +22,8 @@ REQUIRED_FIELDS = [
     'sample_data',
     'timestamps',
     'hwp_angles',
-    'detector_quaternions',
-    'boresight_quaternions',
+    'q_bore_det',
+    'q_sky_bore',
 ]
 
 

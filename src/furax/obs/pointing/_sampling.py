@@ -391,33 +391,36 @@ class AbstractSampler(ABC):
 class QuaternionSampler(AbstractSampler):
     r"""Detectors on a moving boresight, read along the pointing given by quaternions.
 
-    The pointing of detector $d$ at sample $t$ is `qbore[t] * qdet[d]`, and the samples have shape
-    (n_detectors, n_samples). A zero quaternion, in `qbore` or `qdet`, marks samples without
-    pointing, e.g. the padding of an observation: they read nothing, and nothing of them is binned.
-    Q and U are returned in the meridian basis of the line of sight rotated by $\psi - \gamma$,
-    with $\psi$ the polarization angle and $\gamma$ the detector's angle about the boresight
-    (`'boresight'` frame, the default), by $\psi$ (`'detector'`), or not rotated (`'sky'`).
+    The pointing of detector $d$ at sample $t$ is `q_sky_bore[t] * q_bore_det[d]`, and the samples
+    have shape (n_detectors, n_samples). A zero quaternion, in `q_sky_bore` or `q_bore_det`, marks
+    samples without pointing, e.g. the padding of an observation: they read nothing, and nothing of
+    them is binned. Q and U are returned in the meridian basis of the line of sight rotated by
+    $\psi - \gamma$, with $\psi$ the polarization angle and $\gamma$ the detector's angle about
+    the boresight (`'boresight'` frame, the default), by $\psi$ (`'detector'`), or not rotated
+    (`'sky'`).
 
     Attributes:
-        kernel: How each sample reads the map. Beam nodes compose with `qdet`; per-Stokes beam
+        kernel: How each sample reads the map. Beam nodes compose with `q_bore_det`; per-Stokes beam
             weights act on Q and U in the `frame` basis.
-        qbore: Boresight quaternions, shape (n_samples,), zero for a sample without pointing.
-        qdet: Detector quaternions, shape (n_detectors,), zero for a detector without pointing.
+        q_sky_bore: Boresight quaternions in the frame of the map, shape (n_samples,), zero for a
+            sample without pointing.
+        q_bore_det: Detector quaternions in the boresight frame, shape (n_detectors,), zero for a
+            detector without pointing.
         frame: The basis Q and U are returned in.
     """
 
-    qbore: Quaternion
-    qdet: Quaternion
+    q_sky_bore: Quaternion
+    q_bore_det: Quaternion
     frame: PolarizationFrame = field(default='boresight', metadata={'static': True})
 
     @property
     def shape(self) -> tuple[int, ...]:
-        return self.qdet.shape[0], self.qbore.shape[0]
+        return self.q_bore_det.shape[0], self.q_sky_bore.shape[0]
 
     def quaternions(self, index: SampleIndex | None = None) -> Quaternion:
         """The pointing of a batch of samples, or by default of every sample."""
         idet, isamp = self.every_sample() if index is None else index
-        return self.qbore[isamp] * self.qdet[idet]
+        return self.q_sky_bore[isamp] * self.q_bore_det[idet]
 
     def pointing_rows(self, landscape: StokesLandscape, index: SampleIndex) -> PointingRows:
         quats, void = self._pointed(index)
@@ -484,8 +487,8 @@ class QuaternionSampler(AbstractSampler):
         it, which slows the pointing down on CPU.
         """
         idet, isamp = index
-        void_bore = jnp.all(self.qbore.wxyz[isamp] == 0, axis=-1)
-        void_det = jnp.all(self.qdet.wxyz[idet] == 0, axis=-1)
+        void_bore = jnp.all(self.q_sky_bore.wxyz[isamp] == 0, axis=-1)
+        void_det = jnp.all(self.q_bore_det.wxyz[idet] == 0, axis=-1)
         return self.quaternions(index), void_bore | void_det
 
     def _frame_rotation(self, quats: Quaternion, idet: Int[Array, '...']) -> Spin2Rotation | None:
@@ -496,7 +499,7 @@ class QuaternionSampler(AbstractSampler):
         if self.frame == 'detector':
             return psi
         # psi - gamma, with gamma the angle of the detector about the boresight
-        gamma = Spin2Rotation.from_cos_sin(*gamma_angle_cos_sin(self.qdet[idet]))
+        gamma = Spin2Rotation.from_cos_sin(*gamma_angle_cos_sin(self.q_bore_det[idet]))
         return psi.compose(gamma.inverse())
 
     def _stencil(self, landscape: StokesLandscape, quats: Quaternion) -> Stencil:

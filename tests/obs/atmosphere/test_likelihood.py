@@ -28,13 +28,13 @@ def _make_landscape():
 def _make_operator(landscape, wind_velocity, seed=0):
     key = jax.random.key(seed)
     k_bore, k_det = jax.random.split(key, 2)
-    qbore = Quaternion.random(k_bore, (NSAMP,))
-    qbore = Quaternion.from_array(qbore.wxyz.at[:, 1:3].multiply(0.02)).normalize()
-    qdet = Quaternion.random(k_det, (NDET,))
-    qdet = Quaternion.from_array(qdet.wxyz.at[:, 1:3].multiply(0.01)).normalize()
+    q_hor_bore = Quaternion.random(k_bore, (NSAMP,))
+    q_hor_bore = Quaternion.from_array(q_hor_bore.wxyz.at[:, 1:3].multiply(0.02)).normalize()
+    q_bore_det = Quaternion.random(k_det, (NDET,))
+    q_bore_det = Quaternion.from_array(q_bore_det.wxyz.at[:, 1:3].multiply(0.01)).normalize()
     times = jnp.arange(NSAMP, dtype=jnp.float64)
     return PointingOperator.from_sampler(
-        landscape, ScreenSampler.from_wind(qbore, qdet, wind_velocity, times)
+        landscape, ScreenSampler.from_wind(q_hor_bore, q_bore_det, wind_velocity, times)
     )
 
 
@@ -77,21 +77,21 @@ class TestProfileNegLogLikelihood:
         k_atm, k_bore, k_det = jax.random.split(key, 3)
 
         atm = simulate_kolmogorov_screen(landscape, k_atm)
-        qbore = Quaternion.random(k_bore, (NSAMP,))
-        qbore = Quaternion.from_array(qbore.wxyz.at[:, 1:3].multiply(0.02)).normalize()
-        qdet = Quaternion.random(k_det, (NDET,))
-        qdet = Quaternion.from_array(qdet.wxyz.at[:, 1:3].multiply(0.01)).normalize()
+        q_hor_bore = Quaternion.random(k_bore, (NSAMP,))
+        q_hor_bore = Quaternion.from_array(q_hor_bore.wxyz.at[:, 1:3].multiply(0.02)).normalize()
+        q_bore_det = Quaternion.random(k_det, (NDET,))
+        q_bore_det = Quaternion.from_array(q_bore_det.wxyz.at[:, 1:3].multiply(0.01)).normalize()
         times = jnp.arange(NSAMP, dtype=jnp.float64)
 
         P_true = PointingOperator.from_sampler(
-            landscape, ScreenSampler.from_wind(qbore, qdet, v_true, times)
+            landscape, ScreenSampler.from_wind(q_hor_bore, q_bore_det, v_true, times)
         )
         d_obs = P_true(atm)
         N_inv = HomothetyOperator(1.0, in_structure=d_obs.structure)
 
         def loss(wind_velocity):
             P = PointingOperator.from_sampler(
-                landscape, ScreenSampler.from_wind(qbore, qdet, wind_velocity, times)
+                landscape, ScreenSampler.from_wind(q_hor_bore, q_bore_det, wind_velocity, times)
             )
             return profile_neg_log_likelihood(P, d_obs, N_inv)
 

@@ -137,12 +137,12 @@ def required_reader_fields(config: TemplatesConfig) -> set[str]:
     if config.t2p is not None:
         fields |= {ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS}
         if config.t2p.zernike_order is not None or config.t2p.quadrupole_order is not None:
-            fields |= {ReaderField.DETECTOR_QUATERNIONS}
+            fields |= {ReaderField.Q_BORE_DET}
     if config.common_mode is not None:
         fields |= {
             ReaderField.TIMESTAMPS,
             ReaderField.VALID_SCANNING_MASKS,
-            ReaderField.DETECTOR_QUATERNIONS,
+            ReaderField.Q_BORE_DET,
         }
     if config.ground is not None:
         raise NotImplementedError(
@@ -532,7 +532,7 @@ def _focal_plane_angles(
     data: Mapping[str, Any],
 ) -> tuple[Float[Array, ' det'], Float[Array, ' det'], Float[Array, ' det']]:
     """The detectors' positions and orientations on the focal plane, from their quaternions."""
-    return quat_to_xieta(Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS]))
+    return quat_to_xieta(Quaternion.from_array(data[ReaderField.Q_BORE_DET]))
 
 
 def _spline_drift_basis(data: Mapping[str, Any], samples_per_knot: int, dtype: DTypeLike) -> Basis:

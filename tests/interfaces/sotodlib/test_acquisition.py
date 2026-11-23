@@ -42,8 +42,8 @@ def _acquisition(obs, *, demodulated: bool = False) -> AbstractLinearOperator:
     """The furax acquisition for this observation, sampling the pointing on the fly."""
     return build_acquisition_operator(
         HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64'),
-        Quaternion.from_array(obs.get_boresight_quaternions()),
-        Quaternion.from_array(obs.get_detector_quaternions()),
+        Quaternion.from_array(obs.get_q_sky_bore()),
+        Quaternion.from_array(obs.get_q_bore_det()),
         hwp_angles=None,
         demodulated=demodulated,
         pointing_on_the_fly=True,
@@ -59,15 +59,15 @@ def _in_pixel_frame(h: AbstractLinearOperator) -> AbstractLinearOperator:
     """The same acquisition, sampling Q and U in the pixel centre's frame (no transport)."""
     pointing = h.operands[-1]
     landscape = pointing.landscape
-    qdet_full = pointing.sampler.quaternions()
+    q_sky_det = pointing.sampler.quaternions()
 
     ravel = RavelOperator(1, -1, in_structure=landscape.structure)
     stokes_idx = jnp.arange(len(landscape.stokes))[:, None, None]
-    pixels = landscape.quat2index(qdet_full)[None]
+    pixels = landscape.quat2index(q_sky_det)[None]
     gather = IndexOperator((stokes_idx, pixels), in_structure=ravel.out_structure)
-    angles = polarization_angle(qdet_full)
+    angles = polarization_angle(q_sky_det)
     if pointing.sampler.frame == 'boresight':
-        angles -= gamma_angle(pointing.sampler.qdet)[:, None]
+        angles -= gamma_angle(pointing.sampler.q_bore_det)[:, None]
     rot = QURotationOperator(angles=angles, in_structure=gather.out_structure)
     return reduce(operator.matmul, h.operands[:-1]) @ rot @ gather @ ravel
 
@@ -101,10 +101,10 @@ def _assert_binning_matches_sotodlib(
 
     pointing = h.operands[-1]
     landscape = pointing.landscape
-    qdet_full = pointing.sampler.quaternions()
+    q_sky_det = pointing.sampler.quaternions()
     cos_2delta, _ = spin2_cos_sin(
-        *jhp.pix2ang(landscape.nside, landscape.quat2index(qdet_full)),
-        *landscape.quat2world(qdet_full),
+        *jhp.pix2ang(landscape.nside, landscape.quat2index(q_sky_det)),
+        *landscape.quat2world(q_sky_det),
     )
     max_rotation = float(jnp.sqrt(2 * (1 - cos_2delta)).max())  # max |R(2d) u - u| / |u|
     summed = pointing.as_stokes_i().T(StokesI(_qu_magnitude(tods))).i

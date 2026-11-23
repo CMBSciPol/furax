@@ -144,7 +144,7 @@ class FakeObservation(AbstractObservation[None]):
     def get_noise_model(self) -> None | NoiseModel:
         return None
 
-    def get_boresight_quaternions(self) -> Float[np.ndarray, 'samp 4']:
+    def get_q_sky_bore(self) -> Float[np.ndarray, 'samp 4']:
         # Sweep the boresight so samples hit a range of sky pixels.
         phi = np.linspace(0.0, np.pi / 4, self._n_samples)
         q = np.zeros((self._n_samples, 4), dtype=np.float64)
@@ -152,7 +152,7 @@ class FakeObservation(AbstractObservation[None]):
         q[:, 2] = np.sin(phi / 2)
         return q
 
-    def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
+    def get_q_bore_det(self) -> Float[np.ndarray, 'det 4']:
         if self._focal_plane_radius > 0:
             # detectors spread over the focal plane, at random positions and polarization angles
             rng = np.random.default_rng(1234)

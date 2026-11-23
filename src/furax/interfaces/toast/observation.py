@@ -111,7 +111,7 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         shared = {defaults.times}  # Always need to load timestamps
         if ReaderField.HWP_ANGLES in requested:
             shared.add(defaults.hwp_angle)
-        if ReaderField.BORESIGHT_QUATERNIONS in requested:
+        if ReaderField.Q_SKY_BORE in requested:
             shared.add(defaults.boresight_radec)
         if ReaderField.AZIMUTH in requested:
             shared.add(defaults.azimuth)
@@ -341,13 +341,13 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
         )
         return noise_model
 
-    def get_boresight_quaternions(self) -> Float[np.ndarray, 'samp 4']:
+    def get_q_sky_bore(self) -> Float[np.ndarray, 'samp 4']:
         if self._boresight not in self.data.shared:
             raise ValueError('Boresight field not provided.')
         quats = np.asarray(self.data.shared[self._boresight].data)
         return np.roll(quats, 1, axis=-1)
 
-    def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
+    def get_q_bore_det(self) -> Float[np.ndarray, 'det 4']:
         quats = np.array([self._focal_plane[d]['quat'] for d in self.detectors])
         quats = np.roll(quats, 1, axis=-1)
         return np.atleast_2d(quats)

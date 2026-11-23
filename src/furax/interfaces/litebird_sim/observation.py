@@ -105,7 +105,7 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
             f0=jnp.array(self.data.fmin_hz),
         )
 
-    def get_boresight_quaternions(self) -> Float[np.ndarray, 'samp 4']:
+    def get_q_sky_bore(self) -> Float[np.ndarray, 'samp 4']:
         # TODO: coordinate system
         #
         # interpolate to the actual sampling rate
@@ -113,7 +113,7 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
         qbore_full = qbore.slerp(self.data.start_time, self.sample_rate, self.n_samples)
         return np.asarray(qbore_full, dtype=np.float64)
 
-    def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
+    def get_q_bore_det(self) -> Float[np.ndarray, 'det 4']:
         return np.concatenate([q.quats for q in self.data.quat], dtype=np.float64)
 
 

@@ -16,10 +16,10 @@ NSIDE = 4
 NDET, NSAMP = 3, 10
 
 
-def _transport(landscape: HealpixLandscape, qdet_full: Quaternion) -> tuple[jax.Array, jax.Array]:
+def _transport(landscape: HealpixLandscape, q_sky_det: Quaternion) -> tuple[jax.Array, jax.Array]:
     """(cos 2d, -sin 2d) carrying a pixel's Q, U into the frame of the direction sampled at."""
-    indices = landscape.quat2index(qdet_full)
-    theta, phi = landscape.quat2world(qdet_full)
+    indices = landscape.quat2index(q_sky_det)
+    theta, phi = landscape.quat2world(q_sky_det)
     return spin2_cos_sin(*jhp.pix2ang(landscape.nside, indices), theta, phi)
 
 
@@ -34,19 +34,23 @@ def test_acquisition_formula(hwp: bool) -> None:
     """
     landscape = HealpixLandscape(NSIDE, 'IQU')
     k = jax.random.split(jax.random.key(0), 5)
-    qbore = Quaternion.random(k[0], (NSAMP,))
-    qdet = Quaternion.random(k[1], (NDET,))
+    q_sky_bore = Quaternion.random(k[0], (NSAMP,))
+    q_bore_det = Quaternion.random(k[1], (NDET,))
     hwp_angles = jax.random.uniform(k[2], (NSAMP,), dtype=jnp.float64, maxval=jnp.pi)
-    acq = build_acquisition_operator(landscape, qbore, qdet, hwp_angles=hwp_angles if hwp else None)
+    acq = build_acquisition_operator(
+        landscape, q_sky_bore, q_bore_det, hwp_angles=hwp_angles if hwp else None
+    )
     # its pointing is last, where the composition rules of the pointing operator look for it
     assert isinstance(acq, CompositionOperator)
     assert isinstance(acq.operands[-1], PointingOperator)
 
-    qdet_full = qbore[None, :] * qdet[:, None]  # (ndet, nsamp)
-    pa = polarization_angle(qdet_full)
-    phi = 2 * (2 * hwp_angles[None, :] + pa - 2 * gamma_angle(qdet)[:, None]) if hwp else 2 * pa
-    indices = landscape.quat2index(qdet_full)
-    cos_2d, sin_2d = _transport(landscape, qdet_full)
+    q_sky_det = q_sky_bore[None, :] * q_bore_det[:, None]  # (ndet, nsamp)
+    pa = polarization_angle(q_sky_det)
+    phi = (
+        2 * (2 * hwp_angles[None, :] + pa - 2 * gamma_angle(q_bore_det)[:, None]) if hwp else 2 * pa
+    )
+    indices = landscape.quat2index(q_sky_det)
+    cos_2d, sin_2d = _transport(landscape, q_sky_det)
 
     sky = landscape.normal(k[3])
     I_p = sky.i.ravel()[indices]

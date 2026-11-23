@@ -41,8 +41,8 @@ def test_reader_all_fields(observations) -> None:
         'valid_sample_masks': jax.ShapeDtypeStruct((ndet_max, nsample_max), dtype=jnp.bool),
         'timestamps': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
         'hwp_angles': jax.ShapeDtypeStruct((nsample_max,), dtype=jnp.float64),
-        'detector_quaternions': jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64),
-        'boresight_quaternions': jax.ShapeDtypeStruct((nsample_max, 4), dtype=jnp.float64),
+        'q_bore_det': jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64),
+        'q_sky_bore': jax.ShapeDtypeStruct((nsample_max, 4), dtype=jnp.float64),
         'noise_model_fits': jax.ShapeDtypeStruct((ndet_max, 4), dtype=jnp.float64),
     }
 
@@ -61,8 +61,8 @@ def test_reader_all_fields(observations) -> None:
         assert tuple(padding['valid_sample_masks']) == (ndet_max - ndet, nsample_max - nsample)
         assert tuple(padding['timestamps']) == (nsample_max - nsample,)
         assert tuple(padding['hwp_angles']) == (nsample_max - nsample,)
-        assert tuple(padding['detector_quaternions']) == (ndet_max - ndet, 0)
-        assert tuple(padding['boresight_quaternions']) == (nsample_max - nsample, 0)
+        assert tuple(padding['q_bore_det']) == (ndet_max - ndet, 0)
+        assert tuple(padding['q_sky_bore']) == (nsample_max - nsample, 0)
         assert tuple(padding['noise_model_fits']) == (ndet_max - ndet, 0)
 
 
@@ -84,13 +84,13 @@ def test_reader_invalid_data_field_name(observations) -> None:
 @pytest.mark.parametrize(
     'requested_fields',
     [
-        ['sample_data', 'valid_sample_masks', 'detector_quaternions'],  # detector-related
-        ['timestamps', 'boresight_quaternions'],  # time/boresight-related
-        ['sample_data', 'timestamps', 'boresight_quaternions'],  # mixed
+        ['sample_data', 'valid_sample_masks', 'q_bore_det'],  # detector-related
+        ['timestamps', 'q_sky_bore'],  # time/boresight-related
+        ['sample_data', 'timestamps', 'q_sky_bore'],  # mixed
         ['sample_data'],  # detector data only
         ['valid_sample_masks'],  # detector flags only
-        ['boresight_quaternions'],  # boresight quats only
-        ['detector_quaternions'],  # detector quats only
+        ['q_sky_bore'],  # boresight quats only
+        ['q_bore_det'],  # detector quats only
         ['timestamps'],  # timestamps only
         ['hwp_angles'],  # HWP angles only
         ['noise_model_fits'],  # optional field only

@@ -15,8 +15,8 @@ __all__ = [
 
 def build_acquisition_operator(
     landscape: StokesLandscape,
-    boresight_quaternions: Quaternion,
-    detector_quaternions: Quaternion,
+    q_sky_bore: Quaternion,
+    q_bore_det: Quaternion,
     hwp_angles: Array | None = None,
     *,
     demodulated: bool = False,
@@ -27,16 +27,16 @@ def build_acquisition_operator(
 ) -> AbstractLinearOperator:
     """Build an acquisition operator for a single observation. Does not include masking."""
     # The TOD shape
-    ndet = detector_quaternions.shape[0]
-    nsamp = boresight_quaternions.shape[0]
+    ndet = q_bore_det.shape[0]
+    nsamp = q_sky_bore.shape[0]
     data_shape = (ndet, nsamp)
 
     # Rotate into detector frame unless a HWP is present (even if demodulated)
     has_hwp = hwp_angles is not None or demodulated
     pointing = PointingOperator.create(
         landscape,
-        boresight_quaternions,
-        detector_quaternions,
+        q_sky_bore,
+        q_bore_det,
         batch_samples=pointing_batch_samples,
         frame='boresight' if has_hwp else 'detector',
         interpolate=pointing_interpolate,
@@ -60,7 +60,7 @@ def build_acquisition_operator(
     # QURotationHWPRule commutes rot past the HWP, then QURotationRule would
     # absorb rot.T(gamma, ndet×1) into rot(hwp_angles, ndet×nsamp), broadcasting
     # the per-detector gamma across all samples unnecessarily.
-    gamma = gamma_angle(detector_quaternions)[:, None]
+    gamma = gamma_angle(q_bore_det)[:, None]
     rot = QURotationOperator.create(
         data_shape,
         dtype,

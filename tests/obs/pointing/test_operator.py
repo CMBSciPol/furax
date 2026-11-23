@@ -64,10 +64,10 @@ def _make_landscape(landscape_type: str, stokes: ValidStokesLiteral) -> StokesLa
 def test_precomputed_matches_on_the_fly(stokes, frame, landscape_type, interpolate) -> None:
     landscape = _make_landscape(landscape_type, stokes)
     key1, key2, key3, key4 = jax.random.split(jax.random.key(42), 4)
-    qbore = Quaternion.random(key1, (NSAMP,))
-    qdet = Quaternion.random(key2, (NDET,))
+    q_sky_bore = Quaternion.random(key1, (NSAMP,))
+    q_bore_det = Quaternion.random(key2, (NDET,))
     op = PointingOperator.create(
-        landscape, qbore, qdet, frame=frame, batch_samples=7, interpolate=interpolate
+        landscape, q_sky_bore, q_bore_det, frame=frame, batch_samples=7, interpolate=interpolate
     )
     precomputed = op.precomputed()
     sky = landscape.normal(key3)
@@ -178,9 +178,9 @@ class TestPrecomputed:
     @staticmethod
     def _op(interpolate: bool, stokes: ValidStokesLiteral = 'IQU') -> PointingOperator:
         k1, k2 = jax.random.split(jax.random.key(20))
-        qbore, qdet = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
+        q_sky_bore, q_bore_det = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
         landscape = HealpixLandscape(NSIDE, stokes)
-        return PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
+        return PointingOperator.create(landscape, q_sky_bore, q_bore_det, interpolate=interpolate)
 
     @pytest.mark.parametrize(
         'interpolate, expected',
@@ -246,10 +246,10 @@ class TestInterpolate:
 
         key = jax.random.key(7)
         k1, k2, k3, k4 = jax.random.split(key, 4)
-        qbore = Quaternion.random(k1, (NSAMP,))
-        qdet = Quaternion.random(k2, (NDET,))
+        q_sky_bore = Quaternion.random(k1, (NSAMP,))
+        q_bore_det = Quaternion.random(k2, (NDET,))
 
-        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        op = PointingOperator.create(landscape, q_sky_bore, q_bore_det, interpolate=True)
         sky = landscape.normal(k3)
         tod = jax.tree.map(lambda s: jax.random.normal(k4, s.shape, s.dtype), op.out_structure)
 
@@ -263,10 +263,10 @@ class TestInterpolate:
 
         key = jax.random.key(7)
         k1, k2 = jax.random.split(key)
-        qbore = Quaternion.random(k1, (NSAMP,))
-        qdet = Quaternion.random(k2, (NDET,))
+        q_sky_bore = Quaternion.random(k1, (NSAMP,))
+        q_bore_det = Quaternion.random(k2, (NDET,))
 
-        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True)
+        op = PointingOperator.create(landscape, q_sky_bore, q_bore_det, interpolate=True)
         tod = op(landscape.full(3.14))
         assert_array_almost_equal(tod.i, 3.14, decimal=10)
 
@@ -283,9 +283,9 @@ class TestLocalLandscape:
     @classmethod
     def p_full(cls, request: pytest.FixtureRequest, keys: jax.Array) -> PointingOperator:
         parent = HealpixLandscape(NSIDE, 'IQU')
-        qbore = Quaternion.random(keys[0], (NSAMP,))
-        qdet = Quaternion.random(keys[1], (NDET,))
-        return PointingOperator.create(parent, qbore, qdet, interpolate=request.param)
+        q_sky_bore = Quaternion.random(keys[0], (NSAMP,))
+        q_bore_det = Quaternion.random(keys[1], (NDET,))
+        return PointingOperator.create(parent, q_sky_bore, q_bore_det, interpolate=request.param)
 
     @pytest.fixture(scope='class')
     @classmethod
@@ -311,7 +311,10 @@ class TestLocalLandscape:
     ) -> tuple[LocalStokesLandscape, PointingOperator]:
         local = LocalStokesLandscape(p_full.landscape, indices)
         p_local = PointingOperator.create(
-            local, p_full.sampler.qbore, p_full.sampler.qdet, interpolate=_interpolates(p_full)
+            local,
+            p_full.sampler.q_sky_bore,
+            p_full.sampler.q_bore_det,
+            interpolate=_interpolates(p_full),
         )
         return local, p_local
 
@@ -352,12 +355,12 @@ class TestLocalLandscape:
         assert_array_equal(binned_local.at[:, subset].set(0.0), 0.0)
 
 
-def _untransported_sample(landscape: StokesLandscape, sky, qdet_full: jax.Array, interpolate: bool):
+def _untransported_sample(landscape: StokesLandscape, sky, q_sky_det: jax.Array, interpolate: bool):
     """What the sampler would compute if it ignored the pixel frames."""
     sky_flat = sky.ravel()  # a CAR map is 2-D, and the indices address the raveled pixel axis
     if not interpolate:
-        return type(sky).from_array(sky_flat.data[..., landscape.quat2index(qdet_full)])
-    indices, weights = landscape.quat2interp(qdet_full)
+        return type(sky).from_array(sky_flat.data[..., landscape.quat2index(q_sky_det)])
+    indices, weights = landscape.quat2interp(q_sky_det)
     valid = indices >= 0
     indices = jnp.where(valid, indices, 0)
     weights = jnp.where(valid, weights, 0.0)
@@ -378,8 +381,8 @@ class TestTransport:
     @pytest.mark.parametrize('landscape_type', ['healpix', 'car'])
     def test_adjoint(self, stokes, landscape_type, interpolate) -> None:
         landscape = _make_landscape(landscape_type, stokes)
-        qbore, qdet = self._quats(2)
-        op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
+        q_sky_bore, q_bore_det = self._quats(2)
+        op = PointingOperator.create(landscape, q_sky_bore, q_bore_det, interpolate=interpolate)
         sky = landscape.normal(jax.random.key(3))
         tod = ftree.normal_like(op.out_structure, jax.random.key(4))
         assert_array_almost_equal(ftree.dot(op(sky), tod), ftree.dot(sky, op.T(tod)), decimal=10)
@@ -388,13 +391,13 @@ class TestTransport:
     def test_polarization_is_transported(self, landscape_type, interpolate) -> None:
         """The sampled Q differs from the value a sampler ignoring the pixel frames would give."""
         landscape = _make_landscape(landscape_type, 'IQU')
-        qbore, qdet = self._quats(7)
+        q_sky_bore, q_bore_det = self._quats(7)
         sky = landscape.normal(jax.random.key(8))
-        op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
+        op = PointingOperator.create(landscape, q_sky_bore, q_bore_det, interpolate=interpolate)
 
-        qdet_full = op.sampler.quaternions()
-        cos_pa, sin_pa = polarization_angle_cos_sin(qdet_full)
-        untransported = _untransported_sample(landscape, sky, qdet_full, interpolate)
+        q_sky_det = op.sampler.quaternions()
+        cos_pa, sin_pa = polarization_angle_cos_sin(q_sky_det)
+        untransported = _untransported_sample(landscape, sky, q_sky_det, interpolate)
         reference = rotate_qu_cs(untransported, cos_pa, sin_pa)
 
         tod = op(sky)
@@ -405,21 +408,21 @@ class TestTransport:
     def test_intensity_only_is_untouched(self, landscape_type, interpolate) -> None:
         """An intensity map has nothing to rotate, so it takes the plain sampling path."""
         landscape = _make_landscape(landscape_type, 'I')
-        qbore, qdet = self._quats(5)
-        op = PointingOperator.create(landscape, qbore, qdet, interpolate=interpolate)
+        q_sky_bore, q_bore_det = self._quats(5)
+        op = PointingOperator.create(landscape, q_sky_bore, q_bore_det, interpolate=interpolate)
         sky = landscape.normal(jax.random.key(6))
-        qdet_full = op.sampler.quaternions()
-        expected = _untransported_sample(landscape, sky, qdet_full, interpolate)
+        q_sky_det = op.sampler.quaternions()
+        expected = _untransported_sample(landscape, sky, q_sky_det, interpolate)
         assert_array_almost_equal(op(sky).data, expected.data, decimal=13)
 
     def test_local_landscape_adjoint(self, interpolate) -> None:
         """Samples outside the subset are dropped, and the centers still come from the parent."""
         parent = HealpixLandscape(NSIDE, 'IQU')
-        qbore, qdet = self._quats(12)
-        p_full = PointingOperator.create(parent, qbore, qdet, interpolate=interpolate)
+        q_sky_bore, q_bore_det = self._quats(12)
+        p_full = PointingOperator.create(parent, q_sky_bore, q_bore_det, interpolate=interpolate)
         covered = jnp.flatnonzero(p_full.T(ftree.ones_like(p_full.out_structure)).i)
         local = LocalStokesLandscape(parent, covered[::2])
-        op = PointingOperator.create(local, qbore, qdet, interpolate=interpolate)
+        op = PointingOperator.create(local, q_sky_bore, q_bore_det, interpolate=interpolate)
 
         sky = local.normal(jax.random.key(13))
         tod = ftree.normal_like(op.out_structure, jax.random.key(14))
@@ -497,14 +500,16 @@ class TestNearestIndexAgreement:
     @staticmethod
     def _setup(seed: int) -> tuple[PointingOperator, jax.Array]:
         k1, k2 = jax.random.split(jax.random.key(seed))
-        qbore, qdet = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
-        op = PointingOperator.create(_ShiftedWorldIndexLandscape(NSIDE, 'IQU'), qbore, qdet)
+        q_sky_bore, q_bore_det = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
+        op = PointingOperator.create(
+            _ShiftedWorldIndexLandscape(NSIDE, 'IQU'), q_sky_bore, q_bore_det
+        )
         return op, op.sampler.quaternions()
 
     def test_the_stencil_indexes_the_quat2index_pixel(self) -> None:
-        op, qdet_full = self._setup(40)
+        op, q_sky_det = self._setup(40)
         stencil = op.sampler.pointing_rows(op.landscape, op.sampler.every_sample()).stencil
-        assert_array_equal(stencil.indices[..., 0], op.landscape.quat2index(qdet_full))
+        assert_array_equal(stencil.indices[..., 0], op.landscape.quat2index(q_sky_det))
 
     def test_the_hit_map_of_the_polarized_operator_is_the_intensity_one(self) -> None:
         """The map the transpose fills and the map `as_stokes_i` counts must cover the same pixels.
@@ -531,12 +536,12 @@ class TestPartialSkyNearest:
     def _op(self, seed: int, stokes: ValidStokesLiteral) -> PointingOperator:
         # A 20x20 deg patch, so random pointing lands mostly outside it.
         patch = CARLandscape((20, 20), _CAR_PROJECTION, stokes)
-        qbore, qdet = self._quats(seed)
-        return PointingOperator.create(patch, qbore, qdet, interpolate=False)
+        q_sky_bore, q_bore_det = self._quats(seed)
+        return PointingOperator.create(patch, q_sky_bore, q_bore_det, interpolate=False)
 
     @staticmethod
-    def _outside(op: PointingOperator, qdet_full: Quaternion) -> jax.Array:
-        return op.landscape.quat2index(qdet_full) < 0
+    def _outside(op: PointingOperator, q_sky_det: Quaternion) -> jax.Array:
+        return op.landscape.quat2index(q_sky_det) < 0
 
     def test_the_stencil_drops_samples_outside_the_map(self, stokes) -> None:
         op = self._op(50, stokes)
@@ -587,13 +592,13 @@ class TestSamplesWithoutPointing:
         if with_beam:
             nodes = xieta_to_quat(*jax.random.normal(k3, (3, 2)) * 0.01)
             beam = DiscretizedBeam.create(nodes, jnp.array([0.4, 0.6]))
-        qbore, qdet = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
+        q_sky_bore, q_bore_det = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
         valid = (jnp.arange(NDET) < NDET - 1)[:, None] & (jnp.arange(NSAMP) < NSAMP - 3)[None, :]
-        padded_bore = Quaternion.from_array(qbore.wxyz.at[NSAMP - 3 :].set(0))
-        padded_det = Quaternion.from_array(qdet.wxyz.at[NDET - 1].set(0))
+        padded_bore = Quaternion.from_array(q_sky_bore.wxyz.at[NSAMP - 3 :].set(0))
+        padded_det = Quaternion.from_array(q_bore_det.wxyz.at[NDET - 1].set(0))
         ops = [
             PointingOperator.create(landscape, bore, det, interpolate=interpolate, beam=beam)
-            for bore, det in ((padded_bore, padded_det), (qbore, qdet))
+            for bore, det in ((padded_bore, padded_det), (q_sky_bore, q_bore_det))
         ]
         if precompute:
             ops = [op.precomputed() for op in ops]
@@ -627,38 +632,38 @@ class TestNearestTransport:
         landscape = HealpixLandscape(NSIDE, 'IQU')
         pixels = jnp.arange(0, 12 * NSIDE**2, 7)
         theta, phi = jhp.pix2ang(NSIDE, pixels)
-        qbore = iso_to_quat(theta, phi, jnp.zeros_like(theta))
-        qdet = Quaternion.ones((1,))  # identity: the detector points at the boresight
+        q_sky_bore = iso_to_quat(theta, phi, jnp.zeros_like(theta))
+        q_bore_det = Quaternion.ones((1,))  # identity: the detector points at the boresight
 
-        op = PointingOperator.create(landscape, qbore, qdet)
+        op = PointingOperator.create(landscape, q_sky_bore, q_bore_det)
         sky = landscape.normal(jax.random.key(30))
-        qdet_full = op.sampler.quaternions()
-        cos_pa, sin_pa = polarization_angle_cos_sin(qdet_full)
+        q_sky_det = op.sampler.quaternions()
+        cos_pa, sin_pa = polarization_angle_cos_sin(q_sky_det)
         expected = rotate_qu_cs(
-            _untransported_sample(landscape, sky, qdet_full, False), cos_pa, sin_pa
+            _untransported_sample(landscape, sky, q_sky_det, False), cos_pa, sin_pa
         )
         assert_array_almost_equal(op(sky).data, expected.data, decimal=12)
 
     def test_hit_counts_are_unchanged(self) -> None:
         """The transport is a rotation per sample: which pixel a sample lands in does not move."""
         landscape = HealpixLandscape(NSIDE, 'IQU')
-        qbore, qdet = self._quats(31)
-        op = PointingOperator.create(landscape, qbore, qdet)
+        q_sky_bore, q_bore_det = self._quats(31)
+        op = PointingOperator.create(landscape, q_sky_bore, q_bore_det)
         hits = op.T(ftree.ones_like(op.out_structure)).i
 
-        qdet_full = op.sampler.quaternions()
-        expected = jnp.zeros(len(landscape)).at[landscape.quat2index(qdet_full).ravel()].add(1.0)
+        q_sky_det = op.sampler.quaternions()
+        expected = jnp.zeros(len(landscape)).at[landscape.quat2index(q_sky_det).ravel()].add(1.0)
         assert_array_equal(hits, expected)
 
     def test_the_system_matrix_stays_block_diagonal(self) -> None:
         """One sample still touches one pixel, so P^T P couples no two pixels."""
         landscape = HealpixLandscape(NSIDE, 'IQU')
-        qbore, qdet = self._quats(32)
-        op = PointingOperator.create(landscape, qbore, qdet)
+        q_sky_bore, q_bore_det = self._quats(32)
+        op = PointingOperator.create(landscape, q_sky_bore, q_bore_det)
 
         # column of P^T P for one Stokes component of one hit pixel
-        qdet_full = op.sampler.quaternions()
-        pixel = int(landscape.quat2index(qdet_full).ravel()[0])
+        q_sky_det = op.sampler.quaternions()
+        pixel = int(landscape.quat2index(q_sky_det).ravel()[0])
         zeros = landscape.zeros()
         probe = type(zeros).from_array(zeros.data.at[:, pixel].set(1.0))
         response = op.T(op(probe)).data
@@ -674,8 +679,8 @@ class TestBeam:
 
     @staticmethod
     def _quats(seed: int) -> tuple[Quaternion, Quaternion]:
-        # each detector has a gamma of its own: the boresight frame strips it from `qdet`, and the
-        # beam nodes must not turn with it
+        # each detector has a gamma of its own: the boresight frame strips it from `q_bore_det`,
+        # and the beam nodes must not turn with it
         return Quaternion.random(jax.random.key(seed), (NSAMP,)), xieta_to_quat(
             jnp.array([0.0, 0.02, -0.03]),
             jnp.array([0.0, -0.01, 0.02]),
@@ -698,24 +703,26 @@ class TestBeam:
     def test_no_beam_is_the_plain_operator(self, stokes, frame, interpolate) -> None:
         """`beam=None` leaves every code path as it was."""
         landscape = HealpixLandscape(NSIDE, stokes)
-        qbore, qdet = self._quats(40)
-        op = PointingOperator.create(landscape, qbore, qdet, frame=frame, interpolate=interpolate)
+        q_sky_bore, q_bore_det = self._quats(40)
+        op = PointingOperator.create(
+            landscape, q_sky_bore, q_bore_det, frame=frame, interpolate=interpolate
+        )
         assert op.sampler.kernel.beam is None
-        assert len(jax.tree.leaves(op)) == 2  # qbore, qdet: no kernel leaf sneaks in
+        assert len(jax.tree.leaves(op)) == 2  # q_sky_bore, q_bore_det: no kernel leaf sneaks in
 
     def test_the_line_of_sight_with_unit_weight_is_the_plain_operator(
         self, stokes, frame, interpolate
     ) -> None:
         landscape = HealpixLandscape(NSIDE, stokes)
-        qbore, qdet = self._quats(41)
+        q_sky_bore, q_bore_det = self._quats(41)
         plain = PointingOperator.create(
-            landscape, qbore, qdet, frame=frame, interpolate=interpolate
+            landscape, q_sky_bore, q_bore_det, frame=frame, interpolate=interpolate
         )
         origin = xieta_to_quat(jnp.zeros(1), jnp.zeros(1), jnp.zeros(1))
         op = PointingOperator.create(
             landscape,
-            qbore,
-            qdet,
+            q_sky_bore,
+            q_bore_det,
             frame=frame,
             interpolate=interpolate,
             beam=DiscretizedBeam.create(origin, jnp.ones(1)),
@@ -731,19 +738,19 @@ class TestBeam:
         """Two nodes at equal weight average two detectors rotated by those nodes.
 
         The reference folds each node into the detector quaternion itself, in the detector
-        frame, so it holds whatever frame the operator under test uses: the boresight frame strips the
-        detector's z-rotation from `qdet`, and the nodes must stay attached to the physical
-        detector regardless.
+        frame, so it holds whatever frame the operator under test uses: the boresight frame strips
+        the detector's z-rotation from `q_bore_det`, and the nodes must stay attached to the
+        physical detector regardless.
         """
         landscape = HealpixLandscape(NSIDE, 'I')
-        qbore, qdet = self._quats(44)
+        q_sky_bore, q_bore_det = self._quats(44)
         nodes = self._nodes()
         sky = landscape.normal(jax.random.key(45))
 
         op = PointingOperator.create(
             landscape,
-            qbore,
-            qdet,
+            q_sky_bore,
+            q_bore_det,
             frame=frame,
             interpolate=interpolate,
             beam=DiscretizedBeam.create(nodes, jnp.array([0.5, 0.5])),
@@ -751,7 +758,11 @@ class TestBeam:
         )
         parts = [
             PointingOperator.create(
-                landscape, qbore, qdet * nodes[k], frame='detector', interpolate=interpolate
+                landscape,
+                q_sky_bore,
+                q_bore_det * nodes[k],
+                frame='detector',
+                interpolate=interpolate,
             )(sky)
             for k in range(2)
         ]
@@ -761,14 +772,14 @@ class TestBeam:
     def test_per_detector_nodes_match_shared_ones(self, frame, interpolate) -> None:
         """Shared nodes are stored once, not copied per detector, and read the same sky."""
         landscape = HealpixLandscape(NSIDE, 'I')
-        qbore, qdet = self._quats(46)
+        q_sky_bore, q_bore_det = self._quats(46)
         nodes = self._nodes()
         weights = jnp.array([0.5, 0.5])
         sky = landscape.normal(jax.random.key(47))
         shared = PointingOperator.create(
             landscape,
-            qbore,
-            qdet,
+            q_sky_bore,
+            q_bore_det,
             frame=frame,
             interpolate=interpolate,
             beam=DiscretizedBeam.create(nodes, weights),
@@ -776,8 +787,8 @@ class TestBeam:
         identity = Quaternion.ones((NDET, 1))
         per_detector = PointingOperator.create(
             landscape,
-            qbore,
-            qdet,
+            q_sky_bore,
+            q_bore_det,
             frame=frame,
             interpolate=interpolate,
             beam=DiscretizedBeam.create(identity * nodes[None, :], weights),
@@ -796,15 +807,15 @@ class TestBeam:
         polarization angle as soon as the Q and U rows differ.
         """
         landscape = HealpixLandscape(NSIDE, stokes)
-        qbore, qdet = self._quats(55)
+        q_sky_bore, q_bore_det = self._quats(55)
         nodes = self._nodes()
         weights = self._per_stokes_weights(stokes)
         sky = landscape.normal(jax.random.key(56))
 
         op = PointingOperator.create(
             landscape,
-            qbore,
-            qdet,
+            q_sky_bore,
+            q_bore_det,
             frame=frame,
             interpolate=interpolate,
             beam=DiscretizedBeam.create(nodes, weights),
@@ -813,8 +824,8 @@ class TestBeam:
         parts = [
             PointingOperator.create(
                 landscape,
-                qbore,
-                qdet,
+                q_sky_bore,
+                q_bore_det,
                 frame=frame,
                 interpolate=interpolate,
                 beam=DiscretizedBeam.create(nodes[k : k + 1], jnp.ones(1)),
@@ -829,14 +840,14 @@ class TestBeam:
         self, stokes, frame, interpolate
     ) -> None:
         landscape = HealpixLandscape(NSIDE, stokes)
-        qbore, qdet = self._quats(57)
+        q_sky_bore, q_bore_det = self._quats(57)
         shared = jnp.array([0.3, 0.7])
         per_component = Stokes.class_for(stokes).from_array(jnp.tile(shared, (len(stokes), 1)))
         ops = [
             PointingOperator.create(
                 landscape,
-                qbore,
-                qdet,
+                q_sky_bore,
+                q_bore_det,
                 frame=frame,
                 interpolate=interpolate,
                 beam=DiscretizedBeam.create(self._nodes(), weights),
@@ -849,7 +860,7 @@ class TestBeam:
     def test_the_order_of_the_nodes_does_not_matter(self, frame, interpolate) -> None:
         """A beam is a set of nodes, e.g. a flattened beam map or the centroids of a clustered one."""
         landscape = HealpixLandscape(NSIDE, 'IQU')
-        qbore, qdet = self._quats(59)
+        q_sky_bore, q_bore_det = self._quats(59)
         alpha, delta = jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04])
         directions = jnp.stack(
             [jnp.cos(delta) * jnp.cos(alpha), jnp.cos(delta) * jnp.sin(alpha), jnp.sin(delta)], -1
@@ -859,8 +870,8 @@ class TestBeam:
         ops = [
             PointingOperator.create(
                 landscape,
-                qbore,
-                qdet,
+                q_sky_bore,
+                q_bore_det,
                 frame=frame,
                 interpolate=interpolate,
                 beam=DiscretizedBeam.from_directions(d, w),
@@ -875,11 +886,11 @@ class TestBeam:
     def test_adjoint_with_per_stokes_weights(self, stokes, frame, interpolate) -> None:
         """P^T is the transpose of P as matrices, with a weight of its own per Stokes component."""
         landscape = HealpixLandscape(NSIDE, stokes)
-        qbore, qdet = self._quats(48)
+        q_sky_bore, q_bore_det = self._quats(48)
         op = PointingOperator.create(
             landscape,
-            qbore,
-            qdet,
+            q_sky_bore,
+            q_bore_det,
             frame=frame,
             interpolate=interpolate,
             beam=DiscretizedBeam.create(self._nodes(), self._per_stokes_weights(stokes)),
@@ -890,11 +901,11 @@ class TestBeam:
     def test_the_precomputed_operator_carries_the_beam(self, stokes, frame, interpolate) -> None:
         """`precomputed` must not drop the beam, or the mapmaker loses it."""
         landscape = HealpixLandscape(NSIDE, stokes)
-        qbore, qdet = self._quats(49)
+        q_sky_bore, q_bore_det = self._quats(49)
         op = PointingOperator.create(
             landscape,
-            qbore,
-            qdet,
+            q_sky_bore,
+            q_bore_det,
             frame=frame,
             interpolate=interpolate,
             beam=DiscretizedBeam.create(self._nodes(), self._per_stokes_weights(stokes)),
@@ -911,11 +922,11 @@ class TestBeam:
         self, frame, interpolate
     ) -> None:
         landscape = HealpixLandscape(NSIDE, 'IQU')
-        qbore, qdet = self._quats(52)
+        q_sky_bore, q_bore_det = self._quats(52)
         op = PointingOperator.create(
             landscape,
-            qbore,
-            qdet,
+            q_sky_bore,
+            q_bore_det,
             frame=frame,
             interpolate=interpolate,
             beam=DiscretizedBeam.create(self._nodes(), self._per_stokes_weights('IQU')),
@@ -929,11 +940,11 @@ class TestBeam:
         self, frame, interpolate
     ) -> None:
         landscape = HealpixLandscape(NSIDE, 'QU')
-        qbore, qdet = self._quats(53)
+        q_sky_bore, q_bore_det = self._quats(53)
         op = PointingOperator.create(
             landscape,
-            qbore,
-            qdet,
+            q_sky_bore,
+            q_bore_det,
             frame=frame,
             interpolate=interpolate,
             beam=DiscretizedBeam.create(self._nodes(), self._per_stokes_weights('QU')),
@@ -945,13 +956,13 @@ class TestBeam:
     def test_create_checks_the_beam_against_the_detectors(self, frame, interpolate) -> None:
         """The beam is checked by `DiscretizedBeam.checked`, see `test_sampling.py`."""
         landscape = HealpixLandscape(NSIDE, 'IQU')
-        qbore, qdet = self._quats(54)
+        q_sky_bore, q_bore_det = self._quats(54)
         nodes = Quaternion.ones((NDET + 1, 1)) * self._nodes()[None, :]
         with pytest.raises(ValueError, match='beam nodes have shape'):
             PointingOperator.create(
                 landscape,
-                qbore,
-                qdet,
+                q_sky_bore,
+                q_bore_det,
                 frame=frame,
                 interpolate=interpolate,
                 beam=DiscretizedBeam.create(nodes, jnp.ones(2)),
@@ -964,14 +975,14 @@ class TestRotationAbsorption:
     @staticmethod
     def _op(precompute: bool, per_stokes: bool) -> PointingOperator:
         k1, k2 = jax.random.split(jax.random.key(60))
-        qbore, qdet = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
+        q_sky_bore, q_bore_det = Quaternion.random(k1, (NSAMP,)), Quaternion.random(k2, (NDET,))
         kwargs = {}
         if per_stokes:
             nodes = xieta_to_quat(jnp.array([0.05, -0.03]), jnp.array([0.02, 0.04]), 0.0)
             weights = StokesIQU(jnp.array([0.5, 0.5]), jnp.array([0.7, 0.3]), jnp.array([0.2, 0.8]))
             kwargs = {'beam': DiscretizedBeam.create(nodes, weights)}
         landscape = HealpixLandscape(NSIDE, 'IQU')
-        op = PointingOperator.create(landscape, qbore, qdet, interpolate=True, **kwargs)
+        op = PointingOperator.create(landscape, q_sky_bore, q_bore_det, interpolate=True, **kwargs)
         return op.precomputed() if precompute else op
 
     @pytest.mark.parametrize('per_stokes', [False, True], ids=['shared', 'per-stokes'])
@@ -1018,8 +1029,8 @@ class TestFrames:
     @staticmethod
     def _ops(interpolate: bool, beam: bool) -> dict[str, PointingOperator]:
         k1 = jax.random.key(70)
-        qbore = Quaternion.random(k1, (NSAMP,))
-        qdet = xieta_to_quat(
+        q_sky_bore = Quaternion.random(k1, (NSAMP,))
+        q_bore_det = xieta_to_quat(
             jnp.array([0.0, 0.02, -0.03]),
             jnp.array([0.0, -0.01, 0.02]),
             jnp.array([0.3, 0.1, -1.2]),
@@ -1035,7 +1046,7 @@ class TestFrames:
         landscape = HealpixLandscape(NSIDE, 'IQU')
         return {
             frame: PointingOperator.create(
-                landscape, qbore, qdet, frame=frame, interpolate=interpolate, **kwargs
+                landscape, q_sky_bore, q_bore_det, frame=frame, interpolate=interpolate, **kwargs
             )
             for frame in ('detector', 'boresight', 'sky')
         }
@@ -1045,7 +1056,7 @@ class TestFrames:
         sampler = ops['detector'].sampler
         quats = sampler.quaternions()
         cos_psi, sin_psi = polarization_angle_cos_sin(quats)
-        gamma = gamma_angle(sampler.qdet)[:, None]
+        gamma = gamma_angle(sampler.q_bore_det)[:, None]
         sky = ops['detector'].landscape.normal(jax.random.key(71))
 
         tods = {frame: op(sky) for frame, op in ops.items()}

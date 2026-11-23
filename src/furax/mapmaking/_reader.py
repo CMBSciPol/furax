@@ -70,7 +70,7 @@ class ObservationRecord:
         The record is named `name`, as the observation was listed: the loaded data can be named
         otherwise, e.g. without the wafer the observation is limited to.
         """
-        quaternions = fields.get(ReaderField.DETECTOR_QUATERNIONS)
+        quaternions = fields.get(ReaderField.Q_BORE_DET)
         masks = fields.get(ReaderField.VALID_SAMPLE_MASKS)
         return cls(
             name=name,
@@ -99,8 +99,8 @@ class ObservationReader[T](AbstractReader):
       (and not turnarounds).
     - `timestamps`: the timestamps of the samples.
     - `hwp_angles`: the half-wave plate angle measured at each sample.
-    - `detector_quaternions`: the detector quaternions.
-    - `boresight_quaternions`: the boresight quaternions.
+    - `q_bore_det`: the detector orientations in the boresight frame.
+    - `q_sky_bore`: the boresight orientations in the frame of the map.
     - `noise_model_fits`: the fitted parameters for the noise model (1/f noise by default).
     - `azimuth`, `elevation`: the boresight scan angles (ground observations).
     - `left_scan_mask`, `right_scan_mask`: per-sample masks splitting left/right-going scans.
@@ -254,8 +254,8 @@ class ObservationReader[T](AbstractReader):
           and the hwp rotation frequency remain consistent
         - `valid_sample_masks`, `valid_scanning_masks`: padded with 0 (False) outside the valid
           samples
-        - `detector_quaternions`, `boresight_quaternions`: padded with zero quaternions, which
-          mark samples without pointing: the pointing operator neither reads nor bins them.
+        - `q_bore_det`, `q_sky_bore`: padded with zero quaternions, which mark samples without
+          pointing: the pointing operator neither reads nor bins them.
         - `noise_model_fits`: padded with (sigma, alpha, fknee, f0) = (0., 0., 1., 0.1)
 
         Args:
@@ -354,8 +354,8 @@ class ObservationReader[T](AbstractReader):
             ReaderField.VALID_SCANNING_MASKS: jax.ShapeDtypeStruct((n_samples,), jnp.bool),
             ReaderField.TIMESTAMPS: jax.ShapeDtypeStruct((n_samples,), dtype),
             ReaderField.HWP_ANGLES: jax.ShapeDtypeStruct((n_samples,), dtype),
-            ReaderField.DETECTOR_QUATERNIONS: jax.ShapeDtypeStruct((n_detectors, 4), dtype),
-            ReaderField.BORESIGHT_QUATERNIONS: jax.ShapeDtypeStruct((n_samples, 4), dtype),
+            ReaderField.Q_BORE_DET: jax.ShapeDtypeStruct((n_detectors, 4), dtype),
+            ReaderField.Q_SKY_BORE: jax.ShapeDtypeStruct((n_samples, 4), dtype),
             ReaderField.NOISE_MODEL_FITS: (
                 jax.ShapeDtypeStruct((n_detectors, 4), dtype)
                 if stokes is None
@@ -428,8 +428,8 @@ class ObservationReader[T](AbstractReader):
             ReaderField.VALID_SCANNING_MASKS: lambda obs: obs.get_scanning_mask(),
             ReaderField.TIMESTAMPS: get_timestamps,
             ReaderField.HWP_ANGLES: lambda obs: cast(obs.get_hwp_angles()),
-            ReaderField.DETECTOR_QUATERNIONS: lambda obs: cast(obs.get_detector_quaternions()),
-            ReaderField.BORESIGHT_QUATERNIONS: lambda obs: cast(obs.get_boresight_quaternions()),
+            ReaderField.Q_BORE_DET: lambda obs: cast(obs.get_q_bore_det()),
+            ReaderField.Q_SKY_BORE: lambda obs: cast(obs.get_q_sky_bore()),
             ReaderField.NOISE_MODEL_FITS: get_noise_model_fits,
             ReaderField.AZIMUTH: lambda obs: cast(obs.get_azimuth()),
             ReaderField.ELEVATION: lambda obs: cast(obs.get_elevation()),
@@ -471,7 +471,7 @@ class ObservationReader[T](AbstractReader):
                 # strictly increasing: non-zero range so Legendre/bin normalisation of azimuth (and
                 # the time axis) stays finite when template operators are built from this filler
                 return np.arange(struct.shape[0], dtype=struct.dtype)
-            if field in (ReaderField.DETECTOR_QUATERNIONS, ReaderField.BORESIGHT_QUATERNIONS):
+            if field in (ReaderField.Q_BORE_DET, ReaderField.Q_SKY_BORE):
                 return identity_quaternions(struct)
             if field == ReaderField.SAMPLE_DATA:
                 # broadband so a fitted noise model has non-zero white-noise level

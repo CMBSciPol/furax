@@ -82,6 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** the classes `IsoAngles`, `LonLatAngles`, `AzElAngles` and `XiEtaAngles` are replaced by functions; the last angle (`psi` or `gamma`) defaults to zero, and the inverse returns a tuple (#509)
   - `IsoAngles(theta, phi, psi).to_quaternion()` → `iso_to_quat(theta, phi, psi)`, `IsoAngles.from_quaternion(q)` → `quat_to_iso(q)`
   - likewise `lonlat_to_quat` / `quat_to_lonlat`, `azel_to_quat` / `quat_to_azel`, `xieta_to_quat` / `quat_to_xieta`
+- **Breaking:** quaternions are named after their frames, `q_<parent>_<child>`: `QuaternionSampler.qbore` is renamed `q_sky_bore`, `ScreenSampler.qbore` `q_hor_bore`, and `qdet` `q_bore_det` in both (#512)
+- **Breaking:** the pointing inputs follow the same frame names (#512):
+  - `ReaderField.BORESIGHT_QUATERNIONS` (`'boresight_quaternions'`) → `ReaderField.Q_SKY_BORE` (`'q_sky_bore'`), `DETECTOR_QUATERNIONS` (`'detector_quaternions'`) → `Q_BORE_DET` (`'q_bore_det'`)
+  - `get_boresight_quaternions()` → `get_q_sky_bore()`, `get_detector_quaternions()` → `get_q_bore_det()` on every observation interface
+  - the `boresight_quaternions` / `detector_quaternions` arguments of `PointingOperator.create` and `build_acquisition_operator` → `q_sky_bore` / `q_bore_det`, and of `ScreenSampler.from_wind` → `q_hor_bore` / `q_bore_det`
 
 ### Fixed
 

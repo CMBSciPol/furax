@@ -828,8 +828,8 @@ class TestLocalStokesLandscape:
         phi = jnp.array([0.7, 3.1, 5.0])
         return QuaternionSampler(
             kernel=SamplingKernel(interpolation, beam),
-            qbore=iso_to_quat(theta, phi, jnp.zeros_like(theta)),
-            qdet=Quaternion.ones((1,)),
+            q_sky_bore=iso_to_quat(theta, phi, jnp.zeros_like(theta)),
+            q_bore_det=Quaternion.ones((1,)),
         )
 
     def test_from_sampler_keeps_the_pixels_read(self) -> None:

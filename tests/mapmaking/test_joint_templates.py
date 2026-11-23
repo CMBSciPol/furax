@@ -315,7 +315,7 @@ def test_only_observations_larger_than_a_batch_are_padded(batch, n_buffered):
     maker = MultiObservationMapMaker(replace(_config(None), detector_tile_size=batch)).prepare(
         _hwp_obs()
     )
-    assert maker.readers[0].out_structure[ReaderField.DETECTOR_QUATERNIONS].shape[0] == n_buffered
+    assert maker.readers[0].out_structure[ReaderField.Q_BORE_DET].shape[0] == n_buffered
 
 
 @pytest.mark.parametrize('prefetch', [False, True], ids=['read-after-round', 'prefetch'])

@@ -11,14 +11,10 @@ from jaxtyping import Array, Bool, Float, Int, PyTree
 
 from furax import AbstractLinearOperator
 from furax.core import TransposeOperator
-from furax.core.rules import AbstractCompositionRule, NoReduction
+from furax.core.rules import AbstractCompositionRule
 from furax.obs._indexing import gather_pixels, scatter_add_pixels
 from furax.obs.landscapes import StokesLandscape
-from furax.obs.operators._qu_rotations import (
-    QURotationOperator,
-    QURotationTransposeOperator,
-    Spin2Rotation,
-)
+from furax.obs.operators._qu_rotations import QURotationOperator, QURotationTransposeOperator
 from furax.obs.spin2 import rotated_gather, rotated_scatter
 from furax.obs.stencil import Interpolation
 from furax.obs.stokes import Stokes
@@ -306,7 +302,11 @@ class PointingOperator(AbstractLinearOperator):
             angles: Rotation angles in radians, broadcastable to the shape of the samples, with
                 the convention of [`QURotationOperator`][].
         """
-        sampler = self.sampler.rotated(Spin2Rotation.from_angles(angles))
+        return self._rotated_by(QURotationOperator(angles=angles, in_structure=self.out_structure))
+
+    def _rotated_by(self, rotation: QURotationOperator | QURotationTransposeOperator) -> Self:
+        """The operator followed by `rotation`, which the sampler keeps as an operator."""
+        sampler = self.sampler.rotated(rotation)
         return self.from_sampler(self.landscape, sampler, batch_samples=self.batch_samples)
 
     def transpose(self) -> AbstractLinearOperator:
@@ -436,15 +436,6 @@ def _balanced(n: int, most: int) -> int:
     return (n + n_batches - 1) // n_batches
 
 
-def _rotation_angles(rotation: AbstractLinearOperator) -> Float[Array, '...']:
-    """The angles of a QU rotation, or its transpose, that operator algebra may merge."""
-    if isinstance(rotation, QURotationOperator) and not rotation.atomic:
-        return rotation.angles
-    if isinstance(rotation, QURotationTransposeOperator) and not rotation.operator.atomic:
-        return -rotation.operator.angles
-    raise NoReduction
-
-
 class _QURotationPointingRule(AbstractCompositionRule):
     """Absorb `R(theta) @ P` into `P`: the sampler rotates its samples further by `theta`."""
 
@@ -455,7 +446,8 @@ class _QURotationPointingRule(AbstractCompositionRule):
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
         assert isinstance(right, PointingOperator)
-        return [right.rotated(_rotation_angles(left))]
+        assert isinstance(left, (QURotationOperator, QURotationTransposeOperator))
+        return [right._rotated_by(left)]
 
 
 class _PointingTransposeQURotationRule(AbstractCompositionRule):
@@ -468,5 +460,6 @@ class _PointingTransposeQURotationRule(AbstractCompositionRule):
         self, left: AbstractLinearOperator, right: AbstractLinearOperator
     ) -> list[AbstractLinearOperator]:
         assert isinstance(left, PointingTransposeOperator)
-        # right is R(theta).T, i.e. R(-theta)
-        return [left.operator.rotated(-_rotation_angles(right)).T]
+        rotation = right.T  # P.T @ R.T is the transpose of R @ P
+        assert isinstance(rotation, (QURotationOperator, QURotationTransposeOperator))
+        return [left.operator._rotated_by(rotation).T]

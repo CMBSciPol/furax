@@ -2,9 +2,11 @@ import jax
 import jax.numpy as jnp
 import jax_healpy as jhp
 import pytest
+from equinox import tree_equal
 from fastquat import Quaternion
 from numpy.testing import assert_allclose
 
+from furax import tree as ftree
 from furax.core import CompositionOperator
 from furax.mapmaking.acquisition import build_acquisition_operator
 from furax.obs.coords import gamma_angle, polarization_angle
@@ -69,3 +71,28 @@ def test_acquisition_formula(hwp: bool) -> None:
     assert_allclose(binned.i, zeros.at[flat].add(0.5 * tod.ravel()), rtol=1e-10)
     assert_allclose(binned.q, zeros.at[flat].add((q_s * cos_2d - u_s * sin_2d).ravel()), rtol=1e-10)
     assert_allclose(binned.u, zeros.at[flat].add((q_s * sin_2d + u_s * cos_2d).ravel()), rtol=1e-10)
+
+
+@pytest.mark.parametrize('kind', ['no_hwp', 'hwp', 'demodulated'])
+def test_reduction_folds_the_rotations_into_the_pointing(kind: str) -> None:
+    """The rotation of each detector is kept apart from that of each sample, not broadcast."""
+    landscape = HealpixLandscape(NSIDE, 'IQU')
+    k = jax.random.split(jax.random.key(1), 5)
+    hwp_angles = jax.random.uniform(k[2], (NSAMP,), dtype=jnp.float64, maxval=jnp.pi)
+    acq = build_acquisition_operator(
+        landscape,
+        Quaternion.random(k[0], (NSAMP,)),
+        Quaternion.random(k[1], (NDET,)),
+        hwp_angles=hwp_angles if kind == 'hwp' else None,
+        demodulated=kind == 'demodulated',
+    )
+    reduced = acq.reduce()
+    assert isinstance(reduced, CompositionOperator)
+    assert sum(isinstance(op, PointingOperator) for op in reduced.operands) == 1
+    assert len(reduced.operands) == 2  # the pointing, and the polarizer or the factor 1/2
+    assert all(leaf.shape != (NDET, NSAMP) for leaf in jax.tree.leaves(reduced))
+
+    sky = landscape.normal(k[3])
+    tod = ftree.normal_like(acq.out_structure, k[4])
+    assert tree_equal(reduced(sky), acq(sky), rtol=1e-12, atol=1e-12)
+    assert tree_equal(reduced.T(tod), acq.T(tod), rtol=1e-12, atol=1e-12)

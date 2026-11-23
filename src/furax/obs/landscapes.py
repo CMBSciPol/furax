@@ -13,7 +13,7 @@ import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS
 from fastquat import Quaternion
-from jax.tree_util import register_static
+from jax.tree_util import GetAttrKey, register_static
 from jaxtyping import Array, Bool, DTypeLike, Float, Integer, Key, PyTree, ScalarLike, Shaped
 
 from furax.obs._indexing import NO_PIXEL
@@ -281,6 +281,17 @@ class StokesLandscape(Landscape):
     def quat2interp(self, quat: Quaternion) -> tuple[Integer[Array, '...'], Float[Array, '...']]:
         """Converts quaternion to (indices, weights) for interpolation."""
         return self.world2interp(*self.quat2world(quat))
+
+    def quat2stencil(self, quat: Quaternion, interpolation: Interpolation) -> Stencil:
+        """Returns the [`Stencil`][] a sample looking along `quat` reads, at this interpolation.
+
+        That of [`world2stencil`][] at the angles of `quat`, except at
+        [`Interpolation.NEAREST`][], where the pixel is that of [`quat2index`][], the one a hit
+        map counts.
+        """
+        if interpolation is Interpolation.NEAREST:
+            return self.index2stencil(self.quat2index(quat))
+        return self.world2stencil(*self.quat2world(quat), interpolation)
 
 
 def _index2pixel(
@@ -1056,28 +1067,36 @@ class TangentialLandscape(StokesLandscape):
         return indices, weights
 
 
-@register_static
+@jax.tree_util.register_pytree_with_keys_class
 class LocalStokesLandscape(StokesLandscape):
     r"""A landscape over a subset of a parent landscape's pixels.
 
-    Wraps a ``parent`` [`StokesLandscape`][] and an array of *global* (parent) flat pixel indices,
-    defining a reduced pixel domain of ``nlocal`` real pixels. The indices are normalized on
+    Wraps a `parent` [`StokesLandscape`][] and an array of *global* (parent) flat pixel indices,
+    defining a reduced pixel domain of `nlocal` real pixels. The indices are normalized on
     construction: any shape is flattened, duplicates are removed, negative entries (the
-    out-of-bounds marker of ``world2index``) are dropped, and the result is sorted. Index-producing
-    methods (``world2index`` / ``quat2index``) return **local** indices into the subset, so it is a
+    out-of-bounds marker of `world2index`) are dropped, and the result is sorted. Index-producing
+    methods (`world2index` / `quat2index`) return **local** indices into the subset, so it is a
     drop-in landscape wherever a full-sky one is used. Pixel coordinates, however, do not make
     sense here: local indices are positions in the sorted subset, not points on the parent's pixel
-    grid, so the pixel-coordinate methods (``world2pixel``, ``quat2pixel``, ``pixel2index``) raise
-    ``NotImplementedError``.
+    grid, so the pixel-coordinate methods (`world2pixel`, `quat2pixel`, `pixel2index`) raise
+    `NotImplementedError`.
 
-    The pixel axis holds the ``nlocal`` pixels of the subset. Coordinates outside the subset (and
-    out-of-bounds inputs) map to ``-1``, the index of no pixel, like a sample outside a partial
-    parent map: a pointing operator neither reads nor bins such a sample.
+    The pixel axis holds the `nlocal` pixels of the subset. Coordinates outside the subset (and
+    out-of-bounds inputs) map to `-1`, the index of no pixel, like a sample outside a partial
+    parent map: a pointing operator neither reads nor bins such a sample. An interpolating
+    stencil that reads pixels outside the subset is renormalized over the ones inside, so it
+    differs from the parent's; build the subset with [`from_sampler`][] to read exactly as the
+    parent does.
+
+    A global index maps to its local one in constant time. The memory this takes grows with the
+    span of parent pixels from the first to the last of the subset, about 0.25 byte per pixel,
+    not with the size of the subset. The landscape is a pytree whose pixels are arrays: a function
+    compiled for one subset is reused for another of the same size and span.
 
     Attributes:
         parent: The parent landscape.
         global_indices: Sorted 1-D array of unique global (parent) flat pixel indices, length
-            ``nlocal``.
+            `nlocal`.
 
     Examples:
         Restrict a 12-pixel HEALPix sky to two pixels:
@@ -1102,31 +1121,45 @@ class LocalStokesLandscape(StokesLandscape):
     """
 
     def __init__(
-        self,
-        parent: StokesLandscape,
-        global_indices: Integer[np.ndarray | Array, '...'],
+        self, parent: StokesLandscape, global_indices: Integer[np.ndarray | Array, '...']
     ) -> None:
-        gi = jnp.asarray(global_indices)
-        if gi.dtype == jnp.bool_:
+        indices = np.asarray(global_indices)
+        if indices.dtype == np.bool_:
             raise TypeError('global_indices is boolean; use from_boolean_mask for masks.')
-        if not jnp.issubdtype(gi.dtype, jnp.integer):
-            raise TypeError(f'global_indices must be an integer array, got dtype {gi.dtype}.')
-        # Deduplicate and drop negative entries to respect sorted-unique invariant.
-        gi = jnp.unique(gi.reshape(-1))
-        gi = gi[gi >= 0]
-        npix = math.prod(parent.shape)
-        if gi.size > 0 and int(gi[-1]) >= npix:
+        if not np.issubdtype(indices.dtype, np.integer):
+            raise TypeError(f'global_indices must be an integer array, got dtype {indices.dtype}.')
+        # sorted and unique, without the negative index of a pixel outside the parent
+        indices = np.unique(indices[indices >= 0])
+        if indices.size > 0 and indices[-1] >= len(parent):
             raise ValueError(
-                f'global_indices contains {int(gi[-1])}, out of range for a parent '
-                f'with {npix} pixels.'
+                f'global_indices contains {indices[-1]}, out of range for a parent with '
+                f'{len(parent)} pixels.'
             )
-        super().__init__(shape=(int(gi.size),), stokes=parent.stokes, dtype=parent.dtype)
+        if indices.size > np.iinfo(np.int32).max:
+            raise ValueError(f'{indices.size} pixels are too many for int32 local indices.')
+        super().__init__((indices.size,), parent.stokes, parent.dtype)
         self.parent = parent
-        self.global_indices = gi
+        self.global_indices = jnp.asarray(indices)
+        self._first_block, self._rank_table = _rank_table(indices)
+
+    def tree_flatten_with_keys(self):
+        names = ('global_indices', '_first_block', '_rank_table')
+        leaves = [(GetAttrKey(name), getattr(self, name)) for name in names]
+        return leaves, (self.parent, self.nlocal, self.stokes, self.dtype)
+
+    @classmethod
+    def tree_unflatten(cls, static, arrays):
+        # bypass __init__: its normalization needs concrete indices, and these may be traced
+        parent, nlocal, stokes, dtype = static
+        landscape = object.__new__(cls)
+        StokesLandscape.__init__(landscape, (nlocal,), stokes, dtype)
+        landscape.parent = parent
+        landscape.global_indices, landscape._first_block, landscape._rank_table = arrays
+        return landscape
 
     @property
     def nlocal(self) -> int:
-        return len(self.global_indices)
+        return self.shape[0]
 
     def world2index(
         self, theta: Float[Array, ' *dims'], phi: Float[Array, ' *dims']
@@ -1152,10 +1185,17 @@ class LocalStokesLandscape(StokesLandscape):
         re-indexing.
 
         Note:
-            Calling this method entails an additional $O(\log n_\mathrm{local})$ binary search
-            per neighbor, compared to the parent landscape's method.
+            Calling this method entails an additional table lookup per neighbor, compared to the
+            parent landscape's method.
         """
         stencil = self.parent.world2stencil(theta, phi, interpolation)
+        return stencil.reindexed(self.global2local(stencil.indices), stencil.weights)
+
+    def quat2stencil(self, quat: Quaternion, interpolation: Interpolation) -> Stencil:
+        """Returns the parent's [`Stencil`][], locally indexed, as [`world2stencil`][] does."""
+        # the inherited method gives the same stencil, but would map each nearest pixel to its
+        # local index and back to the parent's, to locate its center
+        stencil = self.parent.quat2stencil(quat, interpolation)
         return stencil.reindexed(self.global2local(stencil.indices), stencil.weights)
 
     def index2stencil(self, indices: Integer[Array, ' *dims']) -> Stencil:
@@ -1181,28 +1221,29 @@ class LocalStokesLandscape(StokesLandscape):
     def global2local(self, indices: Integer[Array, ' *dims']) -> Integer[Array, ' *dims']:
         """Map global (parent) flat indices to local indices, -1 for those outside the subset.
 
-        Out-of-bounds inputs (negative, e.g. ``-1`` from a missed sample) also map to -1.
+        Out-of-bounds inputs (negative, e.g. -1 from a missed sample) also map to -1.
         """
-        if self.nlocal == 0:
-            return jnp.full(jnp.shape(indices), NO_PIXEL, dtype=jnp.int32)
-        # global_indices is sorted-unique: binary search + equality check gives an O(log nlocal)
-        # inverse lookup without materializing an npix-sized LUT. Negative inputs (oob markers)
-        # miss the equality check (global_indices is non-negative).
-        pos = jnp.searchsorted(self.global_indices, indices).astype(jnp.int32)
-        safe = jnp.minimum(pos, self.nlocal - 1)
-        hit = self.global_indices[safe] == indices
-        return jnp.where(hit, safe, NO_PIXEL)
+        # the local index is the number of subset pixels before this one: those of the blocks
+        # before its own, then those of its block below it, counted in the block's bit mask. A
+        # pixel outside the blocks of the table, -1 included, reads an empty block.
+        block = (indices >> _BLOCK_BITS) - self._first_block
+        row = self._rank_table.at[block].get(mode='fill', fill_value=0, wrap_negative_indices=False)
+        mask, start = row[..., 0], row[..., 1]
+        bit = (indices & (_BLOCK_SIZE - 1)).astype(jnp.uint32)
+        below = mask & ((1 << bit) - 1)
+        local = (start + jnp.bitwise_count(below)).astype(jnp.int32)
+        return jnp.where(((mask >> bit) & 1) == 1, local, NO_PIXEL)
 
     def local2global(self, indices: Integer[Array, ' *dims']) -> Integer[Array, ' *dims']:
-        """Map local indices to global (parent) flat indices, ``-1`` for out-of-range inputs."""
+        """Map local indices to global (parent) flat indices, `-1` for out-of-range inputs."""
         valid = (indices >= 0) & (indices < self.nlocal)
         safe = jnp.where(valid, indices, 0)
         return jnp.where(valid, self.global_indices[safe], NO_PIXEL)
 
     def restrict(self, sky: _StokesT) -> _StokesT:
-        """Extract the local subset from a parent-shaped Stokes map (shape ``self.shape``).
+        """Extract the local subset from a parent-shaped Stokes map (shape `self.shape`).
 
-        Leading (batch) axes are preserved; only the trailing ``parent.ndim`` axes are interpreted
+        Leading (batch) axes are preserved; only the trailing `parent.ndim` axes are interpreted
         as the pixel axes.
         """
         batch = sky.data.shape[: sky.data.ndim - len(self.parent.shape)]
@@ -1210,9 +1251,9 @@ class LocalStokesLandscape(StokesLandscape):
         return type(sky).from_array(flat[..., self.global_indices])
 
     def promote(self, sky: _StokesT, fill_value: ScalarLike = 0) -> _StokesT:
-        """Scatter a local (``self.shape``-sized) Stokes map back into a parent-shaped one.
+        """Scatter a local (`self.shape`-sized) Stokes map back into a parent-shaped one.
 
-        Pixels outside the local subset are set to ``fill_value``. Leading (batch) axes are
+        Pixels outside the local subset are set to `fill_value`. Leading (batch) axes are
         preserved.
         """
         batch = sky.data.shape[:-1]
@@ -1246,4 +1287,41 @@ class LocalStokesLandscape(StokesLandscape):
         if read.ndim > stencil.indices.ndim:
             # weights per Stokes component: a pixel any component reads is kept
             read = read.any(axis=0)
-        return cls(parent, jnp.where(read, stencil.indices, NO_PIXEL))
+        # deduplicate on the device: only the distinct pixels, not every stencil entry, go to the host
+        return cls(parent, jnp.unique(jnp.where(read, stencil.indices, NO_PIXEL)))
+
+
+# one pixel per bit of a uint32 mask, the widest unsigned integer without x64
+_BLOCK_BITS = 5
+_BLOCK_SIZE = 1 << _BLOCK_BITS
+
+
+def _rank_table(
+    indices: Integer[np.ndarray, ' n'],
+) -> tuple[Integer[Array, ''], Integer[Array, 'blocks 2']]:
+    """The table mapping the parent pixels to their rank in sorted, unique pixel `indices`.
+
+    The parent pixels are cut into blocks of `_BLOCK_SIZE` consecutive pixels. For each block,
+    from the first one holding an index to the last, the table holds a bit mask of the pixels of
+    the block that are in `indices`, and the number of indices in the blocks before it. The rank
+    of a pixel in `indices`, its local index, is then the count of its block plus the bits of the
+    mask below its own, read with one gather of the row of its block and a bit count. Its own bit
+    tells whether it is in `indices` at all.
+
+    For instance, with blocks of 4 pixels, `indices = [5, 6, 13]` spans blocks 1 to 3, whose
+    masks are `0b0110`, `0b0000` and `0b0010` (bit `i` for pixel `4 * block + i`) and counts
+    0, 2 and 2: pixel 13 is bit 1 of block 3, so its rank is 2 + 0 = 2.
+
+    Returns:
+        The first block, and the table, of shape `(blocks, 2)`: the mask and the count of each
+        block side by side, so that a single gather reads both.
+    """
+    if indices.size == 0:
+        return jnp.asarray(0, jnp.int32), jnp.zeros((1, 2), jnp.uint32)
+    first, last = indices[0] >> _BLOCK_BITS, indices[-1] >> _BLOCK_BITS
+    masks = np.zeros(last - first + 1, np.uint32)
+    bits = 1 << (indices & (_BLOCK_SIZE - 1)).astype(np.uint32)
+    np.bitwise_or.at(masks, (indices >> _BLOCK_BITS) - first, bits)
+    counts = np.bitwise_count(masks)
+    table = np.stack([masks, (np.cumsum(counts) - counts).astype(np.uint32)], axis=-1)
+    return jnp.asarray(first, jnp.int32), jnp.asarray(table)

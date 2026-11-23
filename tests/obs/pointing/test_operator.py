@@ -55,6 +55,8 @@ def _interpolates(op: PointingOperator) -> bool:
 def _make_landscape(landscape_type: str, stokes: ValidStokesLiteral) -> StokesLandscape:
     if landscape_type == 'healpix':
         return HealpixLandscape(NSIDE, stokes)
+    if landscape_type == 'nested':
+        return HealpixLandscape(NSIDE, stokes, nested=True)
     return CARLandscape((180, 360), _CAR_PROJECTION, stokes)
 
 
@@ -305,13 +307,23 @@ class TestLocalLandscape:
     def keys(cls) -> jax.Array:
         return jax.random.split(jax.random.key(11), 4)
 
-    @pytest.fixture(scope='class', params=[False, True], ids=['nearest', 'bilinear'])
+    @pytest.fixture(
+        scope='class',
+        params=[
+            pytest.param(('healpix', False), id='healpix-nearest'),
+            pytest.param(('healpix', True), id='healpix-bilinear'),
+            pytest.param(('nested', False), id='nested-nearest'),  # NESTED refuses bilinear
+            pytest.param(('car', False), id='car-nearest'),
+            pytest.param(('car', True), id='car-bilinear'),
+        ],
+    )
     @classmethod
     def p_full(cls, request: pytest.FixtureRequest, keys: jax.Array) -> PointingOperator:
-        parent = HealpixLandscape(NSIDE, 'IQU')
+        landscape_type, interpolate = request.param
+        parent = _make_landscape(landscape_type, 'IQU')
         q_sky_bore = Quaternion.random(keys[0], (NSAMP,))
         q_bore_det = Quaternion.random(keys[1], (NDET,))
-        return PointingOperator.create(parent, q_sky_bore, q_bore_det, interpolate=request.param)
+        return PointingOperator.create(parent, q_sky_bore, q_bore_det, interpolate=interpolate)
 
     @pytest.fixture(scope='class')
     @classmethod
@@ -371,11 +383,12 @@ class TestLocalLandscape:
     def test_partial_coverage_drops_missing_pixels(self, p_full, tod, half_coverage) -> None:
         local, p_local = half_coverage
         subset = local.global_indices
-        binned_local = local.promote(p_local.T(tod)).data
+        # flat pixel axis: the subset indexes the raveled pixels of a CAR map
+        binned_local = local.promote(p_local.T(tod)).ravel().data
         if not _interpolates(p_full):
             # nearest: contributions to kept pixels are identical, the others are discarded
             # (bilinear renormalizes the weights over covered neighbors, so values differ)
-            binned_full = p_full.T(tod).data
+            binned_full = p_full.T(tod).ravel().data
             assert_array_almost_equal(binned_local[:, subset], binned_full[:, subset], decimal=13)
         # nothing lands outside the subset
         assert_array_equal(binned_local.at[:, subset].set(0.0), 0.0)

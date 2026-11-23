@@ -504,10 +504,7 @@ class QuaternionSampler(AbstractSampler):
 
     def _stencil(self, landscape: StokesLandscape, quats: Quaternion) -> Stencil:
         """Read the map around each pointing, with the kernel's interpolation."""
-        if self.kernel.interpolation is Interpolation.NEAREST:
-            # index through `quat2index`, so that the pixel is the one the hit map counts
-            return landscape.index2stencil(landscape.quat2index(quats))
-        return landscape.world2stencil(*landscape.quat2world(quats), self.kernel.interpolation)
+        return landscape.quat2stencil(quats, self.kernel.interpolation)
 
 
 class AngleSampler(AbstractSampler):

@@ -761,6 +761,54 @@ class TestLocalStokesLandscape:
         # local2global inverts, out-of-range -> -1
         assert_array_equal(local.local2global(jnp.array([0, 1, 2, 3])), [0, 10, 29, -1])
 
+    @pytest.mark.parametrize(
+        'parent',
+        [
+            HealpixLandscape(4, stokes='I'),  # 192 pixels: whole blocks of 32
+            CARLandscape((10, 12), WCSProjection((6.5, 5.5), (180.0, 0.0), (-2.0, 2.0)), 'I'),
+        ],
+        ids=['healpix', 'car'],  # CAR: 120 pixels, the last block is partial
+    )
+    @pytest.mark.parametrize('selection', ['none', 'sparse', 'half', 'all', 'patch'])
+    def test_global2local_is_the_rank_in_the_subset(self, parent, selection: str) -> None:
+        n = len(parent)
+        rng = np.random.default_rng(0)
+        subset = {
+            'none': np.arange(0),
+            'sparse': np.sort(rng.choice(n, n // 10, replace=False)),
+            'half': np.sort(rng.choice(n, n // 2, replace=False)),
+            'all': np.arange(n),
+            'patch': np.arange(45, 80),  # the table spans its blocks only
+        }[selection]
+        local = LocalStokesLandscape(parent, subset)
+        # every pixel, block edges included, and inputs outside the parent
+        queries = np.arange(-2, n + 40)
+        expected = np.full(queries.size, -1)
+        expected[subset + 2] = np.arange(subset.size)
+        assert_array_equal(local.global2local(jnp.asarray(queries)), expected)
+
+    def test_subsets_of_one_size_share_the_compiled_code(self) -> None:
+        parent = HealpixLandscape(4, stokes='I')
+        traces = []
+
+        @jax.jit
+        def to_local(local: LocalStokesLandscape, indices: Array) -> Array:
+            traces.append(None)
+            return local.global2local(indices)
+
+        indices = jnp.arange(len(parent))
+        # the same size, over the same blocks of 32 pixels: from the first to the fourth
+        for subset in ([3, 40, 100], [0, 70, 127]):
+            local = LocalStokesLandscape(parent, jnp.array(subset))
+            assert_array_equal(to_local(local, indices), local.global2local(indices))
+        assert len(traces) == 1
+
+    def test_pytree_keeps_stokes(self) -> None:
+        local = LocalStokesLandscape(HealpixLandscape(4, stokes='IQU'), jnp.arange(50))
+        local_i = local.with_stokes('I')
+        assert jax.jit(lambda landscape: landscape.zeros())(local_i).stokes == 'I'
+        assert jax.jit(lambda landscape: landscape.zeros())(local).stokes == 'IQU'
+
     def test_restrict_promote_roundtrip(self, parent: CARLandscape) -> None:
         local = LocalStokesLandscape(parent, jnp.array([0, 10, 29]))
         sky = Stokes.class_for('QU').from_array(

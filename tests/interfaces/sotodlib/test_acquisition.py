@@ -42,8 +42,8 @@ def _acquisition(obs, *, demodulated: bool = False) -> AbstractLinearOperator:
     """The furax acquisition for this observation, sampling the pointing on the fly."""
     return build_acquisition_operator(
         HealpixLandscape(nside=NSIDE, stokes='IQU', dtype='float64'),
-        Quaternion.from_array(obs.get_boresight_quaternions()),
-        Quaternion.from_array(obs.get_detector_quaternions()),
+        Quaternion.from_array(obs.get_q_sky_bore()),
+        Quaternion.from_array(obs.get_q_bore_det()),
         hwp_angles=None,
         demodulated=demodulated,
         pointing_on_the_fly=True,

@@ -473,7 +473,7 @@ def test_t2p_field_shares_its_amplitudes_between_the_detectors(field, joint_qu, 
     template = t2p_templates(config, _field_data('IQU'), tod_format)['t2p']
     assert template.per == per and template.in_structure.shape == shape
     assert not template.per_detector
-    assert ReaderField.DETECTOR_QUATERNIONS in required_reader_fields(TemplatesConfig(t2p=config))
+    assert ReaderField.Q_BORE_DET in required_reader_fields(TemplatesConfig(t2p=config))
 
 
 def test_polarization_field_couplings_of_q_and_u_are_the_leakage_of_a_complex_field():
@@ -535,7 +535,7 @@ def _field_data(stokes: str) -> dict:
     """The fields the polarization templates are built from: those of `_data` and the detector
     quaternions."""
     quaternions = jnp.stack(xieta_to_quat(*_detector_angles()).to_components(), -1)
-    return _data(stokes) | {ReaderField.DETECTOR_QUATERNIONS: quaternions}
+    return _data(stokes) | {ReaderField.Q_BORE_DET: quaternions}
 
 
 @pytest.mark.parametrize(

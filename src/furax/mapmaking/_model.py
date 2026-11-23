@@ -141,8 +141,8 @@ class TileModel:
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
         """Reader fields needed to build an [`TileModel`][] via [`create`][]."""
         fields: set[str] = {
-            ReaderField.BORESIGHT_QUATERNIONS,
-            ReaderField.DETECTOR_QUATERNIONS,
+            ReaderField.Q_SKY_BORE,
+            ReaderField.Q_BORE_DET,
             ReaderField.VALID_SAMPLE_MASKS,
             ReaderField.TIMESTAMPS,
         }
@@ -237,8 +237,8 @@ def acquisition_operator(
     """The acquisition operator of a tile, from the sky of `landscape` to its TOD."""
     return build_acquisition_operator(
         landscape,
-        Quaternion.from_array(data[ReaderField.BORESIGHT_QUATERNIONS]),
-        Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS]),
+        Quaternion.from_array(data[ReaderField.Q_SKY_BORE]),
+        Quaternion.from_array(data[ReaderField.Q_BORE_DET]),
         data.get(ReaderField.HWP_ANGLES),
         demodulated=config.demodulated,
         pointing_on_the_fly=config.pointing.on_the_fly,

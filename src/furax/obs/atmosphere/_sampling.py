@@ -58,8 +58,8 @@ class ScreenSampler(AbstractSampler):
     @classmethod
     def from_wind(
         cls,
-        boresight_quaternions: Quaternion,
-        detector_quaternions: Quaternion,
+        q_hor_bore: Quaternion,
+        q_bore_det: Quaternion,
         wind_velocity: Float[Array, '2'],
         times: Float[Array, ' samp'],
         *,
@@ -69,8 +69,8 @@ class ScreenSampler(AbstractSampler):
         """Sample a screen drifting at a constant wind velocity.
 
         Args:
-            boresight_quaternions: Boresight pointing in the horizon frame, shape (n_samples,).
-            detector_quaternions: Detector offset quaternions, shape (n_detectors,).
+            q_hor_bore: Boresight orientations in the horizon frame, shape (n_samples,).
+            q_bore_det: Detector orientations in the boresight frame, shape (n_detectors,).
             wind_velocity: Wind velocity `(vx, vy)` in the same physical units as the landscape
                 height per second.
             times: Elapsed time for each sample, shape (n_samples,).
@@ -80,8 +80,8 @@ class ScreenSampler(AbstractSampler):
         interpolation = Interpolation.BILINEAR if interpolate else Interpolation.NEAREST
         return cls(
             kernel=SamplingKernel(interpolation),
-            q_hor_bore=boresight_quaternions,
-            q_bore_det=detector_quaternions,
+            q_hor_bore=q_hor_bore,
+            q_bore_det=q_bore_det,
             wind_displacement=times[:, None] * wind_velocity[None, :],
             elevation_modulation=elevation_modulation,
         )

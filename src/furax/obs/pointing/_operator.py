@@ -94,8 +94,8 @@ class PointingOperator(AbstractLinearOperator):
     def create(
         cls,
         landscape: StokesLandscape,
-        boresight_quaternions: Quaternion,
-        detector_quaternions: Quaternion,
+        q_sky_bore: Quaternion,
+        q_bore_det: Quaternion,
         *,
         batch_samples: int | None = None,
         frame: PolarizationFrame = 'boresight',
@@ -106,8 +106,8 @@ class PointingOperator(AbstractLinearOperator):
 
         Args:
             landscape: The sky pixelization.
-            boresight_quaternions: Boresight quaternions, shape (n_samples,).
-            detector_quaternions: Detector offset quaternions, shape (n_detectors,).
+            q_sky_bore: Boresight orientations in the frame of the landscape, shape (n_samples,).
+            q_bore_det: Detector orientations in the boresight frame, shape (n_detectors,).
             batch_samples: Number of samples processed per batch, see [`PointingOperator`][].
             frame: The basis Q and U are returned in, see [`QuaternionSampler`][].
             interpolate: If True, bilinear interpolation over the four nearest pixels, otherwise
@@ -138,12 +138,12 @@ class PointingOperator(AbstractLinearOperator):
         """
         kernel = SamplingKernel(
             interpolation=Interpolation.BILINEAR if interpolate else Interpolation.NEAREST,
-            beam=None if beam is None else beam.checked(landscape, detector_quaternions.shape[0]),
+            beam=None if beam is None else beam.checked(landscape, q_bore_det.shape[0]),
         )
         sampler = QuaternionSampler(
             kernel=kernel,
-            q_sky_bore=boresight_quaternions,
-            q_bore_det=detector_quaternions,
+            q_sky_bore=q_sky_bore,
+            q_bore_det=q_bore_det,
             frame=frame,
         )
         return cls.from_sampler(landscape, sampler, batch_samples=batch_samples)

@@ -46,8 +46,8 @@ class ReaderField(StrEnum):
     VALID_SCANNING_MASKS = 'valid_scanning_masks'
     TIMESTAMPS = 'timestamps'
     HWP_ANGLES = 'hwp_angles'
-    DETECTOR_QUATERNIONS = 'detector_quaternions'
-    BORESIGHT_QUATERNIONS = 'boresight_quaternions'
+    Q_BORE_DET = 'q_bore_det'
+    Q_SKY_BORE = 'q_sky_bore'
     NOISE_MODEL_FITS = 'noise_model_fits'
     AZIMUTH = 'azimuth'
     ELEVATION = 'elevation'
@@ -65,7 +65,7 @@ class ReaderField(StrEnum):
         return self in {
             ReaderField.SAMPLE_DATA,
             ReaderField.VALID_SAMPLE_MASKS,
-            ReaderField.DETECTOR_QUATERNIONS,
+            ReaderField.Q_BORE_DET,
             ReaderField.NOISE_MODEL_FITS,
         }
 
@@ -126,8 +126,8 @@ class AbstractObservation[T](ABC):
             ReaderField.VALID_SAMPLE_MASKS,
             ReaderField.TIMESTAMPS,
             ReaderField.HWP_ANGLES,
-            ReaderField.DETECTOR_QUATERNIONS,
-            ReaderField.BORESIGHT_QUATERNIONS,
+            ReaderField.Q_BORE_DET,
+            ReaderField.Q_SKY_BORE,
             ReaderField.NOISE_MODEL_FITS,
         }
     )
@@ -317,12 +317,12 @@ class AbstractObservation[T](ABC):
         """Load a pre-computed noise model from the data, if present. Otherwise, return None."""
 
     @abstractmethod
-    def get_boresight_quaternions(self) -> Float[np.ndarray, 'samp 4']:
-        """Returns the boresight quaternions at each time sample."""
+    def get_q_sky_bore(self) -> Float[np.ndarray, 'samp 4']:
+        """Returns the boresight orientation in the frame of the map at each time sample."""
 
     @abstractmethod
-    def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
-        """Returns the quaternion offsets of the detectors."""
+    def get_q_bore_det(self) -> Float[np.ndarray, 'det 4']:
+        """Returns the detector orientations in the boresight frame."""
 
 
 class AbstractSatelliteObservation[T](AbstractObservation[T]):
@@ -437,22 +437,20 @@ class AbstractGroundObservation[T](AbstractObservation[T]):
 
         """
         # Get quaternions for boresight and detector offsets
-        boresight_quaternions = self.get_boresight_quaternions()  # (n_samples, 4)
-        detector_quaternions = self.get_detector_quaternions()  # (n_dets, 4)
+        q_sky_bore = Quaternion.from_array(self.get_q_sky_bore())  # (n_samples,)
+        q_bore_det = Quaternion.from_array(self.get_q_bore_det())  # (n_dets,)
 
         # Apply scanning mask first if requested
         if use_scanning_mask:
             mask = self.get_scanning_mask()  # (n_samples,) boolean array
-            boresight_quaternions = boresight_quaternions[mask, :]
+            q_sky_bore = q_sky_bore[mask]
 
         # Apply subsampling after masking if requested
         if thin_samples > 1:
-            boresight_quaternions = boresight_quaternions[::thin_samples, :]
+            q_sky_bore = q_sky_bore[::thin_samples]
 
         # Combine boresight pointing with detector offsets via quaternion multiplication
         # Broadcasting: (1, n_final_samples) * (n_dets, 1) -> (n_dets, n_final_samples)
-        q_sky_bore = Quaternion.from_array(boresight_quaternions)
-        q_bore_det = Quaternion.from_array(detector_quaternions)
         q_sky_det = q_sky_bore[None, :] * q_bore_det[:, None]
 
         # Convert quaternions to longitude/latitude angles in radians

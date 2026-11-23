@@ -178,8 +178,8 @@ def _contribution(
     # Hit map = nearest-neighbour coverage of the sample mask
     hit_pointing = PointingOperator.create(
         landscape,
-        Quaternion.from_array(data[ReaderField.BORESIGHT_QUATERNIONS]),
-        Quaternion.from_array(data[ReaderField.DETECTOR_QUATERNIONS]),
+        Quaternion.from_array(data[ReaderField.Q_SKY_BORE]),
+        Quaternion.from_array(data[ReaderField.Q_BORE_DET]),
     ).as_stokes_i(interpolate=False)
     # Read the mask directly: M(ones) = M.to_boolean_mask()
     masked_tod = model.M.to_boolean_mask()

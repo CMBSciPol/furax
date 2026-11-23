@@ -182,11 +182,11 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             fields.add('timestamps')
         if ReaderField.HWP_ANGLES in requested:
             fields.add('hwp_angle')
-        if ReaderField.BORESIGHT_QUATERNIONS in requested:
+        if ReaderField.Q_SKY_BORE in requested:
             fields |= {'boresight', 'timestamps'}
             if sotodlib_config.wobble_correction:
                 fields |= {'wobble_params', 'det_info', 'hwp_angle'}
-        if ReaderField.DETECTOR_QUATERNIONS in requested:
+        if ReaderField.Q_BORE_DET in requested:
             fields.add('focal_plane')
         if ReaderField.NOISE_MODEL_FITS in requested:
             if sotodlib_config.noise_source == 'mapmaking':
@@ -579,8 +579,8 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         return fit[:, 1]
     '''
 
-    def get_boresight_quaternions(self) -> Float[np.ndarray, 'samp 4']:
-        """Returns the boresight quaternions at each time sample."""
+    def get_q_sky_bore(self) -> Float[np.ndarray, 'samp 4']:
+        """Returns the boresight orientation in the frame of the map at each time sample."""
         site = self._sotodlib_config.site
         weather = self._sotodlib_config.weather
         if self._sotodlib_config.wobble_correction:
@@ -599,8 +599,8 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             )
         return np.asarray(csl.Q, dtype=np.float64)
 
-    def get_detector_quaternions(self) -> Float[np.ndarray, 'det 4']:
-        """Returns the quaternion offsets of the detectors."""
+    def get_q_bore_det(self) -> Float[np.ndarray, 'det 4']:
+        """Returns the detector orientations in the boresight frame."""
         # Use so3g's CPU implementation so the result stays on host
         # quaternion convention is the same ordering (1,i,j,k)
         fp = self.data.focal_plane

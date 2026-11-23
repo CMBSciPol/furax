@@ -58,7 +58,7 @@ def scan_wcs_footprint(
         raise RuntimeError(msg)
     res = wcs_config.resolution * pixell.utils.arcmin
     proj = wcs_config.projection.name.lower()
-    pointing_fields = [ReaderField.BORESIGHT_QUATERNIONS, ReaderField.DETECTOR_QUATERNIONS]
+    pointing_fields = [ReaderField.Q_SKY_BORE, ReaderField.Q_BORE_DET]
 
     n = len(observations)
     corners_rad = np.empty((2, 2, n))  # [bottom-left, top-right] corners per observation

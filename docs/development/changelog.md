@@ -90,6 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `PointingOperator` splits the samples into batches of equal sizes, instead of computing again most of a last batch that overlapped the one before (#515)
 - Pomme with a template that the offsets absorb, such as a constant, no longer gives NaN maps (#422)
 - `furax-so-map` logs now include the messages of `furax.mapmaking.noise`, `furax.mapmaking.results` and `furax.interfaces.sotodlib.observation` (#430)
 - `furax-so-*` commands no longer initialise MPI by default when mpi4py is installed (#433)

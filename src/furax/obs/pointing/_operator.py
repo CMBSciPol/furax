@@ -67,8 +67,8 @@ class PointingOperator(AbstractLinearOperator):
     Where every sample reads the map is given by a [`AbstractSampler`][], as one sparse row of the
     pointing matrix per sample: the pixels it reads, their weights, and the rotation of each pixel's
     $(Q, U)$ into the frame the sample is returned in, e.g. that of a detector. The operator loops
-    over the samples in batches of `batch_samples` consecutive samples, in the row-major order of
-    the samples' shape, and, for each batch, gathers the pixels, rotates and weighs them, then
+    over the samples in batches of at most `batch_samples` consecutive samples, in the row-major
+    order of the samples' shape, and, for each batch, gathers the pixels, rotates and weighs them, then
     multiplies the samples by the sampler's scaling, if it has one. A batch may span several
     detectors, or part of one.
 
@@ -81,9 +81,10 @@ class PointingOperator(AbstractLinearOperator):
     Attributes:
         landscape: The sky pixelization.
         sampler: Where each sample reads the map.
-        batch_samples: Number of samples processed per batch. Leave `None` for a backend-dependent
-            default, lowered when a beam makes every sample read many pixels, so that a batch
-            reads at most $2^{25}$ pixels; set to 0 to process them all at once.
+        batch_samples: Most samples processed per batch; the batches are of equal sizes, as far as
+            they can be. Leave `None` for a backend-dependent default, lowered when a beam makes
+            every sample read many pixels, so that a batch reads at most $2^{25}$ pixels; set to 0
+            to process them all at once.
     """
 
     landscape: StokesLandscape
@@ -351,8 +352,8 @@ class _Tiling(NamedTuple):
     tile of `rows` x `cols` of it:
 
     - if a detector has fewer samples than a batch holds, a tile is several whole detectors, e.g.
-      6 detectors of 20 000 samples for a batch of 2^17 = 131 072 samples;
-    - otherwise it is one detector and part of its samples, e.g. 131 072 of 720 000.
+      for a batch of 2^17 = 131 072 samples, 5 detectors of 20 000 samples out of 10, in 2 tiles;
+    - otherwise it is one detector and part of its samples, e.g. 120 000 of 720 000, in 6 tiles.
 
     Rectangular tiles, rather than runs of consecutive samples, let the samplers compute what
     depends only on the detector, such as its quaternion, once per detector instead of once per
@@ -372,20 +373,25 @@ class _Tiling(NamedTuple):
     def plan(
         cls, shape: tuple[int, ...], batch_samples: int | None, reads_per_sample: int = 1
     ) -> Self:
-        """Split samples of `shape` into batches of `batch_samples`, see [`PointingOperator`][].
+        """Split samples of `shape` into batches of `batch_samples` at most, see [`PointingOperator`][].
 
-        `reads_per_sample`, the pixels each sample reads, only lowers the default batch size.
+        The batches are the fewest that hold at most `batch_samples`, and of sizes as equal as
+        possible: a last batch the size of the others would overlap the one before, and compute
+        the samples they share twice. `reads_per_sample`, the pixels each sample reads, only lowers
+        the default batch size.
         """
         n_rows, n_cols = math.prod(shape[:-1]), shape[-1]
         if batch_samples is None:
             cpu = jax.default_backend() == 'cpu'
             batch_samples = _CPU_BATCH_SAMPLES if cpu else _GPU_BATCH_SAMPLES
             batch_samples = min(batch_samples, max(1, _MAX_BATCH_READS // reads_per_sample))
-        if batch_samples <= 0:
-            return cls(shape, n_rows, n_cols)
-        if batch_samples >= n_cols:
-            return cls(shape, min(batch_samples // n_cols, n_rows), n_cols)
-        return cls(shape, 1, batch_samples)
+        if batch_samples <= 0:  # every sample at once
+            rows, cols = n_rows, n_cols
+        elif batch_samples >= n_cols:  # whole detectors
+            rows, cols = _balanced(n_rows, batch_samples // n_cols), n_cols
+        else:  # part of one detector
+            rows, cols = 1, _balanced(n_cols, batch_samples)
+        return cls(shape, rows, cols)
 
     @property
     def n_rows(self) -> int:
@@ -422,6 +428,12 @@ class _Tiling(NamedTuple):
         index = (*(axis[:, None] for axis in outer), cols[None, :])
         fresh = (rows >= tile_row * self.rows)[:, None] & (cols >= tile_col * self.cols)[None, :]
         return (row, col), index, fresh
+
+
+def _balanced(n: int, most: int) -> int:
+    """The size of the fewest batches of at most `most` items that cover `n`, as equal as can be."""
+    n_batches = (n + most - 1) // most
+    return (n + n_batches - 1) // n_batches
 
 
 def _rotation_angles(rotation: AbstractLinearOperator) -> Float[Array, '...']:

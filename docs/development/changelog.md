@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Furax excludes `jax` 0.12.0 to 0.12.1, whose XLA:CPU runs the batch loops of `PointingOperator` on a single thread (#517)
 - **Breaking:** `MultiObservationMapMaker` takes only the configuration: `run` and `make_maps` take the observations, and `prepare` returns their `MapMakingRun`, so one mapmaker maps successive datasets (#491)
 - `op @ IdentityOperator(...)` returns `op` instead of a composition (#458)
 - `map_reduce`, `size_per_device` and `Policy.from_budget` read the mesh of a laid-out ensemble from the shardings of its leaves, falling back to the ambient mesh (#441)
@@ -90,6 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `LowRankFourierOperator` with `batch_size=1` no longer holds a second copy of its input on jaxlib 0.11 (#517)
 - `PointingOperator` splits the samples into batches of equal sizes, instead of computing again most of a last batch that overlapped the one before (#515)
 - Pomme with a template that the offsets absorb, such as a constant, no longer gives NaN maps (#422)
 - `furax-so-map` logs now include the messages of `furax.mapmaking.noise`, `furax.mapmaking.results` and `furax.interfaces.sotodlib.observation` (#430)

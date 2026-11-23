@@ -132,6 +132,32 @@ def test_default_batch_is_capped_in_pixel_reads(
     assert _Tiling.plan((n_samples,), 0, reads_per_sample).cols == n_samples
 
 
+@pytest.mark.parametrize(
+    ('shape', 'batch_samples', 'tile', 'n_batches'),
+    [
+        ((16, 135_000), 2**17, (1, 67_500), 32),
+        ((16, 135_000), 2**21, (8, 135_000), 2),
+        ((10, 20_000), 2**17, (5, 20_000), 2),
+        ((3, 720_000), 2**17, (1, 120_000), 18),
+        ((2, 7), 3, (1, 3), 6),
+        ((4, 100), 0, (4, 100), 1),
+    ],
+    ids=[
+        'just-over-a-batch',
+        'rows-just-over',
+        'whole-detectors',
+        'even-split',
+        'remainder',
+        'one',
+    ],
+)
+def test_batches_are_the_fewest_of_equal_sizes(shape, batch_samples, tile, n_batches) -> None:
+    """A last batch of the size of the others would recompute most of the one before."""
+    tiling = _Tiling.plan(shape, batch_samples)
+    assert (tiling.rows, tiling.cols) == tile
+    assert tiling.n_batches == n_batches
+
+
 def test_default_batch_bounds_the_memory_of_a_wide_beam() -> None:
     """A beam of 2048 nodes, default batch: scratch stays near 2^25 reads, not all the samples."""
     landscape = HealpixLandscape(NSIDE, 'IQU')

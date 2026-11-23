@@ -25,7 +25,7 @@ from ._ensembles import Ensemble, ListEnsemble, lift, map_reduce
 from .utils import register_dataclass_with_keys
 
 if TYPE_CHECKING:
-    from furax.linalg import CGResult, CGSolver
+    from furax.linalg import BlockDiagonalResult, BlockDiagonalSolver, CGResult, CGSolver
     from furax.profiling import ProfileReport
 
 
@@ -772,9 +772,11 @@ class InverseOperator(AbstractLazyInverseOperator):
         x: PyTree[jax.ShapeDtypeStruct] | None = None,
         /,
         *,
-        solver: 'lx.AbstractLinearSolver[Any] | CGSolver | None' = None,
+        solver: 'lx.AbstractLinearSolver[Any] | CGSolver | BlockDiagonalSolver | None' = None,
         throw: bool | None = None,
-        callback: 'Callable[[lx.Solution | CGResult], None] | object' = MISSING,
+        callback: 'Callable[[lx.Solution | CGResult | BlockDiagonalResult], None] | object' = (
+            MISSING
+        ),
         **options: Any,
     ) -> AbstractLinearOperator | PyTree[jax.ShapeDtypeStruct]:
         config_options = {}
@@ -825,11 +827,13 @@ class InverseOperator(AbstractLazyInverseOperator):
 
     def _furax_solve(
         self,
-        solver: 'CGSolver',
+        solver: 'CGSolver | BlockDiagonalSolver',
         x: PyTree[Inexact[Array, ' _a']],
         throw: bool,
         options: dict[str, Any],
     ) -> PyTree[Inexact[Array, ' _b']]:
+        from furax.linalg import CGSolver  # deferred: furax.linalg imports furax
+
         # Accept the lineax option names, so that switching solvers needs no other change.
         x0 = options.pop('y0', None)
         preconditioner = options.pop('preconditioner', None)
@@ -837,6 +841,11 @@ class InverseOperator(AbstractLazyInverseOperator):
             raise ValueError(f'Unsupported options for {type(solver).__name__}: {sorted(options)}')
         if preconditioner is not None and not isinstance(preconditioner, AbstractLinearOperator):
             raise TypeError('The preconditioner must be an instance of AbstractLinearOperator.')
+        if not isinstance(solver, CGSolver):
+            # a direct solver: no convergence to check
+            result = solver(self.operator, x, x0, preconditioner=preconditioner)
+            jax.debug.callback(self.config.solver_callback, result)
+            return result.solution
         result = solver(self.operator, x, x0, preconditioner=preconditioner)
         if throw:
             # A solve truncated on negative curvature stops early without converging: not an error.

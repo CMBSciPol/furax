@@ -1,3 +1,4 @@
+from ._block_diag import BlockDiagonalResult, BlockDiagonalSolver
 from ._cg import CGResult, CGSolver, cg
 from ._eigvalsh import eigvalsh
 from ._lanczos import LanczosResult, lanczos_eigh, lanczos_tr
@@ -15,6 +16,8 @@ __all__ = [
     'cg',
     'CGResult',
     'CGSolver',
+    'BlockDiagonalResult',
+    'BlockDiagonalSolver',
     'eigvalsh',
     'lanczos_eigh',
     'lanczos_tr',

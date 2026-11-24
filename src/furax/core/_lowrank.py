@@ -186,7 +186,7 @@ class LowRankFourierOperator(AbstractLinearOperator):
             return white * channels
 
         low_spectrum = jax.lax.map(
-            lambda channel: jnp.fft.rfft(channel)[:n_low], channels, batch_size=self.batch_size
+            lambda channel: jnp.fft.rfft(channel)[:n_low], channels, batch_size=self._map_batch
         )
 
         complex_dtype = low_spectrum.dtype
@@ -208,7 +208,14 @@ class LowRankFourierOperator(AbstractLinearOperator):
             full = jnp.pad(correction_row, (0, n_frequencies - n_low))
             return white_row * channel + jnp.fft.irfft(full, n=n_samples).astype(real_dtype)
 
-        return jax.lax.map(apply, (channels, correction, white), batch_size=self.batch_size)
+        return jax.lax.map(apply, (channels, correction, white), batch_size=self._map_batch)
+
+    @property
+    def _map_batch(self) -> int | None:
+        """The `batch_size` of `jax.lax.map` for batches of `batch_size` channels."""
+        # jaxlib 0.11 copies the input of lax.map with batch_size=1, but not of a plain scan
+        # TODO: pass batch_size as is once jax > 0.12.1 is required
+        return None if self.batch_size == 1 else self.batch_size
 
     def _bin_bounds(self, n_samples: int) -> list[int]:
         """Indices of the first rfft frequency of each bin, followed by the number of frequencies."""

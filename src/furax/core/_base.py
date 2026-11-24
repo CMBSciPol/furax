@@ -562,6 +562,8 @@ class AdditionOperator(AbstractLinearOperator):
         return self.operand_leaves[0].out_structure
 
     def as_matrix(self) -> Inexact[Array, 'a b']:
+        if isinstance(self.operands, Ensemble):
+            return map_reduce(lambda op: op.as_matrix(), self.operands, 'sum')[0]
         return functools.reduce(jnp.add, (operand.as_matrix() for operand in self.operand_leaves))
 
     def reduce(self) -> AbstractLinearOperator:

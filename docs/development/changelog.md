@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Furax excludes `jax` 0.12.0 to 0.12.1, whose XLA:CPU runs the batch loops of `PointingOperator` on a single thread (#517)
 - **Breaking:** `MultiObservationMapMaker` takes only the configuration: `run` and `make_maps` take the observations, and `prepare` returns their `MapMakingRun`, so one mapmaker maps successive datasets (#491)
 - `op @ IdentityOperator(...)` returns `op` instead of a composition (#458)
+- `StackedEnsemble.shard` places an array that several leaves hold once, and `Policy.from_budget` counts it once (#496)
 - `map_reduce`, `size_per_device` and `Policy.from_budget` read the mesh of a laid-out ensemble from the shardings of its leaves, falling back to the ambient mesh (#441)
 - `furax-so-map` refuses an output directory that holds the output of an earlier run, unless given `--overwrite`, which deletes that output first (#402)
 - `furax-so-map` logs to `furax-so-map.rank<N>.log` in the output directory by default (#402)

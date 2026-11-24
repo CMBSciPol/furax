@@ -35,6 +35,11 @@ def _shared() -> jax.Array:
     return jnp.linspace(0.0, 1.0, N_SAMPS)
 
 
+def _square() -> jax.Array:
+    """A stacked array whose two axes can both be the member axis."""
+    return jnp.arange(N * N, dtype=jnp.float64).reshape(N, N)
+
+
 def _apply(member, scale):
     return {
         'sum': scale * member['x'],
@@ -442,6 +447,21 @@ def test_from_budget_fits_the_batch_to_the_temporaries():
     assert policy.batch == 2  # room for 2.5 members, clipped to the divisors of 8
     with pytest.raises(ValueError, match='does not fit'):
         Policy.from_budget(ensemble, apply, budget=resident, margin=1.0)
+
+
+@pytest.mark.parametrize(
+    'axes, copies', [({'a': 0, 'b': 0}, 1), ({'a': 0, 'b': 1}, 2)], ids=['same axis', 'two axes']
+)
+def test_nbytes_counts_an_array_held_twice_once_per_member_axis(axes, copies):
+    # the shared array too is held at two leaves, and counts once
+    square, shared = _square(), _shared()
+    ensemble = StackedEnsemble(
+        N,
+        {'a': square, 'b': square, 't': shared, 'u': shared},
+        {'a': 1, 'b': 1, 't': None, 'u': None},
+        axes={**axes, 't': 0, 'u': 0},
+    )
+    assert ensemble._nbytes(2) == copies * square.nbytes // 2 + shared.nbytes
 
 
 def test_lift_builds_operators_member_wise():
@@ -962,3 +982,16 @@ class TestSharded:
         ensemble = StackedEnsemble(N, {'o': _offsets()}, 'segment', owner=owner)
         with jax.set_mesh(self._pair_mesh()), pytest.raises(ValueError, match='own segments'):
             ensemble.shard('obs')
+
+    @pytest.mark.parametrize(
+        'axes, b_spec', [({'a': 0, 'b': 0}, P('obs')), ({'a': 0, 'b': 1}, P(None, 'obs'))]
+    )
+    def test_shard_places_an_array_held_twice_once_per_member_axis(self, axes, b_spec):
+        square = _square()
+        ensemble = StackedEnsemble(N, {'a': square, 'b': square}, axes=axes)
+        with jax.set_mesh(self._mesh()):
+            sharded = ensemble.shard('obs')
+        a, b = sharded.stacked['a'], sharded.stacked['b']
+        assert (a is b) == (axes['a'] == axes['b'])
+        assert a.sharding.spec == P('obs')
+        assert b.sharding.spec == b_spec

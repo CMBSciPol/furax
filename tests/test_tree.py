@@ -2,6 +2,7 @@ import contextlib
 import itertools
 
 import jax
+import numpy as np
 import pytest
 from equinox import tree_equal
 from jax import Array
@@ -424,6 +425,37 @@ def _random_stacked(key: Array, k: int, dtype) -> PyTree[Array]:
 def _dense(X: PyTree[Array]) -> Array:
     """The (k, n) matrix whose rows are the flattened pytrees of a stacked pytree."""
     return jax.vmap(lambda x: ravel_pytree(x)[0])(X)
+
+
+@pytest.mark.parametrize(
+    'leaf, expected',
+    [(jnp.ones(2), True), (np.ones(2), True), (np.float64(1), True), (1.0, False), ('a', False)],
+)
+def test_is_array(leaf, expected) -> None:
+    assert fx.tree.is_array(leaf) is expected
+
+
+def test_partition_combine_roundtrip() -> None:
+    # `None` in the input is an empty subtree, kept as such in both parts
+    x = {'a': jnp.ones(2), 'b': (Ellipsis, np.zeros(3)), 'c': None, 'd': 'label'}
+    arrays, others = fx.tree.partition(x, fx.tree.is_array)
+    assert tree_equal(arrays, {'a': jnp.ones(2), 'b': (None, np.zeros(3)), 'c': None, 'd': None})
+    assert others == {'a': None, 'b': (Ellipsis, None), 'c': None, 'd': 'label'}
+    assert tree_equal(fx.tree.combine(arrays, others), x)
+    assert tree_equal(fx.tree.combine(others, arrays), x)
+
+
+def test_partition_combine_operator() -> None:
+    operator = fx.IndexOperator(
+        (Ellipsis, jnp.array([0, 2])), in_structure=jax.ShapeDtypeStruct((3,), jnp.float64)
+    )
+    arrays, others = fx.tree.partition(operator, fx.tree.is_array)
+    combined = jax.jit(lambda arrays: fx.tree.combine(arrays, others)(jnp.arange(3.0)))(arrays)
+    assert_array_equal(combined, [0.0, 2.0])
+
+
+def test_combine_takes_the_first_leaf_that_is_not_none() -> None:
+    assert fx.tree.combine([1, None, None], [2, 3, None]) == [1, 3, None]
 
 
 def test_stack_unstack_roundtrip() -> None:

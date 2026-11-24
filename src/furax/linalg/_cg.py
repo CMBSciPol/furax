@@ -215,12 +215,12 @@ def _implicit_cg(
     """
     # `custom_jvp` accepts only JAX values, but operators may hold other leaves, such as the
     # `Ellipsis` in the indices of an `IndexOperator`: pass the arrays and close over the rest.
-    dynamic, static = eqx.partition((A, b, x0, preconditioner), eqx.is_array)
+    dynamic, static = tree.partition((A, b, x0, preconditioner), tree.is_array)
     A_static = static[0]
 
     @jax.custom_jvp
     def implicit_solve(dynamic: PyTree[Array]) -> CGResult:
-        A, b, x0, preconditioner = eqx.combine(dynamic, static)
+        A, b, x0, preconditioner = tree.combine(dynamic, static)
         return solve(A, b, x0, preconditioner, iteration_callback, checkpoint_callback)
 
     @partial(implicit_solve.defjvp, symbolic_zeros=True)
@@ -228,7 +228,7 @@ def _implicit_cg(
         primals: tuple[Any, ...], tangents: tuple[Any, ...]
     ) -> tuple[CGResult, CGResult]:
         (dynamic,) = primals
-        A, _, _, preconditioner = eqx.combine(dynamic, static)
+        A, _, _, preconditioner = tree.combine(dynamic, static)
         A_dynamic, b_dynamic, _, _ = dynamic
         # `A^{-1} b` does not depend on the initial guess or the preconditioner.
         A_dot, b_dot, _, _ = tangents[0]
@@ -244,7 +244,7 @@ def _implicit_cg(
         rhs = _instantiate_zeros(b_dynamic, b_dot) if b_tangents else None
         if A_tangents:
             _, A_dot_x = jax.jvp(
-                lambda op: eqx.combine(op, A_static)(x),
+                lambda op: tree.combine(op, A_static)(x),
                 (A_dynamic,),
                 (_instantiate_zeros(A_dynamic, A_dot),),
             )

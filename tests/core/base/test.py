@@ -78,3 +78,20 @@ def test_as_matrix() -> None:
     expected = jax.scipy.linalg.block_diag(op.matrix1, op.matrix2)
     actual = op.as_matrix().block_until_ready()
     assert_array_equal(actual, expected)
+
+
+def test_default_out_structure_of_an_abstract_operator() -> None:
+    # the array leaves of an ensemble template are placeholders, which `mv` cannot compute with
+    class Dense(AbstractLinearOperator):
+        a: jax.Array
+
+        def __init__(self, a):
+            object.__setattr__(self, 'a', a)
+            super().__init__(in_structure=jax.ShapeDtypeStruct((a.shape[-1],), a.dtype))
+
+        def mv(self, x):
+            return self.a @ x
+
+    op = Dense(jnp.ones((2, 3)))
+    template = jax.tree.map(lambda leaf: jax.ShapeDtypeStruct(leaf.shape, leaf.dtype), op)
+    assert template.out_structure == jax.ShapeDtypeStruct((2,), jnp.float64)

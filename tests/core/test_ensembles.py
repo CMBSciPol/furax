@@ -751,6 +751,50 @@ def test_segment_ensembles_are_validated(build, match):
         build()
 
 
+def test_by_segment_has_one_member_per_segment():
+    ensemble = StackedEnsemble(
+        N,
+        {'o': _offsets(), 't': _shared()},
+        {'o': 'segment', 't': None},
+        owner=jnp.asarray(OWNER),
+        policy=Policy(batch=2),
+    )
+    view = ensemble.by_segment()
+    assert view.size == N_SEGMENTS and view.owner is None
+    assert view.policy.batch == 1  # the batch counted members
+    out, kinds = map_reduce(lambda m: m['o'] + m['t'], view, 'auto')
+    assert kinds == 1
+    assert_allclose(out, _offsets() + _shared())
+
+
+def test_by_segment_keeps_the_member_axes():
+    stacked = _offsets().T
+    ensemble = StackedEnsemble(N, stacked, 'segment', axes=1, owner=jnp.asarray(OWNER))
+    view = ensemble.by_segment()
+    assert view.axes == (1,) and view.stacked is stacked
+    assert_allclose(view.fetch(2), _offsets()[2])
+
+
+def test_by_segment_masks_the_segments_of_padded_members():
+    # the members of segment 2 are all padding, segment 3 keeps one valid member
+    valid = jnp.asarray([True, True, True, True, False, True, False, False])
+    ensemble = StackedEnsemble(N, _offsets(), 'segment', owner=jnp.asarray(OWNER), valid=valid)
+    view = ensemble.by_segment()
+    assert view.valid.tolist() == [True, True, False, True]
+    out, _ = map_reduce(lambda o: o, view, 'sum')
+    assert_allclose(out, _offsets()[jnp.array([0, 1, 3])].sum(axis=0))
+
+
+@pytest.mark.parametrize(
+    ('ensemble', 'match'),
+    [(_segmented, 'varies with the member'), (_stacked, 'not grouped')],
+    ids=['member-leaf', 'no-segments'],
+)
+def test_by_segment_rejects(ensemble, match):
+    with pytest.raises(ValueError, match=match):
+        ensemble().by_segment()
+
+
 _SHARED = jnp.ones(N_SAMPS)
 
 
@@ -928,6 +972,17 @@ class TestSharded:
             )
             assert kinds == {'sum': 'sum', 'stack': 1, 'shared': None}
             assert_allclose(out['stack'], _expected(1.0)['stack'])
+
+    def test_by_segment_keeps_the_mesh_axis(self):
+        # two devices, each holding the members of its own two segments
+        mesh = jax.make_mesh((2,), ('obs',), devices=jax.devices()[:2])
+        with jax.set_mesh(mesh):
+            ensemble = StackedEnsemble(N, _offsets(), 'segment', owner=jnp.asarray(OWNER))
+            view = ensemble.shard('obs').by_segment()
+            assert view.policy.axis == 'obs'
+            out, _ = map_reduce(lambda o: 2 * o, view, 1)
+            assert out.sharding.spec == P('obs')
+        assert_allclose(out, 2 * _offsets())
 
     def test_sharded_masks_padded_members(self):
         valid = jnp.asarray([True] * 6 + [False] * 2)

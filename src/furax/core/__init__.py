@@ -1,3 +1,4 @@
+from ._assembly import AssemblyOperator, RaggedAssemblyOperator
 from ._axes import MoveAxisOperator, RavelOperator, ReshapeOperator
 from ._base import (
     AbstractLazyInverseOperator,
@@ -57,6 +58,8 @@ __all__ = [
     'TransposeOperator',
     'InverseOperator',
     'AdditionOperator',
+    'AssemblyOperator',
+    'RaggedAssemblyOperator',
     'CompositionOperator',
     'IdentityOperator',
     'HomothetyOperator',

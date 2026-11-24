@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Ensemble.zip` takes `strides`, to hand a leaf whole to every member, one entry per s members, or one per segment (#524)
 - `HostEnsemble.zip` pairs the members read from the host with arrays the devices hold (#524)
 - The strides and member axes of an ensemble may be given as a prefix of the pytree they describe, one value for a whole subtree (#524)
+- `AssemblyOperator` assembles the members of an ensemble, each acting on its own parts of the vectors, set per leaf by `in_strides` and `out_strides`; `RaggedAssemblyOperator` assembles a list of operators of different shapes (#525)
 
 ### Changed
 

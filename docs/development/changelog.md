@@ -90,6 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `get_boresight_quaternions()` → `get_q_sky_bore()`, `get_detector_quaternions()` → `get_q_bore_det()` on every observation interface
   - the `boresight_quaternions` / `detector_quaternions` arguments of `PointingOperator.create` and `build_acquisition_operator` → `q_sky_bore` / `q_bore_det`, and of `ScreenSampler.from_wind` → `q_hor_bore` / `q_bore_det`
 - `AdditionOperator.as_matrix()` over an `Ensemble` traces the member once, whatever the ensemble size (#502)
+- `lift` keeps the arrays `f` passes through, `'segment'` and strided leaves included, also beside arrays it computes, and shares an array computed only from shared leaves, instead of copying them to every member (#500)
 
 ### Fixed
 
@@ -110,6 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AdditionOperator.as_matrix()` over an `Ensemble` leaves out the padded members, and accepts a sharded ensemble (#502)
 - `as_matrix()` of `BlockRowOperator`, `BlockColumnOperator` and `BlockDiagonalOperator` over an `Ensemble` whose members take or return a pytree with several leaves no longer permutes the columns or rows (#495)
 - `as_matrix()` of `BlockRowOperator` over an `Ensemble` leaves out the padded members, and the block composites accept a sharded ensemble (#495)
+- `lift` accepts a sharded `StackedEnsemble` (#500)
 
 ## [0.17.2] - 2026-10-30
 

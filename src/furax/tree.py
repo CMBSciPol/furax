@@ -6,6 +6,7 @@ from math import prod
 from typing import Any, Literal
 
 import jax
+import numpy as np
 from jax import Array
 from jax import numpy as jnp
 from jax.core import Tracer
@@ -25,6 +26,9 @@ __all__ = [
     'ones_like',
     'zeros_like',
     'is_leaf',
+    'is_array',
+    'partition',
+    'combine',
     'add',
     'sub',
     'mul',
@@ -287,6 +291,58 @@ def is_leaf(x: Any) -> bool:
     """Returns true if the input is a Pytree leaf."""
     treedef = jax.tree.structure(x)
     return jax.tree_util.treedef_is_leaf(treedef)
+
+
+def partition(
+    tree: PyTree[Any], predicate: Callable[[Any], bool]
+) -> tuple[PyTree[Any], PyTree[Any]]:
+    """Splits a pytree in two by a predicate on its leaves.
+
+    Both parts keep the structure of `tree`: a leaf goes to the first part when `predicate` holds
+    for it, to the second otherwise, and is replaced by `None` in the other part. The typical use
+    separates the arrays a JAX transformation takes as arguments from the leaves it closes over;
+    [`combine`][furax.tree.combine] puts the parts back together.
+
+    Args:
+        tree: The pytree to split.
+        predicate: The test applied to each leaf.
+
+    Returns:
+        The leaves for which `predicate` holds, and the others.
+
+    Examples:
+        >>> arrays, others = partition({'a': jnp.array(1.0), 'b': 'label'}, is_array)
+        >>> arrays, others
+        ({'a': Array(1., dtype=float32), 'b': None}, {'a': None, 'b': 'label'})
+        >>> combine(arrays, others)
+        {'a': Array(1., dtype=float32), 'b': 'label'}
+    """
+    selected = jax.tree.map(lambda leaf: leaf if predicate(leaf) else None, tree)
+    others = jax.tree.map(lambda leaf: None if predicate(leaf) else leaf, tree)
+    return selected, others
+
+
+def combine(*trees: PyTree[Any]) -> PyTree[Any]:
+    """Merges pytrees of the same structure, taking each leaf from the first that is not `None`.
+
+    The inverse of [`partition`][furax.tree.partition].
+
+    Args:
+        trees: The pytrees to merge, with the same structure once `None` counts as a leaf.
+
+    Returns:
+        The merged pytree, `None` where every input is `None`.
+    """
+
+    def first(*leaves: Any) -> Any:
+        return next((leaf for leaf in leaves if leaf is not None), None)
+
+    return jax.tree.map(first, *trees, is_leaf=lambda leaf: leaf is None)
+
+
+def is_array(leaf: Any) -> bool:
+    """Returns true if the leaf is a JAX or NumPy array."""
+    return isinstance(leaf, jax.Array | np.ndarray | np.generic)
 
 
 def apply(

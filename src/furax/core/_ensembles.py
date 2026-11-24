@@ -877,8 +877,9 @@ def lift(f: Callable[..., PyTree[Any]], *ensembles: Ensemble) -> Ensemble:
     computed only from leaves every member shares is computed once and shared too. The output
     arrays `f` computes from the members are evaluated by `jax.vmap` over the member axis,
     stride-s and segment leaves expanded to one entry per member, and come back with stride 1;
-    the others keep their strides. Stacked ensembles grouped in segments must share their owner
-    index, which the output keeps.
+    the others keep their strides. Lifting `lambda m: DeferredOperator(build, m)` instead keeps
+    the arrays at their strides, see [`DeferredOperator`][furax.core.DeferredOperator]. Stacked
+    ensembles grouped in segments must share their owner index, which the output keeps.
 
     Args:
         f: From one member per ensemble to a pytree: an operator constructor, a composition,

@@ -114,6 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `as_matrix()` of `BlockRowOperator`, `BlockColumnOperator` and `BlockDiagonalOperator` over an `Ensemble` whose members take or return a pytree with several leaves no longer permutes the columns or rows (#495)
 - `as_matrix()` of `BlockRowOperator` over an `Ensemble` leaves out the padded members, and the block composites accept a sharded ensemble (#495)
 - `lift` accepts a sharded `StackedEnsemble` (#500)
+- `out_structure` of `BlockRowOperator`, `BlockColumnOperator` and `BlockDiagonalOperator` over an `Ensemble` no longer raises when the members leave their `out_structure` to the default (#520)
 
 ## [0.17.2] - 2026-10-30
 

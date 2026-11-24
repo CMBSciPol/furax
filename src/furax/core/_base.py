@@ -19,7 +19,7 @@ from jaxtyping import Inexact, PyTree, Scalar, ScalarLike
 
 from furax._config import Config, ConfigState
 from furax.tree import add as tree_add
-from furax.tree import zeros_like
+from furax.tree import combine, partition, zeros_like
 
 from ._ensembles import Ensemble, ListEnsemble, lift, map_reduce
 from .utils import register_dataclass_with_keys
@@ -311,7 +311,15 @@ class AbstractLinearOperator(ABC):
 
     @property
     def out_structure(self) -> PyTree[jax.ShapeDtypeStruct]:
-        return jax.eval_shape(self.mv, self.in_structure)
+        # The placeholder leaves of an ensemble template (`jax.ShapeDtypeStruct`) are passed as
+        # abstract inputs, since `mv` cannot compute with them as constants. The concrete leaves
+        # stay closed over: some `mv` need their values, such as a boolean mask to index with.
+        placeholders, concrete = partition(
+            self, lambda leaf: isinstance(leaf, jax.ShapeDtypeStruct)
+        )
+        return jax.eval_shape(
+            lambda p, x: combine(p, concrete).mv(x), placeholders, self.in_structure
+        )
 
     @property
     def in_size(self) -> int:

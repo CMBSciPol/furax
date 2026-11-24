@@ -194,6 +194,29 @@ def test_axes_need_an_ensemble():
         BlockDiagonalOperator([DiagonalOperator(jnp.ones(3))], axes=1)
 
 
+class _Dense(AbstractLinearOperator):
+    """A member that leaves its output structure to the default, evaluated from `mv`."""
+
+    a: jax.Array
+
+    def __init__(self, a):
+        object.__setattr__(self, 'a', a)
+        super().__init__(in_structure=jax.ShapeDtypeStruct((a.shape[-1],), a.dtype))
+
+    def mv(self, x):
+        return self.a @ x
+
+
+@pytest.mark.parametrize(
+    'composite, shape',
+    [(BlockRowOperator, (2,)), (BlockColumnOperator, (N, 2)), (BlockDiagonalOperator, (N, 2))],
+)
+def test_out_structure_of_members_with_the_default(composite, shape):
+    a = jnp.arange(float(N * 2 * M)).reshape(N, 2, M)
+    operator = composite(lift(lambda m: _Dense(m['a']), StackedEnsemble(N, {'a': a})))
+    assert operator.out_structure == jax.ShapeDtypeStruct(shape, a.dtype)
+
+
 def test_addition_tags_come_from_one_member():
     operator = AdditionOperator(_ensemble('stacked'))
     assert operator.is_symmetric and operator.is_diagonal

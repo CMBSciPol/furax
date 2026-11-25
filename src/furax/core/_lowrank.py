@@ -32,9 +32,10 @@ class LowRankFourierOperator(AbstractLinearOperator):
     $n_\mathrm{ch} \times k$ matrices, with no dense $n_\mathrm{ch}^2$ matrix and no band in the
     time domain.
 
-    When correlations stop at some frequency, make `modes` and `core` one bin shorter than
-    `diagonal`: the last bin is then uncoupled, $M_b = D_b$. The operator applies it in the time
-    domain, so that only the frequencies below it are held in memory.
+    When correlations stop at some frequency, make `core` one bin shorter than `diagonal`: the
+    last bin is then uncoupled, $M_b = D_b$. The operator applies it in the time domain, so that
+    only the frequencies below it are held in memory. Modes the same in every bin, $V_b = V$, are
+    given once, without the bin axis.
 
     The operator is symmetric when every $G_b$ is Hermitian. Channels are the leading axes of the
     leaves of the input pytree, flattened and concatenated in leaf order; every leaf has the same
@@ -60,12 +61,13 @@ class LowRankFourierOperator(AbstractLinearOperator):
     diagonal: Float[Array, 'bin channel']
     """The diagonal $D_b$ of each bin."""
 
-    modes: Inexact[Array, 'coupled channel mode']
-    """The modes $V_b$ of each bin, or of all bins but the last when it is uncoupled. Unused modes
-    are padded with zeros."""
+    modes: Inexact[Array, '*coupled channel mode']
+    """The modes $V_b$ of each bin holding modes, or $V$ of them all. Unused modes are padded with
+    zeros."""
 
     core: Inexact[Array, 'coupled mode mode']
-    """The Hermitian matrix $G_b$ of each bin holding modes."""
+    """The Hermitian matrix $G_b$ of each bin, or of all bins but the last when it is
+    uncoupled."""
 
     edges: tuple[float, ...] = field(metadata={'static': True})
     """Interior bin boundaries in Hz, increasing. Bin $b$ spans `edges[b-1]` to `edges[b]`, the
@@ -80,24 +82,50 @@ class LowRankFourierOperator(AbstractLinearOperator):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        n_bins, n_channels = self.diagonal.shape
+        n_bins, n_channels = self.n_bins, self.n_channels
         if len(self.edges) != n_bins - 1 or list(self.edges) != sorted(self.edges):
             raise ValueError(f'Expected {n_bins - 1} increasing bin edges, got {self.edges}')
-        n_coupled = self.modes.shape[0]
-        if n_coupled not in (n_bins, n_bins - 1) or self.modes.shape[1] != n_channels:
+        k = self.core.shape[-1] if self.core.ndim else 0
+        if self.core.shape not in ((n_bins, k, k), (n_bins - 1, k, k)):
             raise ValueError(
-                f'Modes have shape {self.modes.shape}, expected {n_bins} or {n_bins - 1} bins '
-                f'of {n_channels} channels'
+                f'Core has shape {self.core.shape}, expected {n_bins} or {n_bins - 1} bins of '
+                'square matrices'
             )
-        if self.core.shape != (n_coupled, *(2 * (self.modes.shape[2],))):
+        if self.modes.shape not in ((n_channels, k), (self.n_coupled, n_channels, k)):
             raise ValueError(
-                f'Core has shape {self.core.shape}, expected a matrix per bin of the modes'
+                f'Modes have shape {self.modes.shape}, expected {n_channels} channels of the {k} '
+                f'modes of the core, in each of its {self.n_coupled} bins or once for all'
             )
         if self.batch_size < 1:
             raise ValueError(f'batch_size must be >= 1, got {self.batch_size}')
         n_input = sum(leaf.size // leaf.shape[-1] for leaf in jax.tree.leaves(self.in_structure))
         if n_input != n_channels:
             raise ValueError(f'The input has {n_input} channels, the operator {n_channels}')
+
+    @property
+    def n_bins(self) -> int:
+        """The number of frequency bins."""
+        return self.diagonal.shape[-2]
+
+    @property
+    def n_coupled(self) -> int:
+        """The number of bins holding modes: all of them, or all but the last."""
+        return self.core.shape[-3]
+
+    @property
+    def n_channels(self) -> int:
+        """The number of channels."""
+        return self.diagonal.shape[-1]
+
+    @property
+    def n_modes(self) -> int:
+        """The number of modes, those padded with zeros included."""
+        return self.modes.shape[-1]
+
+    @property
+    def shared_modes(self) -> bool:
+        """Whether the modes are the same in every bin holding modes, given once."""
+        return self.modes.ndim == self.core.ndim - 1
 
     def mv(
         self, x: PyTree[Float[Array, '*channels sample']]
@@ -114,7 +142,8 @@ class LowRankFourierOperator(AbstractLinearOperator):
         $$ M_b^{-1} = D_b^{-1} - D_b^{-1} V_b \, (1 + G_b S_b)^{-1} G_b \, V_b^\dagger D_b^{-1}, $$
 
         where $S_b = V_b^\dagger D_b^{-1} V_b$. This form needs no inverse of $G_b$, so modes
-        padded with zeros stay inert. The diagonal must be strictly positive.
+        padded with zeros stay inert. The diagonal must be strictly positive. The modes
+        $D_b^{-1} V_b$ of the inverse are given per bin, even when $V_b$ is the same in every bin.
 
         With complex modes the inverse is exact at every frequency but the zero one and, unless
         it is in an uncoupled last bin, the Nyquist one. The Fourier coefficients of a real input
@@ -122,9 +151,9 @@ class LowRankFourierOperator(AbstractLinearOperator):
         part is not the real part of the inverse.
         """
         inverse_diagonal = 1 / self.diagonal
-        modes = inverse_diagonal[: self.modes.shape[0], :, None] * self.modes
+        modes = inverse_diagonal[: self.n_coupled, :, None] * self.modes
         gram = jnp.conj(self.modes).mT @ modes
-        eye = jnp.eye(self.core.shape[-1], dtype=self.core.dtype)
+        eye = jnp.eye(self.n_modes, dtype=self.core.dtype)
         core = -jnp.linalg.solve(eye + self.core @ gram, self.core)
         core = (core + jnp.conj(core).mT) / 2
         return type(self)(
@@ -146,8 +175,8 @@ class LowRankFourierOperator(AbstractLinearOperator):
         """
         n = jax.tree.leaves(self.in_structure)[0].shape[-1]
         n_frequencies = n // 2 + 1
-        n_coupled = self.modes.shape[0]
-        n_channels = self.diagonal.shape[1]
+        n_coupled = self.n_coupled
+        n_channels = self.n_channels
 
         diagonal = jax.vmap(jnp.diag)(self.diagonal)
         coupled = diagonal[:n_coupled] + self.modes @ self.core @ jnp.conj(self.modes).mT
@@ -174,12 +203,12 @@ class LowRankFourierOperator(AbstractLinearOperator):
         domain. Only the difference to it, confined to the frequencies below, goes through the
         transforms.
         """
-        n_channels, n_samples = channels.shape
-        n_coupled = self.modes.shape[0]
+        n_samples = channels.shape[-1]
+        n_coupled = self.n_coupled
         bounds = self._bin_bounds(n_samples)
         real_dtype = channels.dtype
-        white = jnp.zeros((n_channels, 1), real_dtype)
-        if n_coupled < self.diagonal.shape[0]:
+        white = jnp.zeros((self.n_channels, 1), real_dtype)
+        if n_coupled < self.n_bins:
             white = self.diagonal[-1].astype(real_dtype)[:, None]
         n_low = bounds[n_coupled]
         if n_low == 0:
@@ -190,23 +219,23 @@ class LowRankFourierOperator(AbstractLinearOperator):
         )
 
         complex_dtype = low_spectrum.dtype
-        pieces = []
+        modes_per_bin = self.modes.astype(complex_dtype)
+        modes_per_bin = jnp.broadcast_to(modes_per_bin, (n_coupled, *self.modes.shape[-2:]))
+        # each bin overwrites its slice in place: only the widest bin is held twice, not the spectrum
+        correction = low_spectrum
         for b, (start, stop) in enumerate(itertools.pairwise(bounds[: n_coupled + 1])):
-            if start == stop:
-                continue
-            piece = low_spectrum[:, start:stop]
-            modes = self.modes[b].astype(complex_dtype)
+            piece = correction[:, start:stop]
+            modes = modes_per_bin[b]
             core = self.core[b].astype(complex_dtype)
             diagonal = self.diagonal[b].astype(real_dtype)[:, None]
-            pieces.append((diagonal - white) * piece + modes @ (core @ (modes.conj().T @ piece)))
-        correction = jnp.concatenate(pieces, axis=-1)
-
-        n_frequencies = bounds[-1]
+            filtered = (diagonal - white) * piece + modes @ (core @ (modes.conj().T @ piece))
+            correction = correction.at[:, start:stop].set(filtered)
 
         def apply(args):
             channel, correction_row, white_row = args
-            full = jnp.pad(correction_row, (0, n_frequencies - n_low))
-            return white_row * channel + jnp.fft.irfft(full, n=n_samples).astype(real_dtype)
+            # irfft zero-pads the frequencies above n_low
+            filtered = jnp.fft.irfft(correction_row, n=n_samples).astype(real_dtype)
+            return white_row * channel + filtered
 
         return jax.lax.map(apply, (channels, correction, white), batch_size=self._map_batch)
 

@@ -59,7 +59,6 @@ def detector_drops(
     per_bucket = []
     for tiles in buckets:
         flags = lift(lambda tile: {r: getattr(tile.model, r) for r in DROP_REASONS}, tiles)
-        assert isinstance(flags, StackedEnsemble)
         leaves, treedef = jax.tree.flatten(placement.gather(flags.stacked))
         # a flag the same in every tile, as when none is dropped, is held once
         leaves = [
@@ -86,7 +85,6 @@ def noise_parameters(
     for tiles in buckets:
         # the parameters of the detectors are held per tile: `(tile, ..., detector)`
         noise = lift(lambda tile: tile.model.noise_model, tiles)
-        assert isinstance(noise, StackedEnsemble)
         leaves, _ = jax.tree_util.tree_flatten_with_path(placement.gather(noise.stacked))
         per_bucket.append(
             {

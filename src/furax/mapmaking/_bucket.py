@@ -148,7 +148,6 @@ def _amplitude_operator(
         return None
     # structural: the operators keep the leaves of the tiles, and their strides
     operators = lift(lambda tile: getattr(tile.amplitudes(kind), part), tiles)
-    assert isinstance(operators, StackedEnsemble)
     if AMPLITUDE_KINDS[kind] == 'observation':
         operators = operators.by_segment()
     return MemberOperator(operators, in_structure=structure)

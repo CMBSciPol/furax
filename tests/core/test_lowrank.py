@@ -107,6 +107,33 @@ def test_batches_lower_the_scratch_memory():
 
 
 @pytest.mark.parametrize('white_top', [False, True])
+def test_modes_shared_by_the_bins_are_those_given_per_bin(white_top):
+    op = make_operator(jax.random.key(16), white_top=white_top, complex_modes=True)
+    shared = LowRankFourierOperator(
+        op.diagonal,
+        op.modes[0],
+        op.core,
+        edges=EDGES,
+        sample_rate=SAMPLE_RATE,
+        in_structure=op.in_structure,
+    )
+    per_bin = LowRankFourierOperator(
+        op.diagonal,
+        jnp.broadcast_to(op.modes[0], op.modes.shape),
+        op.core,
+        edges=EDGES,
+        sample_rate=SAMPLE_RATE,
+        in_structure=op.in_structure,
+    )
+    assert shared.shared_modes and not per_bin.shared_modes
+    assert shared.n_coupled == per_bin.n_coupled == len(EDGES) + 1 - white_top
+    x = jax.random.normal(jax.random.key(17), (N_CHANNELS, N_SAMPLES))
+    np.testing.assert_allclose(shared(x), per_bin(x), atol=1e-12)
+    np.testing.assert_allclose(shared.I(x), per_bin.I(x), atol=1e-12)
+    np.testing.assert_allclose(shared.as_matrix(), per_bin.as_matrix(), atol=1e-12)
+
+
+@pytest.mark.parametrize('white_top', [False, True])
 @pytest.mark.parametrize('n_samples', [64, 63])
 def test_inverse_is_the_matrix_inverse(n_samples, white_top):
     op = make_operator(jax.random.key(1), n_samples=n_samples, white_top=white_top)
@@ -268,17 +295,24 @@ def test_invalid_channel_count():
 
 
 @pytest.mark.parametrize(
-    ('n_mode_bins', 'n_core_bins', 'match'),
-    [(1, 1, 'Modes have shape'), (3, 2, 'Core has shape')],
-    ids=['modes-bins', 'core-bins'],
+    ('modes', 'core', 'match'),
+    [
+        (lambda m: m[:2], lambda g: g, 'Modes have shape'),
+        (lambda m: m[0, :, 0], lambda g: g, 'Modes have shape'),
+        (lambda m: m[:, :-1], lambda g: g, 'Modes have shape'),
+        (lambda m: m, lambda g: g[:1], 'Core has shape'),
+        (lambda m: m, lambda g: g[:, :1, :1], 'Modes have shape'),
+        (lambda m: m, lambda g: g[:, :, :1], 'Core has shape'),
+    ],
+    ids=['modes-bins', 'modes-1d', 'modes-channels', 'core-bins', 'core-modes', 'core-square'],
 )
-def test_invalid_modes_or_core_bins(n_mode_bins, n_core_bins, match):
+def test_invalid_modes_or_core(modes, core, match):
     op = make_operator(jax.random.key(14))
     with pytest.raises(ValueError, match=match):
         LowRankFourierOperator(
             op.diagonal,
-            op.modes[:n_mode_bins],
-            op.core[:n_core_bins],
+            modes(op.modes),
+            core(op.core),
             edges=EDGES,
             sample_rate=SAMPLE_RATE,
             in_structure=op.in_structure,

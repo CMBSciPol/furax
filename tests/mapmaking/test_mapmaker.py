@@ -8,6 +8,7 @@ import healpy as hp
 import jax
 import jax.numpy as jnp
 import numpy as np
+import polars as pl
 import pytest
 from numpy.testing import assert_allclose
 
@@ -15,11 +16,15 @@ from furax.core._base import structure_equal
 from furax.mapmaking import AbstractLazyObservation, MapMakingConfig, MultiObservationMapMaker
 from furax.mapmaking._reader import detector_tile_structure
 from furax.mapmaking.config import (
+    CirculantBridgeConfig,
+    DiagnosticsConfig,
     ExplicitGapsConfig,
+    GapsConfig,
     GapTreatment,
     HealpixConfig,
     HWPSynchronousConfig,
     LandscapeConfig,
+    LowRankNoiseFitConfig,
     NestedConfig,
     NoiseFitConfig,
     NoiseSource,
@@ -37,6 +42,7 @@ from furax.mapmaking.noise import WhiteNoiseModel
 from furax.obs.landscapes import ProjectionType
 from furax.obs.stokes import ValidStokesLiteral
 from tests.mapmaking.helpers import (
+    CorrelatedLazyGroundObservation,
     FailingLazyObservation,
     FakeLazyGroundObservation,
     FakeLazyObservation,
@@ -423,6 +429,57 @@ def _config(
     )
 
 
+@pytest.mark.parametrize(
+    'gaps',
+    [
+        GapsConfig(treatment=GapTreatment.INNER_MASK),
+        GapsConfig(
+            treatment=GapTreatment.EXPLICIT,
+            explicit=ExplicitGapsConfig(resolution=0.04),
+            max_flagged_fraction=0.5,
+        ),
+    ],
+    ids=['inner-mask', 'explicit-bridge'],
+)
+def test_low_rank_weight_on_detector_tiles_gives_the_map_of_whole_observations(gaps):
+    """The low-rank fit and its correlated modes span the tiles of each observation."""
+    observations = [
+        CorrelatedLazyGroundObservation(seed=i, n_dets=12, n_samples=1024) for i in range(2)
+    ]
+    maps = []
+    for tile_size in (0, 4):
+        config = MapMakingConfig(
+            weighting=WeightingConfig(
+                mode=WeightingMode.LOW_RANK,
+                low_rank=LowRankNoiseFitConfig(
+                    bin_edges=(0.5, 1.0, 1.8),
+                    max_modes=4,
+                    bridge=CirculantBridgeConfig(length=1.0, resolution=0.2),
+                ),
+            ),
+            solver=SolverConfig(rtol=1e-12, atol=0, max_steps=1000),
+            landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8)),
+            pointing=PointingConfig(on_the_fly=True, interpolation='nearest'),
+            gaps=gaps,
+            detector_tile_size=tile_size,
+            fft_friendly_sample_count=True,
+            diagnostics=DiagnosticsConfig(bands=(0.5,), residual_map=False),
+        )
+        maps.append(MultiObservationMapMaker(config).make_maps(observations))
+    whole, tiles = maps
+    assert_allclose(
+        tiles.map.data, whole.map.data, atol=1e-10 * float(np.abs(whole.map.data).max())
+    )
+    assert whole.detectors is not None and tiles.detectors is not None
+    for column in ('chi2', 'chi2_0_0.5hz', 'chi2_0.5_nyquisthz'):
+        assert_allclose(tiles.detectors[column], whole.detectors[column], rtol=1e-8)
+    assert whole.observations is not None and tiles.observations is not None
+    for column in ('chi2', 'chi2_modes'):
+        assert_allclose(tiles.observations[column], whole.observations[column], rtol=1e-8)
+    # with the correlated modes fitted out, the χ² of each detector is a sum of squares
+    assert (whole.detectors['chi2'] > 0).all()
+
+
 def test_nested_healpix_gives_the_ring_map():
     observations = _observations('sotodlib')
     ring = MultiObservationMapMaker(_config('healpix', 'IQU', identity_noise=True)).make_maps(
@@ -521,6 +578,34 @@ class TestGapTreatmentMapMaker:
         assert maps[1].observations is not None
         assert maps[1].observations['over_gap_budget'].to_list() == [0, 0]
         assert eqx.tree_equal(maps[1].map, maps[0].map, rtol=1e-8, atol=1e-8)
+
+    @pytest.mark.parametrize('treatment', [GapTreatment.INNER_MASK, GapTreatment.EXPLICIT])
+    def test_diagnostics_report_the_residual_chi2(self, treatment):
+        observations = [GapProbingLazyGroundObservation(seed=i) for i in range(2)]
+        if treatment == GapTreatment.EXPLICIT:
+            config = self._explicit_config(probe=True)
+        else:
+            config = self._config(treatment)
+        config.diagnostics = DiagnosticsConfig(bands=(1.0,))
+        results = MultiObservationMapMaker(config).make_maps(observations)
+        assert results.observations is not None and results.detectors is not None
+        chi2 = results.observations['chi2'].to_numpy()
+        assert np.all(np.isfinite(chi2)) and np.all(chi2 > 0)
+        kept = results.detectors.filter(~pl.col('over_flagged') & ~pl.col('over_gap_budget'))
+        for column in ('chi2', 'chi2_0_1hz', 'chi2_1_nyquisthz'):
+            assert kept[column].is_finite().all()
+        assert results.residual_map is not None
+        assert all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(results.residual_map))
+
+    def test_diagnostics_turn_on_and_off_independently(self):
+        observations = [GapProbingLazyGroundObservation(seed=i) for i in range(2)]
+        config = self._config(GapTreatment.INNER_MASK)
+        config.diagnostics = DiagnosticsConfig(chi2=False, bands=(), residual_map=True)
+        results = MultiObservationMapMaker(config).make_maps(observations)
+        assert results.residual_map is not None
+        assert results.observations is not None and results.detectors is not None
+        assert results.observations['chi2'].is_null().all()
+        assert not any(c.startswith('chi2') for c in results.detectors.columns)
 
     def test_explicit_gaps_need_the_probed_sample_rate(self):
         class RatelessObservation(GapProbingLazyGroundObservation):

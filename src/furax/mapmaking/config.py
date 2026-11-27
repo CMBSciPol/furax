@@ -21,7 +21,10 @@ __all__ = [
     'WeightingMode',
     'NoiseSource',
     'NoiseFitConfig',
+    'LowRankNoiseFitConfig',
+    'CirculantBridgeConfig',
     'SolverConfig',
+    'DiagnosticsConfig',
     'TwoLevelConfig',
     'GapsConfig',
     'GapTreatment',
@@ -58,6 +61,9 @@ class WeightingMode(Enum):
 
     TOEPLITZ = 'toeplitz'
     """Banded Toeplitz weighting ($1/f$ noise model)."""
+
+    LOW_RANK = 'low_rank'
+    """Detector-correlated weighting: a diagonal plus a few common modes per frequency bin."""
 
 
 class NoiseSource(Enum):
@@ -146,6 +152,52 @@ class TwoLevelConfig:
 
 
 @dataclass
+class DiagnosticsConfig:
+    r"""Goodness-of-fit statistics of the solution, from one more pass over the data.
+
+    The residual $r = d - J \hat x$ of each detector tile, against every unknown solved for (the
+    map, the template and the gap amplitudes), gives the $\chi^2 = r^\top W' r$ of each detector
+    under the weight of the system, reported per good sample. Under a correct noise model and the
+    exact inverse noise weight it is close to 1; a weight that is not exactly $N^{-1}$ on the good
+    samples (inner masking, a truncated band, coarse gap splines) or a noise model fitted on the
+    same data moves it, so compare detectors and observations rather than read it absolutely.
+    Under a low-rank noise model, it splits into that of each detector, its residual less the
+    correlated modes fitted to the observation, and that of the modes, per observation.
+
+    `diagnostics: true` turns every diagnostic on; each can be turned off on its own.
+
+    Examples:
+        The $\chi^2$ in bands of a demodulated SAT TOD at 8 Hz, without the residual map
+
+            diagnostics:
+                bands: [0.01, 0.1, 1.0]
+                residual_map: false
+    """
+
+    chi2: bool = True
+    r"""The $\chi^2$ of each detector and observation."""
+
+    bands: tuple[float, ...] = (0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 1.8)
+    r"""Interior edges, in Hz, of the frequency bands the $\chi^2$ of each detector is split into,
+    each normalized by the share of the band in the samples: the first band starts at 0, the last
+    ends at the Nyquist frequency. Empty for no split."""
+
+    residual_map: bool = True
+    """The residual binned under the white-noise weight, where sky- or ground-fixed signal the
+    model missed shows up."""
+
+    def __post_init__(self) -> None:
+        self.bands = tuple(float(b) for b in self.bands)
+        if list(self.bands) != sorted(set(self.bands)) or any(b <= 0 for b in self.bands):
+            raise ValueError(f"'bands' must be positive and increasing, got {self.bands}")
+
+    @property
+    def enabled(self) -> bool:
+        """Whether any diagnostic is on, which takes the pass over the data."""
+        return self.chi2 or bool(self.bands) or self.residual_map
+
+
+@dataclass
 class SolverConfig:
     """Options for the iterative (conjugate gradient) solver.
 
@@ -221,6 +273,114 @@ class NoiseFitConfig:
 
 
 @dataclass
+class CirculantBridgeConfig:
+    """The padding after the data of each observation under the circulant low-rank weight.
+
+    The weight applies across the end of the buffer to its start: without padding, the end of the
+    data meets its start there, and the step between them spreads noise into the map. Every
+    observation gets at least `length` of padding, more when its bucket pads it further. With
+    explicit gaps, a cubic spline over the whole padding, solved for with the map, bridges the end
+    of the data to its start across it; under other gap treatments, the padding is left empty.
+
+    The knots of the spline are `resolution` apart next to the data, where the noise it bridges is
+    correlated with the data, and their spacing grows by `growth` towards the middle of the
+    padding, where a smooth spline is all the noise needs: a long padding takes few more
+    amplitudes than a short one.
+    """
+
+    length: float = 32.0
+    """The least padding after the data, in seconds."""
+
+    resolution: float = 6.4
+    """The knot spacing of the spline next to the data, in seconds."""
+
+    growth: float = 1.5
+    """The factor by which the knot spacing grows towards the middle of the padding; 1 for
+    uniform knots."""
+
+    def __post_init__(self) -> None:
+        if self.length <= 0:
+            raise ValueError(f"'length' must be positive, got {self.length}")
+        if self.resolution <= 0:
+            raise ValueError(f"'resolution' must be positive, got {self.resolution}")
+        if self.growth < 1:
+            raise ValueError(f"'growth' must be at least 1, got {self.growth}")
+
+
+@dataclass
+class LowRankNoiseFitConfig:
+    r"""Options for fitting a detector-correlated noise model: a diagonal plus a few common modes.
+
+    The model is $N(f) = D_b + V G_b V^\top$ in each frequency bin $b$. The modes $V$ are the
+    same at every frequency: they are the leading eigenvectors of the channel covariance averaged
+    over `mode_band`, each channel whitened by its level in `whitening_band`, kept above the
+    largest eigenvalue that pure noise would give at `threshold_quantile`. The band should be where
+    the correlated noise dominates the white noise: for demodulated data, below the low-pass of
+    the demodulation. In each bin, the power of the amplitudes of the modes gives the diagonal
+    core $G_b$, and the power left in each channel once they are projected out gives $D_b$. Below
+    the first edge the first bin applies; above the last edge the noise is uncorrelated and white.
+
+    Unless `bin_edges` gives them in Hz, the bins grow geometrically by `bin_ratio` up to the top
+    of `mode_band`, and none holds fewer than `min_bin_frequencies` frequencies of the shortest
+    observation of its bucket: the observations of a bucket share their bins, and shorter ones
+    have fewer, wider bins at low frequency.
+    """
+
+    bin_edges: tuple[float, ...] | None = None
+    """Frequency bin edges in Hz, increasing, up to the top of `mode_band`; by default, from
+    `bin_ratio`."""
+
+    bin_ratio: float = 1.1
+    """The ratio between consecutive bin edges."""
+
+    min_bin_frequencies: int = 10
+    """The fewest frequencies of the shortest observation in a bin."""
+
+    mode_band: tuple[float, float] = (1e-4, 1.8)
+    """Frequency band in Hz over which the channel covariance gives the modes."""
+
+    max_modes: int = 50
+    """Maximum number of correlated modes."""
+
+    threshold_quantile: float = 0.999
+    """Quantile of the largest noise eigenvalue a mode must exceed, between 0.9 and 0.999."""
+
+    taper: float = 2.0
+    """Duration in seconds of the cosine taper applied to each end of the observation."""
+
+    whitening_band: tuple[float, float] = (0.5, 1.8)
+    """Frequency band in Hz where each channel is assumed white, to set its noise level."""
+
+    deproject: bool = True
+    """Whether to fit the model on the TOD less its fit by the configured templates, which their
+    amplitudes absorb in the solve, rather than on the TOD itself."""
+
+    bridge: CirculantBridgeConfig | None = field(default_factory=CirculantBridgeConfig)
+    """The padding, and its spline, between the end of the data and its start, where the weight
+    wraps around; `None` for none."""
+
+    def __post_init__(self) -> None:
+        edges = self.bin_edges
+        if edges is not None and (len(edges) < 2 or list(edges) != sorted(set(edges))):
+            raise ValueError(f'Expected at least two increasing bin edges, got {edges}')
+        if edges is not None and edges[-1] > self.mode_band[1]:
+            raise ValueError(f'The bin edges {edges} end above the mode band {self.mode_band}')
+        if self.bin_ratio <= 1 or self.min_bin_frequencies < 1:
+            raise ValueError(
+                f'Expected bin_ratio > 1 and min_bin_frequencies >= 1, got {self.bin_ratio} and'
+                f' {self.min_bin_frequencies}'
+            )
+        if not 0 <= self.mode_band[0] < self.mode_band[1]:
+            raise ValueError(
+                f'Expected an increasing, non-negative mode band, got {self.mode_band}'
+            )
+        if not 0.9 <= self.threshold_quantile <= 0.999:
+            raise ValueError(
+                f'threshold_quantile must be in [0.9, 0.999], got {self.threshold_quantile}'
+            )
+
+
+@dataclass
 class WeightingConfig:
     """Configuration for the inverse-noise / weighting matrix used in mapmaking.
 
@@ -250,10 +410,13 @@ class WeightingConfig:
     fitting: NoiseFitConfig = field(default_factory=NoiseFitConfig)
     """Options for fitting the noise PSD to the data."""
 
+    low_rank: LowRankNoiseFitConfig = field(default_factory=LowRankNoiseFitConfig)
+    """Options for fitting the detector-correlated noise model. Only relevant in `LOW_RANK` mode."""
+
     @property
     def diagonal_matrix(self) -> bool:
         """True when the inverse-noise matrix is diagonal (identity or white)."""
-        return self.mode != WeightingMode.TOEPLITZ
+        return self.mode not in (WeightingMode.TOEPLITZ, WeightingMode.LOW_RANK)
 
 
 @dataclass
@@ -1166,6 +1329,7 @@ class MapMakingConfig:
     Such a length is a product of the factors 2, 3 and 5, which typically adds below 1% of samples.
     FFTs over the whole length of an observation are several times faster at those lengths than at
     one with a large prime factor. Anything that does not take such FFTs only pays for the padding.
+    The low-rank weighting, whose every application takes such FFTs, requires it.
     """
 
     sotodlib: SotodlibConfig | None = None
@@ -1173,6 +1337,10 @@ class MapMakingConfig:
 
     injection: InjectionConfig | None = None
     """A simulated sky to add to the data, or to replace them with. `None` for none."""
+
+    diagnostics: DiagnosticsConfig | bool = False
+    """Goodness-of-fit statistics of the solution, at the cost of one more pass over the data:
+    `true` for all of them, `false` for none (see [`DiagnosticsConfig`][])."""
 
     def __post_init__(self) -> None:
         """Validate cross-field constraints that hold regardless of which mapmaker runs."""
@@ -1215,12 +1383,24 @@ class MapMakingConfig:
                 )
         if self.pomme_tau is not None:
             self._check_pomme()
+        if isinstance(self.diagnostics, bool):
+            self.diagnostics = DiagnosticsConfig() if self.diagnostics else False
+        if (
+            self.diagnostics_config is not None
+            and self.gaps.treatment == GapTreatment.FILL
+            and not self.binned
+        ):
+            raise ValueError(
+                'diagnostics need the data of the system: gap filling replaces the flagged ones.'
+            )
         if self.use_templates and not self.binned and self.gaps.treatment == GapTreatment.FILL:
             # gap filling bypasses the template path
             raise ValueError(
                 'Templates with correlated weighting require gaps.treatment=inner_mask, nested '
                 'or explicit.'
             )
+        if self.weighting.mode == WeightingMode.LOW_RANK:
+            self._check_low_rank()
         if self.templates is not None and not self.binned:
             self._check_explicit_templates()
         if (templates := self.templates) is not None:
@@ -1247,6 +1427,18 @@ class MapMakingConfig:
             ):
                 if isinstance(per_stream, dict):
                     self._check_stream_groups(f'templates.{name}', per_stream)
+
+    def _check_low_rank(self) -> None:
+        """Check that the detector-correlated weighting supports the config."""
+        if self.weighting.source != NoiseSource.FIT:
+            raise ValueError('weighting.mode=low_rank requires weighting.source=fit.')
+        if self.gaps.treatment in (GapTreatment.FILL, GapTreatment.NESTED):
+            # the nested weight solves with a banded Toeplitz N⁻¹, which the low-rank one is not
+            raise ValueError(
+                'weighting.mode=low_rank requires gaps.treatment=inner_mask or explicit.'
+            )
+        if not self.fft_friendly_sample_count:
+            raise ValueError('weighting.mode=low_rank requires fft_friendly_sample_count=true.')
 
     def _check_explicit_templates(self) -> None:
         """Check that no template is implicit: a correlated weight needs them all explicit."""
@@ -1310,6 +1502,14 @@ class MapMakingConfig:
         """Serialize the config to a YAML string."""
         data = serialize(self)
         return yaml.dump(data, indent=2)
+
+    @property
+    def diagnostics_config(self) -> DiagnosticsConfig | None:
+        """The diagnostics to compute, if any is on."""
+        diagnostics = self.diagnostics
+        if isinstance(diagnostics, DiagnosticsConfig) and diagnostics.enabled:
+            return diagnostics
+        return None
 
     @property
     def binned(self) -> bool:

@@ -17,7 +17,7 @@ from toast.observation import default_values as defaults
 from toast.ops.load_hdf5 import LoadHDF5
 
 from furax.mapmaking import AbstractGroundObservation, FileBackedLazyObservation, ReaderField
-from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
+from furax.mapmaking.noise import NoiseModel, OneOverFNoiseModel
 from furax.obs.coords import polarization_angle
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
@@ -333,11 +333,13 @@ class ToastObservation(AbstractGroundObservation[toast.Data]):
                 return None
 
         idets = np.argwhere(np.array(self.detectors)[:, None] == fp_data['name'][None, :])[:, 1]
-        noise_model = AtmosphericNoiseModel(
-            sigma=jnp.array(fp_data['psd_net'][idets].to(u.K * u.s**0.5).value),
+        noise_model = OneOverFNoiseModel(
+            # the one-sided PSD of a white noise of NET n is 2 n²
+            sigma=jnp.sqrt(2) * jnp.array(fp_data['psd_net'][idets].to(u.K * u.s**0.5).value),
             alpha=jnp.array(-fp_data['psd_alpha'][idets].value),  # Note toast's sign convention
             fk=jnp.array(fp_data['psd_fknee'][idets].to(u.Hz).value),
             f0=jnp.array(fp_data['psd_fmin'][idets].to(u.Hz).value),
+            sample_rate=self.sample_rate,
         )
         return noise_model
 

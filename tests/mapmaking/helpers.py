@@ -29,7 +29,7 @@ from furax.mapmaking._pass import PassTotals
 from furax.mapmaking._solve import MapMakingSystem
 from furax.mapmaking._tile import AMPLITUDE_STRIDES
 from furax.mapmaking.config import HealpixConfig, LandscapeConfig, MapMakingConfig, PointingConfig
-from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
+from furax.mapmaking.noise import NoiseModel, OneOverFNoiseModel
 from furax.obs.coords import xieta_to_quat
 from furax.obs.landscapes import LocalStokesLandscape, ProjectionType, StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
@@ -116,12 +116,12 @@ class FakeObservation(AbstractObservation[None]):
         return Stokes.class_for(stokes).from_array(self._scaled_tods(streams, 1.0, out))
 
     def get_demodulated_noise_model(self, stokes: ValidStokesLiteral = 'IQU') -> NoiseModel:
-        # One white-noise fit per Stokes component. Rows match AtmosphericNoiseModel's
+        # One white-noise fit per Stokes component. Rows match OneOverFNoiseModel's
         # fields: (sigma, alpha, fk, f0).
         n = self._n_dets
         fit = np.stack([np.ones(n), np.ones(n), np.ones(n), 1e-5 * np.ones(n)], axis=0)
         fits = np.stack([fit for _ in stokes], axis=1)
-        return AtmosphericNoiseModel(*fits)
+        return OneOverFNoiseModel(*fits, sample_rate=self.sample_rate)
 
     def get_detector_offset_angles(self) -> Float[np.ndarray, ' dets']:
         return np.zeros(self._n_dets, dtype=np.float64)
@@ -230,7 +230,7 @@ class FakeGroundObservation(FakeObservation, AbstractGroundObservation[None]):
     intervals, scan masks) the azimuth and interval templates need, plus a finite precomputed
     noise model.
 
-    The precomputed ``AtmosphericNoiseModel`` sidesteps fitting a 1/f model to the synthetic
+    The precomputed ``OneOverFNoiseModel`` sidesteps fitting a 1/f model to the synthetic
     white TODs (which yields NaN); use ``weighting.source = PRECOMPUTED``.
     """
 
@@ -255,8 +255,12 @@ class FakeGroundObservation(FakeObservation, AbstractGroundObservation[None]):
 
     def get_noise_model(self) -> NoiseModel:
         n = self._n_dets
-        return AtmosphericNoiseModel(
-            sigma=jnp.ones(n), alpha=-jnp.ones(n), fk=0.1 * jnp.ones(n), f0=1e-3 * jnp.ones(n)
+        return OneOverFNoiseModel(
+            sigma=jnp.ones(n),
+            alpha=-jnp.ones(n),
+            fk=0.1 * jnp.ones(n),
+            f0=1e-3 * jnp.ones(n),
+            sample_rate=self.sample_rate,
         )
 
 
@@ -269,6 +273,28 @@ class GappyGroundObservation(FakeGroundObservation):
         for centre in (self._n_samples // 4, self._n_samples // 2, 3 * self._n_samples // 4):
             mask[:, centre - gap // 2 : centre + gap // 2] = False
         return mask
+
+
+class CorrelatedGroundObservation(GappyGroundObservation):
+    """Gappy ground observation whose detectors share two red common modes, over white noise."""
+
+    def get_tods(self, out: np.ndarray | None = None) -> Float[np.ndarray, 'dets samps']:
+        rng = np.random.default_rng(self._seed)
+        n, k = self._n_samples, self._n_dets
+        f = np.fft.rfftfreq(n, 1 / self._sample_rate)
+        red = np.fft.irfft(np.fft.rfft(rng.normal(size=(2, n))) / np.maximum(f, 0.05) ** 1.5, n=n)
+        red /= red.std(axis=-1, keepdims=True)
+        tods = rng.normal(size=(k, n)) + 3 * rng.normal(size=(k, 2)) @ red
+        return self._scaled_tod(tods.astype(np.float32), 1.0, out)
+
+
+class CorrelatedLazyGroundObservation(FakeLazyObservation):
+    """File-free lazy wrapper around :class:`CorrelatedGroundObservation`."""
+
+    interface_class = CorrelatedGroundObservation
+
+    def get_data(self, requested_fields=None) -> CorrelatedGroundObservation:
+        return CorrelatedGroundObservation(**self._kwargs)
 
 
 class FakeLazyGroundObservation(FakeLazyObservation):
@@ -359,7 +385,8 @@ def probe_normal_system(maker: MapMakingRun, seed: int = 0) -> tuple[dict, dict]
         valid = maker.pixel_selection(totals.hit_map, BJ.blocks)
         S = IndexOperator((..., *jnp.where(valid)), in_structure=maker.landscape.structure)
         pixels = LocalStokesLandscape.from_boolean_mask(maker.landscape, valid)
-        system = MapMakingSystem.create([selected(t, pixels) for t in buckets], totals.rhs, S, BJ)
+        selected_buckets = [selected(t, pixels) for t in buckets]
+        system = MapMakingSystem.create(selected_buckets, totals.rhs, S, BJ)
         x = tree.normal_like(system.A.in_structure, jax.random.key(seed))
         per_tile = [k for k in buckets[0].template.kinds if AMPLITUDE_STRIDES[k] == 1]
         x |= {kind: tree.zeros_like(x[kind]) for kind in per_tile}

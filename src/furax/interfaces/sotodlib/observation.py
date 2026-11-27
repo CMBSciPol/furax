@@ -34,7 +34,7 @@ from furax.mapmaking import (
     SampleRanges,
 )
 from furax.mapmaking.config import SotodlibConfig
-from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
+from furax.mapmaking.noise import NoiseModel, OneOverFNoiseModel
 from furax.obs.landscapes import (
     AstropyWCSLandscape,
     HealpixLandscape,
@@ -495,7 +495,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
             fit = self._get_noise_fit_for_stoke('I')
         except ValueError:
             return None
-        return AtmosphericNoiseModel(*fit)
+        return OneOverFNoiseModel(*fit, sample_rate=self.sample_rate)
 
     def get_demodulated_noise_model(self, stokes: ValidStokesLiteral = 'IQU') -> NoiseModel:
         """Returns a single noise model covering every requested stream.
@@ -506,7 +506,7 @@ class SOTODLibObservation(AbstractGroundObservation[AxisManager]):
         if stokes == 'IQUV':
             raise NotImplementedError
         fits = np.stack([self._get_noise_fit_for_stoke(s) for s in stokes], axis=1)
-        return AtmosphericNoiseModel(*fits)
+        return OneOverFNoiseModel(*fits, sample_rate=self.sample_rate)
 
     def _get_noise_fit_for_stoke(self, stoke: Literal['I', 'Q', 'U']) -> NDArray[np.floating]:
         """Returns the (sigma, alpha, fk, f0) fit rows for one stream, shape ``(4, dets)``."""

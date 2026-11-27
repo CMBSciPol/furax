@@ -5,15 +5,18 @@ the selected sky pixels, under `'map'`, and of the amplitudes of each kind solve
 joint operator $J$ maps them to the TOD of every tile of the bucket, each tile applying its own
 $J_t$ (see [`Tile.joint`][furax.mapmaking._tile.Tile.joint]), whose pointing reads the selected
 pixels alone once they are selected (see [`selected`][]). The weight $W$ acts on the TOD of the
-bucket, each tile's by its [`system_weight`][furax.mapmaking._tile.Tile.system_weight] $W'_t$ (see
+bucket: each tile's [`system_weight`][furax.mapmaking._tile.Tile.system_weight] $W'_t$, and under a
+low-rank noise model the correlated modes, which couple the tiles of each observation (see
 [`weight`][]).
 
-$J$ and $W$ are assemblies over the tiles, which `reduce` fuses: each tile applies its own
-$J_t^\top W'_t J_t$, in one sweep over the tiles.
+These are assemblies over the tiles, which `reduce` fuses into as few sweeps over them as the
+algebra allows: without correlated modes, each tile applies its own $J_t^\top W'_t J_t$ in one
+sweep.
 
 A bucket holds its tiles as a [`StackedEnsemble`][furax.core.StackedEnsemble], split over the
 devices and grouped in segments by observation: each leaf is stacked per tile, per segment, or
-held once for the bucket.
+held once for the bucket. The tiles of an observation are on one device, so the sums over them do
+not communicate.
 """
 
 from collections.abc import Callable
@@ -55,6 +58,14 @@ def bucket_normal(tiles: StackedEnsemble) -> AbstractLinearOperator:
     return (J.T @ weight(tiles) @ J).reduce()
 
 
+def bucket_rhs(tiles: StackedEnsemble) -> AbstractLinearOperator:
+    r"""$J^\top W$ over the detector tiles of a bucket: from their masked TOD $M d$ to its RHS.
+
+    The TOD is `(tile, ...)`, and the output is keyed as the unknowns of [`bucket_normal`][].
+    """
+    return (joint(tiles).T @ weight(tiles)).reduce()
+
+
 def bucket_response(tiles: StackedEnsemble) -> AbstractLinearOperator:
     r"""$J^\top W M H$ over the detector tiles of a bucket.
 
@@ -70,13 +81,35 @@ def joint(tiles: StackedEnsemble) -> AssemblyOperator:
     return AssemblyOperator(_deferred(Tile.joint, tiles), _unknown_strides(tiles), 1)
 
 
-def weight(tiles: StackedEnsemble) -> AssemblyOperator:
-    r"""The weight $W$ on the TOD of the tiles of a bucket, `(tile, ...)`.
+def weight(tiles: StackedEnsemble) -> AbstractLinearOperator:
+    r"""The weight $W$ on the TOD of the tiles of a bucket, `(tile, ...)`, reduced.
 
-    Each tile weights its own TOD by its
-    [`system_weight`][furax.mapmaking._tile.Tile.system_weight] $W'_t$.
+    It is each tile's [`system_weight`][furax.mapmaking._tile.Tile.system_weight] $W'_t$. Under
+    a low-rank noise model, that is the weight $P_t D_t^{-1} P_t$ of the diagonal of the noise,
+    and the correlated modes couple the tiles of each observation through the Woodbury identity:
+    $W = P D^{-1} P - B^\top K B$, with $B = \sum_t T_t^\top D_t^{-1} P_t$ summed over the tiles
+    of each observation (see [`Tile.modes`][furax.mapmaking._tile.Tile.modes]) and $K$ its
+    [`modes_core`][].
     """
-    return AssemblyOperator(_deferred(Tile.system_weight, tiles), 1)
+    diagonal = AssemblyOperator(_deferred(Tile.system_weight, tiles), 1)
+    if tiles.template.modes_core is None:
+        return diagonal
+    B = AssemblyOperator(_deferred(Tile.modes, tiles), 1, 'segment')
+    # reduced before it is composed: the composition takes its factors as its own, and reduces
+    # the first of them with the joint operator after it, which a nested composition would hide
+    return (diagonal - B.T @ modes_core(tiles) @ B).reduce()
+
+
+def modes_core(tiles: StackedEnsemble) -> BlockDiagonalOperator:
+    r"""$K$ of each observation of a bucket, on the amplitudes of its correlated modes.
+
+    The amplitudes are `(segment, frequency, mode, 2)` (see
+    [`Tile.modes_core`][furax.mapmaking._tile.Tile.modes_core]).
+    """
+    cores = lift(lambda tile: tile.modes_core, tiles).by_segment()
+    # the cores are small: every observation of a device is evaluated at once, vectorized
+    policy = replace(cores.policy, batch=cores.size_per_device)
+    return BlockDiagonalOperator(replace(cores, policy=policy))
 
 
 def block_jacobi(buckets: list[StackedEnsemble], binned: bool) -> BJPreconditioner:

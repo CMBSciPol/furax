@@ -10,6 +10,7 @@ from furax.mapmaking.config import (
     AzimuthSynchronousConfig,
     BinsConfig,
     CommonModeConfig,
+    DiagnosticsConfig,
     ExplicitGapsConfig,
     GapsConfig,
     GapTreatment,
@@ -18,6 +19,7 @@ from furax.mapmaking.config import (
     LandscapeConfig,
     MapMakingConfig,
     NestedConfig,
+    NoiseSource,
     PointingConfig,
     PolynomialOrders,
     SotodlibConfig,
@@ -223,11 +225,41 @@ def test_correlated_gap_treatments_reject_detector_tiles(treatment: GapTreatment
     MapMakingConfig(gaps=GapsConfig(treatment=treatment), detector_tile_size=16)
 
 
-def test_correlated_weight_rejects_implicit_templates():
-    options = {
-        'weighting': WeightingConfig(mode=WeightingMode.TOEPLITZ),
+@pytest.mark.parametrize(
+    ('options', 'match'),
+    [
+        (
+            {
+                'weighting': WeightingConfig(
+                    mode=WeightingMode.LOW_RANK, source=NoiseSource.PRECOMPUTED
+                )
+            },
+            'source=fit',
+        ),
+        ({'gaps': GapsConfig(treatment=GapTreatment.FILL)}, 'inner_mask or explicit'),
+        ({'gaps': GapsConfig(treatment=GapTreatment.NESTED)}, 'inner_mask or explicit'),
+        ({'fft_friendly_sample_count': False}, 'fft_friendly_sample_count=true'),
+    ],
+    ids=['precomputed', 'fill-gaps', 'nested-gaps', 'unpadded'],
+)
+def test_low_rank_weighting_rejects(options, match):
+    base = {
+        'weighting': WeightingConfig(mode=WeightingMode.LOW_RANK),
         'detector_tile_size': 0,
         'gaps': GapsConfig(treatment=GapTreatment.INNER_MASK),
+        'fft_friendly_sample_count': True,
+    }
+    with pytest.raises(ValueError, match=match):
+        MapMakingConfig(**(base | options))
+
+
+@pytest.mark.parametrize('mode', [WeightingMode.TOEPLITZ, WeightingMode.LOW_RANK])
+def test_correlated_weight_rejects_implicit_templates(mode: WeightingMode):
+    options = {
+        'weighting': WeightingConfig(mode=mode),
+        'detector_tile_size': 0,
+        'gaps': GapsConfig(treatment=GapTreatment.INNER_MASK),
+        'fft_friendly_sample_count': True,
     }
     with pytest.raises(ValueError, match='explicit=true for spline_drift'):
         MapMakingConfig(
@@ -391,3 +423,17 @@ class TestSplineDrift:
         templates = TemplatesConfig(spline_drift=SplineDriftConfig(samples_per_knot={'qu': 500}))
         with pytest.raises(ValueError, match='per stream requires demodulated=True'):
             MapMakingConfig(templates=templates)
+
+
+@pytest.mark.parametrize(
+    ('value', 'expected'),
+    [
+        (True, DiagnosticsConfig()),
+        (False, None),
+        ({'residual_map': False}, DiagnosticsConfig(residual_map=False)),
+        ({'chi2': False, 'bands': [], 'residual_map': False}, None),
+    ],
+)
+def test_diagnostics_load_from_a_bool_or_options(value, expected):
+    config = MapMakingConfig.load_dict({'diagnostics': value})
+    assert config.diagnostics_config == expected

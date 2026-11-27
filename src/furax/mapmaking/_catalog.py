@@ -41,6 +41,8 @@ class ProbeRecord(NamedTuple):
     gap_amplitudes: int | None = None
     """The most amplitudes the explicit gaps of one of its detectors kept need at that spacing, if
     its good ranges were probed."""
+    sample_rate: float | None = None
+    """Its sample rate in Hz, if probed."""
 
 
 @dataclass
@@ -80,17 +82,35 @@ class ObservationCatalog:
             if not isinstance(self.reads.get(i), ObservationRecord)
         ]
 
-    def to_table(self, drops: dict[str, Bool[np.ndarray, 'obs det']] | None = None) -> pl.DataFrame:
+    def to_table(
+        self,
+        drops: dict[str, Bool[np.ndarray, 'obs det']] | None = None,
+        statistics: dict[str, np.ndarray] | None = None,
+    ) -> pl.DataFrame:
         """The catalog as `MapMakingResults.observations` holds it.
 
         Args:
             drops: Per detector of each observation, whether it was dropped, by reason; each
                 observation counts them in the column of the reason.
+            statistics: The residual `chi2` and number of `good` samples of each detector,
+                `(obs, stream, det)`, whose ratio over the observation is its `chi2` column;
+                under a low-rank noise model, with the `modes_chi2` of the correlated modes of
+                each observation, which adds to it, and its number of `modes_samples`, `(obs,)`,
+                whose ratio is its `chi2_modes` column.
         """
         rows = [self._row(i) for i in range(len(self.names))]
         for reason, dropped in (drops or {}).items():
             for row, count in zip(rows, dropped.sum(axis=-1), strict=True):
                 row[reason] = int(count)
+        if statistics is not None and 'chi2' in statistics:
+            chi2 = observation_chi2(statistics)
+            good = statistics['good'].sum(axis=(1, 2))
+            for row, c, g in zip(rows, chi2, good, strict=True):
+                row['chi2'] = float(c / g) if row['loaded'] and g > 0 else None
+        if statistics is not None and 'modes_chi2' in statistics:
+            pairs = zip(statistics['modes_chi2'], statistics['modes_samples'], strict=True)
+            for row, (c, n) in zip(rows, pairs, strict=True):
+                row['chi2_modes'] = float(c / n) if row['loaded'] and n > 0 else None
         return pl.DataFrame(rows, schema=_OBSERVATIONS_SCHEMA, orient='row')
 
     def _row(self, i: int) -> dict[str, Any]:
@@ -107,6 +127,8 @@ class ObservationCatalog:
             'valid_sample_fraction': None,
             'load_seconds': None,
             'error': None,
+            'chi2': None,
+            'chi2_modes': None,
         }
         if isinstance(probe, ProbeRecord):
             shape = probe.shape
@@ -141,6 +163,7 @@ def detector_table(
     noise: dict[str, np.ndarray] | None = None,
     stokes: str | None = None,
     drops: dict[str, Bool[np.ndarray, 'obs det']] | None = None,
+    statistics: dict[str, np.ndarray] | None = None,
 ) -> pl.DataFrame:
     """One row per detector read, in observation then detector order.
 
@@ -155,6 +178,8 @@ def detector_table(
             otherwise.
         drops: Per detector of each observation, whether it was dropped, by reason; each marks
             the detectors in the column of the reason.
+        statistics: The residual statistics of each detector, `(n_observations, stream,
+            detector)`, suffixed by the stream as the noise parameters.
     """
     records = [
         (i, r)
@@ -174,7 +199,9 @@ def detector_table(
         columns[axis] = pl.Series(axis, values).fill_nan(None)  # null where not read
     for reason, dropped in (drops or {}).items():
         columns[reason] = dropped[observation, detector]
-    for name, values in (noise or {}).items():
+    for name, values in {**(noise or {}), **(statistics or {})}.items():
+        if values.ndim == 3 and stokes is None:  # the single stream of a plain TOD
+            values = values[:, 0]
         if values.ndim == 2:
             columns[name] = values[observation, detector]
             continue
@@ -182,6 +209,14 @@ def detector_table(
         for k, stream in enumerate(stokes.lower()):
             columns[f'{name}_{stream}'] = values[observation, k, detector]
     return pl.DataFrame(columns)
+
+
+def observation_chi2(statistics: dict[str, np.ndarray]) -> np.ndarray:
+    r"""The residual $\chi^2$ of each observation, `(obs,)`.
+
+    That is the $\chi^2$ of its detectors, and of the correlated modes under a low-rank noise model.
+    """
+    return statistics['chi2'].sum(axis=(1, 2)) + statistics.get('modes_chi2', 0)
 
 
 def gather_rows[R](local: dict[int, R]) -> dict[int, R]:

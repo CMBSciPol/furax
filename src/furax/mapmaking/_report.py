@@ -17,6 +17,7 @@ from furax.core import StackedEnsemble, lift
 
 from ._tile import DROP_REASONS, SHARED_TEMPLATES, TEMPLATES
 from .layout import TilePlacement
+from .noise import NoiseModel
 
 
 def template_amplitudes(
@@ -84,7 +85,7 @@ def noise_parameters(
     per_bucket = []
     for tiles in buckets:
         # the parameters of the detectors are held per tile: `(tile, ..., detector)`
-        noise = lift(lambda tile: tile.noise_model, tiles)
+        noise = lift(lambda tile: _detector_parameters(tile.noise_model), tiles)
         leaves, _ = jax.tree_util.tree_flatten_with_path(placement.gather(noise.stacked))
         per_bucket.append(
             {
@@ -100,5 +101,12 @@ def noise_parameters(
 
 
 def _parameter_name(path: tuple[Any, ...]) -> str:
-    """The name of a leaf of a noise model, from its path: `sigma`, or `<key>/sigma` if nested."""
+    """The name of a detector parameter, from its path: `sigma`, or `<key>/sigma` if nested."""
     return '/'.join(str(getattr(k, 'name', getattr(k, 'key', k))) for k in path)
+
+
+def _detector_parameters(noise_model: PyTree[NoiseModel]) -> PyTree[dict[str, Array]]:
+    """The parameters of each detector of a tile, by name (see `NoiseModel.detector_parameters`)."""
+    return jax.tree.map(
+        lambda m: m.detector_parameters(), noise_model, is_leaf=lambda m: isinstance(m, NoiseModel)
+    )

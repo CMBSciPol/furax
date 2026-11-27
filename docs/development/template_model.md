@@ -282,7 +282,7 @@ to the diagonal of its block, and turns deprojection into Wiener filtering,
   and right-hand side are summed over the batches, and the Gram factored once per observation.
   Whether a template has a set per detector is read from its `per` and detector groups.
 - **The weight.** A diagonal weight gives the Gram from the structure of the bases. A correlated
-  one, a Toeplitz noise model, cannot be taken: its templates are all explicit, and
+  one, a Toeplitz or low-rank noise model, cannot be taken: its templates are all explicit, and
   their Gram is taken under the zero-lag white weight, which preconditions the system and sets the
   ridge. Configuring an implicit template with a correlated weight is an error.
 - **The system** is `A = [H T]ᵀ W' [H T]`, plus the ridge on the amplitudes, preconditioned by the

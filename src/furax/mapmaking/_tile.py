@@ -23,7 +23,8 @@ from furax import (
     SymmetricBandToeplitzOperator,
     tree,
 )
-from furax.core import BlockRowOperator
+from furax.core import BlockRowOperator, LowRankFourierOperator
+from furax.linalg import CGSolver
 from furax.obs import TODFormat
 from furax.obs.landscapes import LocalStokesLandscape, StokesLandscape
 from furax.obs.pointing import PointingOperator
@@ -33,8 +34,17 @@ from ._gaps import GapBasisOperator, GapSplines
 from ._observation import ReaderField, _sample_rate, real_extent
 from .acquisition import _acquisition_factors
 from .config import GapTreatment, MapMakingConfig, NoiseSource, TemplatesConfig, WeightingMode
-from .noise import AtmosphericNoiseModel, NoiseModel, WhiteNoiseModel, padding_aware_welch
+from .noise import (
+    LowRankModesOperator,
+    LowRankNoiseModel,
+    ModesCore,
+    NoiseModel,
+    OneOverFNoiseModel,
+    WhiteNoiseModel,
+)
+from .noise.lowrank import _low_rank_spectra
 from .templates import TemplateOperator, build_templates
+from .templates.fit import TemplateFit
 from .templates.gram import BlockGram, factor, template_gram
 from .templates.pomme import PommeProjectionOperator
 from .weight import MarginalizedWeightOperator, NestedWeightOperator, WeightOperator
@@ -121,6 +131,10 @@ class Tile:
     r"""The acquisition $H S^\top$ from the selected pixels of the sky, the unknowns of the map;
     `None` until they are selected (see [`selected`][furax.mapmaking._tile.Tile.selected])."""
 
+    modes_core: ModesCore | None = None
+    r"""Under a low-rank noise model, the core $K$ of the correlated modes of its observation (see
+    [`modes`][furax.mapmaking._tile.Tile.modes]); `None` otherwise."""
+
     @classmethod
     def create(
         cls,
@@ -130,6 +144,7 @@ class Tile:
         landscape: StokesLandscape,
         use: Bool[Array, ''] | bool = True,
         gaps: GapSplines | None = None,
+        noise_model: PyTree[NoiseModel] | None = None,
     ) -> Self:
         """The tile of the fields read for its detectors, without templates.
 
@@ -142,6 +157,8 @@ class Tile:
                 detectors is dropped.
             gaps: The spline model of the gaps, when they are explicit; a detector needing more
                 amplitudes than its budget is dropped.
+            noise_model: The noise model of its detectors, fitted beforehand, as the low-rank
+                one is, from their whole observation; fitted from the tile by default.
         """
         R, P = acquisition_factors(data, config, landscape)
         tod_format = _tod_format(R.out_structure)
@@ -159,19 +176,18 @@ class Tile:
         M = MaskOperator.from_boolean_mask(
             mask & valid_detectors, in_structure=tod_format.structure
         )
-        noise_model, sample_rate = _noise_model(data, config, tod_format, n_samples)
-        Ninv = _noise_operator(
-            noise_model,
-            tod_format,
-            sample_rate,
-            config.weighting.correlation_length,
-            inverse=True,
-        )
+        if noise_model is None:
+            noise_model, sample_rate = _noise_model(data, config, tod_format, n_samples)
+        else:
+            sample_rate = _sample_rate(data[ReaderField.TIMESTAMPS])
+        # correlations across detectors, if any, are marginalized over the whole observation, not
+        # weighted in a tile (see `Tile.modes`)
+        Ninv = noise_model.decoupled().inverse_covariance(tod_format.structure)
         W: WeightOperator | NestedWeightOperator
         if config.gap_treatment == GapTreatment.NESTED:
             # Minimum-variance correlated-noise weight; the white-noise weight preconditions its
             # linear inner solve
-            white = noise_model.to_white_noise_model().inverse_operator(tod_format.structure)
+            white = noise_model.white().inverse_covariance(tod_format.structure)
             # the correlated noise models build a banded inverse
             assert isinstance(Ninv, SymmetricBandToeplitzOperator)
             W = NestedWeightOperator.create(Ninv, M, config.gaps.nested, white)
@@ -222,6 +238,39 @@ class Tile:
         the normal system. The acquisition from the full sky is kept, for a sky given on it.
         """
         return replace(self, H_S=self.R @ self.P.with_landscape(pixels))
+
+    def modes(self) -> AbstractLinearOperator:
+        r"""$T_t^\top D_t^{-1} P_t$: from the TOD to the amplitudes of the correlated modes.
+
+        Under a low-rank noise model $N = D + V G V^\dagger$, the weight of a tile is that of the
+        diagonal $D$, which couples no detectors (see
+        [`system_weight`][furax.mapmaking._tile.Tile.system_weight]), and the correlated modes
+        $T$ (see [`LowRankModesOperator`][furax.mapmaking.noise.LowRankModesOperator]) couple
+        the tiles of the observation: $N^{-1} = D^{-1} - D^{-1} T K T^\top D^{-1}$, $K$ the
+        [`modes_core`][furax.mapmaking._tile.Tile.modes_core]. $P_t$ is the mask $M_t$, the
+        identity with explicit gaps, which leave the weight unmasked. The amplitudes are
+        `(frequency, mode, 2)`, summed over the tiles of the observation.
+        """
+        T, inverse_diagonal, P = self.low_rank_weight()
+        # D⁻¹ T as modes of their own: one FFT, rather than D⁻¹'s pair and then T's
+        return T.weighted_by(inverse_diagonal.diagonal).T @ P
+
+    def low_rank_weight(
+        self,
+    ) -> tuple[LowRankModesOperator, LowRankFourierOperator, AbstractLinearOperator]:
+        r"""The modes $T_t$, $D_t^{-1}$ and $P_t$ of the low-rank weight $W'_t = P_t D_t^{-1} P_t$.
+
+        See [`modes`][furax.mapmaking._tile.Tile.modes].
+        """
+        assert isinstance(self.noise_model, LowRankNoiseModel)
+        # the low-rank weight is never nested, and has neither implicit templates nor Pomme
+        assert isinstance(self.W, WeightOperator) and self.implicit is None
+        assert isinstance(self.F, IdentityOperator)
+        inverse_diagonal = self.W.ninv
+        assert isinstance(inverse_diagonal, LowRankFourierOperator)
+        T = self.noise_model.modes_operator(self.tod_format.structure)
+        P = self.M if self.gaps is None else IdentityOperator(in_structure=self.W.in_structure)
+        return T, inverse_diagonal, P
 
     def joint(self) -> AbstractLinearOperator:
         r"""The joint operator $J_t$, from the unknowns to the TOD.
@@ -301,20 +350,13 @@ class Tile:
         basis = GapBasisOperator.create(self.gaps, self.M, self.n_samples)
         return TemplateBundle(basis, self.gap_preconditioner, None)
 
-    def covariance(self, correlation_length: int) -> AbstractLinearOperator:
-        """The noise covariance $N$ of the TOD.
-
-        Args:
-            correlation_length: The band of the Toeplitz operator of a correlated noise model.
-        """
-        return _noise_operator(
-            self.noise_model, self.tod_format, self.sample_rate, correlation_length, inverse=False
-        )
+    def covariance(self) -> AbstractLinearOperator:
+        """The noise covariance of the TOD, decoupled across detectors as the weight is."""
+        return self.noise_model.decoupled().covariance(self.tod_format.structure)
 
     def white_weight(self) -> WeightOperator:
         """The weight of the tile under the white part of its noise, with its mask."""
-        white = self.noise_model.to_white_noise_model()
-        inv = _noise_operator(white, self.tod_format, self.sample_rate)
+        inv = self.noise_model.white().inverse_covariance(self.tod_format.structure)
         return WeightOperator.create(inv, self.M)
 
     @property
@@ -413,8 +455,8 @@ def assemble_templates(
     )
 
     # The Grams are taken under the weight of the system (see `Tile.system_weight`), from
-    # `tile.W` and `tau`, when it is diagonal. A correlated weight couples samples, which the
-    # Grams cannot take. The templates are then all explicit (see `MapMakingConfig`), so their
+    # `tile.W` and `tau`, when it is diagonal. A correlated weight couples samples or detectors,
+    # which the Grams cannot take. The templates are then all explicit (see `MapMakingConfig`), so their
     # Grams only precondition the solve and set its ridge: those under the zero-lag white
     # weight serve.
     pomme_tau = config.pomme_tau
@@ -540,8 +582,6 @@ def _noise_model(
     The samples past the first `n_samples`, padding, are left out of a fit; all count without it.
     """
     fs = _sample_rate(data[ReaderField.TIMESTAMPS])
-    nsamp = tod_format.n_samples
-
     # One noise model covers every stream of a demodulated TOD: its per-detector parameters carry
     # the leading stream axis.
     lead = (
@@ -550,33 +590,34 @@ def _noise_model(
         else (tod_format.n_streams, *tod_format.det_shape)
     )
     if config.weighting.mode == WeightingMode.IDENTITY:
-        return WhiteNoiseModel(sigma=jnp.ones(lead, dtype=tod_format.dtype)), fs
+        # the one-sided PSD of a unit variance per sample
+        sigma = jnp.full(lead, jnp.sqrt(2 / fs), dtype=tod_format.dtype)
+        return WhiteNoiseModel(sigma=sigma, sample_rate=fs), fs
+    if config.weighting.mode == WeightingMode.LOW_RANK:
+        raise ValueError('the low-rank noise model is fitted over whole observations, not a tile')
     if config.weighting.source == NoiseSource.FIT:
         fit_config = config.weighting.fitting
-        noise_model_class = WhiteNoiseModel if config.binned else AtmosphericNoiseModel
+        noise_model_class = WhiteNoiseModel if config.binned else OneOverFNoiseModel
         fhwp = _hwp_frequency(data[ReaderField.TIMESTAMPS], data[ReaderField.HWP_ANGLES])
 
-        samples = tod_format.as_array(data[ReaderField.SAMPLE_DATA]).reshape(-1, nsamp)
-        sample_padding = 0 if n_samples is None else nsamp - n_samples
-        # the segments that hold a flagged sample are left out of the estimate, for every stream
-        valid = jnp.broadcast_to(_sample_mask(data, config), (*lead, nsamp)).reshape(-1, nsamp)
-        f, Pxx = padding_aware_welch(
-            samples,
-            sample_padding,
-            fs=fs,
-            nperseg=fit_config.nperseg,
-            valid=valid,
+        shape = (*lead, tod_format.n_samples)
+        noise_model = noise_model_class.fit(
+            tod_format.as_array(data[ReaderField.SAMPLE_DATA]).reshape(shape),
+            sample_rate=fs,
+            hwp_frequency=fhwp,
+            n_real=n_samples,
+            # the flags of each detector apply to all its streams
+            valid=jnp.broadcast_to(_sample_mask(data, config), shape),
+            config=fit_config,
         )
-        flat_model = noise_model_class.fit_psd_model(
-            f, Pxx, sample_rate=fs, hwp_frequency=fhwp, config=fit_config
-        )
-        # restore the leading axes on each (flattened-detector) parameter array
-        noise_model = jax.tree.map(lambda p: p.reshape(lead + p.shape[1:]), flat_model)
     else:
         fits = data[ReaderField.NOISE_MODEL_FITS]  # (*lead, 4), already a plain array
-        noise_model = AtmosphericNoiseModel(*jnp.moveaxis(fits, -1, 0))
+        noise_model = OneOverFNoiseModel(*jnp.moveaxis(fits, -1, 0), sample_rate=fs)
         if config.binned:
-            noise_model = noise_model.to_white_noise_model()
+            noise_model = noise_model.white()
+    if isinstance(noise_model, OneOverFNoiseModel):
+        correlation_length = config.weighting.correlation_length
+        noise_model = replace(noise_model, correlation_length=correlation_length)
     return noise_model, fs
 
 
@@ -588,20 +629,77 @@ def _hwp_frequency(
     return (jnp.unwrap(hwp_angles)[-1] - hwp_angles[0]) / jnp.ptp(timestamps) / (2 * jnp.pi)
 
 
-def _noise_operator(
-    noise_model: NoiseModel,
+def low_rank_tile_spectra(
+    data: Any,
+    config: MapMakingConfig,
     tod_format: TODFormat,
-    sample_rate: Array,
-    correlation_length: int | None = None,
-    *,
-    inverse: bool = True,
-) -> AbstractLinearOperator:
-    """The (inverse) noise covariance operator of a tile.
+    padding: Any,
+    sample_rate: float,
+    temperature: Float[Array, 'det samp'] | None,
+) -> tuple[Array, Array, Array]:
+    """What the low-rank noise fit takes of the channels of a tile, and the samples of its observation.
 
-    `correlation_length` sets the Toeplitz band of a correlated (atmospheric) model; a white-noise
-    model ignores it.
+    Returns the spectrum and the white level of each channel (see
+    [`_low_rank_spectra`][furax.mapmaking.noise.lowrank._low_rank_spectra]), streams then detectors, and the
+    number of samples before the padding. With `deproject`, the TOD is first rid of its fit by the
+    templates, on the tile alone.
+
+    Args:
+        data: The fields read for the tile's detectors.
+        config: The mapmaking configuration.
+        tod_format: The format of the tile's TOD.
+        padding: The padding widths of the fields.
+        sample_rate: The sample rate at which the bins of the model are placed, in Hz.
+        temperature: The I timestream, from which the T2P template is built; by default, the I
+            stream of the sample data.
     """
-    build = noise_model.inverse_operator if inverse else noise_model.operator
-    return build(
-        tod_format.structure, sample_rate=sample_rate, correlation_length=correlation_length
+    fit_config = config.weighting.low_rank
+    _, n_real = real_extent(padding, (1, tod_format.n_samples))
+    tod = data[ReaderField.SAMPLE_DATA]
+    if fit_config.deproject and config.templates is not None:
+        tod = _deprojected_tod(data, config, tod_format, n_real, temperature)
+    samples = tod_format.as_array(tod).reshape(-1, tod_format.n_samples)
+    spectra, level = _low_rank_spectra(samples, sample_rate, n_real, fit_config)
+    return spectra, level, n_real
+
+
+def _deprojected_tod(
+    data: Any,
+    config: MapMakingConfig,
+    tod_format: TODFormat,
+    n_real: Int[Array, ''],
+    temperature: Float[Array, 'det samp'] | None,
+) -> PyTree[Array]:
+    r"""The TOD less its fit by every configured template, $d - T \hat a$.
+
+    The amplitudes are fitted by least squares under a white weight: each channel's inverse
+    variance, from its sample-to-sample differences, on its valid samples. The fit only shapes the
+    data the noise is estimated from, so a loose tolerance serves.
+    """
+    assert config.templates is not None
+    explicit, implicit = build_templates(
+        config.templates, data, tod_format, temperature=temperature
     )
+    operator = TemplateOperator({**explicit, **implicit})
+    tod = data[ReaderField.SAMPLE_DATA]
+    samples = tod_format.as_array(tod)  # (stream, det, sample)
+    valid = _sample_mask(data, config) & (jnp.arange(tod_format.n_samples) < n_real)
+    pairs = valid[..., 1:] & valid[..., :-1]
+    steps = jnp.where(pairs, jnp.diff(samples, axis=-1), 0)
+    variance = jnp.sum(steps**2, axis=-1) / jnp.maximum(2 * pairs.sum(axis=-1), 1)
+    inverse = jnp.where(variance > 0, 1 / jnp.where(variance > 0, variance, 1), 0)
+    channel_weight = tod_format.diagonal(inverse[..., None].astype(samples.dtype))
+    sample_weight = tod_format.diagonal(valid[None].astype(samples.dtype))
+    weight = channel_weight @ sample_weight
+    fit = TemplateFit(
+        operator,
+        weight,
+        regularization=config.templates.regularization,
+        batch_size=config.templates.gram_batch_size,
+        solver=CGSolver(rtol=1e-4, max_steps=_DEPROJECTION_STEPS),
+    )
+    return tree.sub(tod, fit.model(fit(tod).solution))
+
+
+_DEPROJECTION_STEPS = 50
+"""The most conjugate gradient steps of the template fit that precedes the low-rank noise fit."""

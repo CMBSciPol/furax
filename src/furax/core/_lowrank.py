@@ -184,11 +184,7 @@ class LowRankFourierOperator(AbstractLinearOperator):
         bin_of_frequency = np.searchsorted(
             self._bin_bounds(n)[1:-1], np.arange(n_frequencies), 'right'
         )
-
-        weight = np.full(n_frequencies, 2.0)
-        weight[0] = 1.0
-        if n % 2 == 0:
-            weight[-1] = 1.0
+        weight = rfft_folds(n, n_frequencies)
         phase = np.exp(2j * np.pi * np.outer(np.arange(n_frequencies), np.arange(n)) / n)
         # circulant: entry (a, s), (b, t) depends on s - t only
         kernel = jnp.einsum('f,fab,fd->abd', weight, per_bin[bin_of_frequency], phase).real / n
@@ -251,3 +247,21 @@ class LowRankFourierOperator(AbstractLinearOperator):
         n_frequencies = n_samples // 2 + 1
         inner = [int(np.ceil(edge * n_samples / self.sample_rate)) for edge in self.edges]
         return [0, *(min(max(i, 0), n_frequencies) for i in inner), n_frequencies]
+
+
+def mode_power(
+    modes: Inexact[Array, '*coupled channel mode'], core: Inexact[Array, 'coupled mode mode']
+) -> Float[Array, 'coupled channel']:
+    r"""The diagonal of $V_b G_b V_b^\dagger$ in each bin, the modes given per bin or once."""
+    return jnp.sum((modes @ core) * jnp.conj(modes), axis=-1).real
+
+
+def rfft_folds(n_samples: int, n_frequencies: int) -> np.ndarray:
+    r"""How many times each of the first `n_frequencies` rfft coefficients of a real TOD counts.
+
+    The zero and Nyquist frequencies count once, the others twice: with these weights $w_f$, the
+    inner product of two real TODs of $n$ samples is
+    $\frac1n \sum_f w_f \, \mathrm{Re}(\bar{\hat x}_f \hat y_f)$.
+    """
+    f = np.arange(n_frequencies)
+    return np.where((f == 0) | (2 * f == n_samples), 1.0, 2.0)

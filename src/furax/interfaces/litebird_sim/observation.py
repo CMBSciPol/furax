@@ -11,7 +11,7 @@ from astropy import wcs
 from jaxtyping import Array, Bool, Float
 
 from furax.mapmaking import AbstractSatelliteObservation, FileBackedLazyObservation
-from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
+from furax.mapmaking.noise import NoiseModel, OneOverFNoiseModel
 from furax.obs.landscapes import HealpixLandscape, ProjectionType, StokesLandscape
 
 
@@ -98,11 +98,13 @@ class LBSObservation(AbstractSatelliteObservation[lbs.Observation]):
         return pixel_indices, spin_angles
 
     def get_noise_model(self) -> None | NoiseModel:
-        return AtmosphericNoiseModel(
-            sigma=jnp.array(self.data.net_ukrts * 1e-6),
+        return OneOverFNoiseModel(
+            # the one-sided PSD of a white noise of NET n is 2 n²
+            sigma=jnp.sqrt(2) * jnp.array(self.data.net_ukrts * 1e-6),
             alpha=jnp.array(-self.data.alpha),
             fk=jnp.array(self.data.fknee_mhz * 1e-3),
             f0=jnp.array(self.data.fmin_hz),
+            sample_rate=self.sample_rate,
         )
 
     def get_q_sky_bore(self) -> Float[np.ndarray, 'samp 4']:

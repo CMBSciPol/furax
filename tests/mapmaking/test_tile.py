@@ -5,13 +5,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking import ReaderField
 from furax.mapmaking._observation import real_extent
-from furax.mapmaking._tile import (
-    _noise_model,
-    _noise_operator,
-    _over_flagged,
-    _sample_mask,
-    restrict_streams,
-)
+from furax.mapmaking._tile import _noise_model, _over_flagged, _sample_mask, restrict_streams
 from furax.mapmaking.config import (
     HealpixConfig,
     LandscapeConfig,
@@ -104,16 +98,17 @@ class TestIdentityNoise:
         # one noise model covers every stream of a demodulated TOD, with a leading stream axis
         tod_format = TODFormat((4, 200), jnp.float64, stokes=stokes)
         data = {'timestamps': jnp.linspace(0, 1, 200)}
-        noise_model, _ = _noise_model(data, identity_config, tod_format)
+        noise_model, fs = _noise_model(data, identity_config, tod_format)
         assert isinstance(noise_model, WhiteNoiseModel)
-        assert_allclose(noise_model.sigma, jnp.ones(shape))
+        # a unit variance per sample: the one-sided PSD sigma² spreads over fs / 2
+        assert_allclose(noise_model.sigma**2 * fs / 2, jnp.ones(shape))
         assert noise_model.sigma.dtype == tod_format.dtype
 
-    def test_noise_operator_acts_as_identity(self, identity_config, tod_format):
+    def test_identity_noise_model_acts_as_identity(self, identity_config, tod_format):
         data = {'timestamps': jnp.linspace(0, 1, 200)}
-        noise_model, fs = _noise_model(data, identity_config, tod_format)
-        inv_op = _noise_operator(noise_model, tod_format, fs, 100, inverse=True)
-        fwd_op = _noise_operator(noise_model, tod_format, fs, 100, inverse=False)
+        noise_model, _ = _noise_model(data, identity_config, tod_format)
+        inv_op = noise_model.inverse_covariance(tod_format.structure)
+        fwd_op = noise_model.covariance(tod_format.structure)
         x = jax.random.normal(jax.random.key(1), (4, 200))
         assert_allclose(inv_op(x), x, rtol=1e-12)
         assert_allclose(fwd_op(x), x, rtol=1e-12)

@@ -10,7 +10,9 @@ under jit their count, set by the flags, is a runtime value. A channel needing m
 than the budget is dropped (see [`GapSplines.counts`][]).
 
 The samples padding a TOD to the length of its bucket are not data: they are neither good nor
-flagged, and take no amplitudes.
+flagged, and take no gap amplitudes. Under a circulant weight, which joins the end of the data to
+its start across the padding, a cubic spline over the padding, the bridge, takes slots of its own
+after the budget (see [`bridge_amplitudes`][]).
 """
 
 import math
@@ -35,7 +37,16 @@ class GapSplines:
     spacing: int
     """The knot spacing $r$, in samples; 1 for one amplitude per flagged sample."""
     budget: int
-    """The number of amplitude slots of each channel."""
+    """The number of amplitude slots of each channel for its gaps."""
+    bridge: int = 0
+    """The number of amplitude slots of the cubic spline over the padding after the data, after
+    the budget; 0 for none. Under a circulant weight, the padding joins the end of the data to its
+    start: the spline bridges them, so that the weight sees no step there."""
+    bridge_spacing: float = 1.0
+    """The knot spacing of the bridge next to the data, in samples."""
+    bridge_growth: float = 1.0
+    """The factor by which its knot spacing grows from each end of the padding to its middle
+    (see [`bridge_amplitudes`][])."""
 
     def counts(
         self, good: Bool[Array, '... samp'], n_samples: Int[Array, ''] | int
@@ -52,13 +63,40 @@ class GapSplines:
     def basis(self, mask: MaskOperator, n_samples: Int[Array, ''] | int) -> 'GapSplineOperator':
         """The basis $C$ of the gaps of the mask $M$ of the good samples of a TOD.
 
-        Only the first `n_samples` samples are data, those after them padding. Each channel of
-        the TOD has amplitudes of its own, even the streams of a demodulated TOD, which share the
-        mask of their detector.
+        Only the first `n_samples` samples are data, those after them padding, which the bridge
+        spans, if any. Each channel of the TOD has amplitudes of its own, even the streams of a
+        demodulated TOD, which share the mask of their detector.
         """
         # the mask as stored: the streams sharing it share their layout, built once
         good = jax.tree.leaves(mask.to_boolean_mask())[0]
-        return GapSplineOperator.create(_flagged(good, n_samples), self.spacing, self.budget, mask)
+        basis = GapSplineOperator.create(
+            _flagged(good, n_samples), self.spacing, self.budget, mask, self.bridge
+        )
+        if not self.bridge:
+            return basis
+        # only the channels holding data have something to bridge
+        return basis.with_bridge(
+            n_samples, jnp.any(good, axis=-1), self.budget, self.bridge_spacing, self.bridge_growth
+        )
+
+
+def bridge_amplitudes(length: int, spacing: float, growth: float) -> int:
+    r"""The amplitudes of the bridge over a padding of `length` samples.
+
+    Its knots are `spacing` samples apart next to each end of the padding, their spacing growing by
+    `growth` towards its middle: the $j$-th knot from an end lies $s (g^j - 1) / (g - 1)$ samples
+    from it. A long padding takes few more amplitudes than a short one: their number grows with the
+    logarithm of its length.
+    """
+    intervals = 2 * float(_knot_index(np.asarray((length - 1) / 2), spacing, growth))
+    return max(1, math.ceil(intervals)) + 3
+
+
+def _knot_index(distance: Array | np.ndarray | float, spacing: float, growth: float) -> Array:
+    """The index, fractional, of the knot of the bridge at `distance` samples from an end."""
+    if growth == 1:
+        return jnp.asarray(distance) / spacing
+    return jnp.log1p(distance * (growth - 1) / spacing) / np.log(growth)
 
 
 def knot_spacing(resolution: float, sample_rate: float) -> int:
@@ -124,14 +162,15 @@ class GapSplineOperator(AbstractLinearOperator):
         spacing: int,
         budget: int,
         mask: MaskOperator,
+        extra: int = 0,
     ) -> Self:
         """The basis of the gaps of `flagged`, on the TOD of `mask`, in `budget` slots.
 
-        Their knots are every `spacing` samples. `flagged` broadcasts to the TOD: channels that
+        `extra` more slots follow them, left unused. Their knots are every `spacing` samples. `flagged` broadcasts to the TOD: channels that
         share their flags, as the streams of a detector do, share the layout of their amplitudes.
         """
         treedef = jax.tree.structure(mask.in_structure)
-        structure = _amplitude_structure(mask, budget)
+        structure = _amplitude_structure(mask, budget + extra)
         layout = _GapLayout.create(flagged, spacing)
         dtype = structure.dtype
         # position on the knot grid of the gap, from 0 at its first sample to `intervals` at its last
@@ -152,6 +191,47 @@ class GapSplineOperator(AbstractLinearOperator):
         first_slot = first_slot - layout.functions
         index = jnp.clip(first_slot[..., None] + local[..., None] + o, 0, budget - 1)
         return cls(index, values, treedef, in_structure=structure)
+
+    def with_bridge(
+        self,
+        n_samples: Int[Array, ''] | int,
+        channels: Bool[Array, '...'],
+        first: int,
+        spacing: float,
+        growth: float,
+    ) -> Self:
+        """The basis with a cubic spline over the samples from `n_samples` on.
+
+        The spline takes the slots from `first` on, on the `channels` given. Its knots are
+        `spacing` samples apart next to each end of the span, growing by `growth` towards its middle
+        (see [`bridge_amplitudes`][]); with more of them than slots, they are spread wider.
+        """
+        slots = self.in_structure.shape[-1] - first
+        n = self.index.shape[-2]
+        dtype = self.values.dtype
+        t = jnp.arange(n)
+        span = (t >= n_samples) & channels[..., None]
+        # uniform cubic B-splines in the knot index, mirrored at the middle of the span
+        length = n - n_samples
+        middle = (length - 1) / 2
+        distance = (t - n_samples).astype(dtype)
+        total = 2 * _knot_index(middle, spacing, growth)
+        intervals = jnp.clip(jnp.ceil(total), 1, slots - 3)
+        index = jnp.where(
+            distance <= middle,
+            _knot_index(distance, spacing, growth),
+            total - _knot_index(length - 1 - distance, spacing, growth),
+        )
+        u = index * intervals / jnp.maximum(total, 1e-12)
+        offset = jnp.clip(jnp.floor(u).astype(jnp.int32), 0, intervals.astype(jnp.int32) - 1)
+        offset = offset[:, None]
+        o = jnp.arange(4, dtype=jnp.int32)
+        values = cardinal_bspline(u[:, None] - (offset + o) + 3, 3).astype(dtype)
+        return replace(
+            self,
+            index=jnp.where(span[..., None], first + offset + o, self.index),
+            values=jnp.where(span[..., None], values, self.values),
+        )
 
     def squared(self) -> Self:
         """The basis with its values squared."""
@@ -187,7 +267,8 @@ class GapBasisOperator(AbstractLinearOperator):
     @classmethod
     def create(cls, gaps: GapSplines, mask: MaskOperator, n_samples: Int[Array, '']) -> Self:
         """The basis of the gaps of `mask`, as [`GapSplines.basis`][] builds it."""
-        return cls(mask, n_samples, gaps, in_structure=_amplitude_structure(mask, gaps.budget))
+        structure = _amplitude_structure(mask, gaps.budget + gaps.bridge)
+        return cls(mask, n_samples, gaps, in_structure=structure)
 
     def mv(self, x: Array) -> PyTree[Array]:
         return self.gaps.basis(self.mask, self.n_samples).mv(x)

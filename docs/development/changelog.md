@@ -48,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DeferredOperator(build, *members)`, the operator `build(*members)` built when applied: lifted over a `StackedEnsemble`, it keeps the ensemble's arrays at their strides (#499)
 - `reduce` fuses `AssemblyOperator`s over the same ensemble into one sweep over the members: composed through vectors of one entry per member, or summed while reading the same input or writing the same output (#529)
 - `PointingOperator.with_landscape` reads the same samples from the map of another landscape, through `AbstractSampler.with_landscape` (#505)
+- `NoiseModel.draw`: a stationary noise realization, for every noise model (#TBD)
+- `NoiseModel.decoupled`: the model without its correlations across channels, a `BinnedNoiseModel` for the low-rank model (#TBD)
 
 ### Changed
 
@@ -103,6 +105,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AdditionOperator.as_matrix()` over an `Ensemble` traces the member once, whatever the ensemble size (#502)
 - `lift` keeps the arrays `f` passes through, `'segment'` and strided leaves included, also beside arrays it computes, and shares an array computed only from shared leaves, instead of copying them to every member (#500)
 - `WeightOperator.weight` is renamed `ninv`, as in `NestedWeightOperator` (#505)
+- **Breaking:** noise model renames (#TBD):
+  - `NoiseModel.operator` → `covariance`, `inverse_operator` → `inverse_covariance`, `to_white_noise_model` → `white`
+  - `AtmosphericNoiseModel` → `OneOverFNoiseModel`
+  - `fit_psd_model` → `fit` on `WhiteNoiseModel` and `OneOverFNoiseModel`, which replaces `fit_white_noise_model` and `fit_atmospheric_psd_model`
+- **Breaking:** every noise model holds the `sample_rate` of its TOD, a required argument of `WhiteNoiseModel` and `OneOverFNoiseModel`, and `OneOverFNoiseModel` the `correlation_length` of its operators (#TBD)
+- **Breaking:** `NoiseModel.detector_parameters` returns the parameters of each detector by name, instead of a model (#TBD)
+- `furax.mapmaking.noise` is a package, its models and fits in submodules; its public names import from it as before (#TBD)
+- **Breaking:** `NoiseModel.to_operator_fourier`, `l2_loss`, `log_psd` and `n_detectors` are removed (#TBD)
 
 ### Fixed
 
@@ -124,6 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `as_matrix()` of `BlockRowOperator`, `BlockColumnOperator` and `BlockDiagonalOperator` over an `Ensemble` whose members take or return a pytree with several leaves no longer permutes the columns or rows (#495)
 - `as_matrix()` of `BlockRowOperator` over an `Ensemble` leaves out the padded members, and the block composites accept a sharded ensemble (#495)
 - `lift` accepts a sharded `StackedEnsemble` (#500)
+- The `sigma` of `WhiteNoiseModel` and `OneOverFNoiseModel` is the square root of the one-sided PSD, as their fits and sotodlib give it: their operators no longer read it as a standard deviation per sample, and the NETs of the toast and litebird_sim interfaces are converted to it (#TBD)
 
 ## [0.17.2] - 2026-10-30
 

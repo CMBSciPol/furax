@@ -131,6 +131,8 @@ def test_modes_shared_by_the_bins_are_those_given_per_bin(white_top):
     np.testing.assert_allclose(shared(x), per_bin(x), atol=1e-12)
     np.testing.assert_allclose(shared.I(x), per_bin.I(x), atol=1e-12)
     np.testing.assert_allclose(shared.as_matrix(), per_bin.as_matrix(), atol=1e-12)
+    for a, b in zip(shared.channel_response(N_SAMPLES), per_bin.channel_response(N_SAMPLES)):
+        np.testing.assert_allclose(a, b, atol=1e-12)
 
 
 @pytest.mark.parametrize('white_top', [False, True])

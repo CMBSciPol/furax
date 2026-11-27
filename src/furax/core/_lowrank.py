@@ -181,9 +181,7 @@ class LowRankFourierOperator(AbstractLinearOperator):
         diagonal = jax.vmap(jnp.diag)(self.diagonal)
         coupled = diagonal[:n_coupled] + self.modes @ self.core @ jnp.conj(self.modes).mT
         per_bin = jnp.concatenate([coupled, diagonal[n_coupled:]])
-        bin_of_frequency = np.searchsorted(
-            self._bin_bounds(n)[1:-1], np.arange(n_frequencies), 'right'
-        )
+        bin_of_frequency = self._bin_of_frequency(n, n_frequencies)
         weight = rfft_folds(n, n_frequencies)
         phase = np.exp(2j * np.pi * np.outer(np.arange(n_frequencies), np.arange(n)) / n)
         # circulant: entry (a, s), (b, t) depends on s - t only
@@ -191,6 +189,21 @@ class LowRankFourierOperator(AbstractLinearOperator):
         lag = (np.arange(n)[:, None] - np.arange(n)[None, :]) % n
         matrix = kernel[:, :, lag].transpose(0, 2, 1, 3)
         return matrix.reshape(n_channels * n, n_channels * n).astype(self.out_promoted_dtype)
+
+    def channel_response(
+        self, n_samples: int
+    ) -> tuple[Float[Array, ' channel'], Float[Array, 'frequency channel']]:
+        """The diagonal of the operator in frequency, channel by channel, on `n_samples` samples.
+
+        It is the level of the uncoupled last bin, 0 without one, and its difference to the
+        diagonal of $M_f$ at each frequency $f$ of the coupled bins, the only ones where they
+        differ.
+        """
+        n_coupled = self.n_coupled
+        coupled = self.diagonal[:n_coupled] + mode_power(self.modes, self.core)
+        white = self._white
+        n_low = self._bin_bounds(n_samples)[n_coupled]
+        return white, coupled[self._bin_of_frequency(n_samples, n_low)] - white
 
     def _filter(self, channels: Float[Array, 'channel sample']) -> Float[Array, 'channel sample']:
         """The matrix of each bin applied to the channels, one batch of FFTs at a time.
@@ -203,9 +216,7 @@ class LowRankFourierOperator(AbstractLinearOperator):
         n_coupled = self.n_coupled
         bounds = self._bin_bounds(n_samples)
         real_dtype = channels.dtype
-        white = jnp.zeros((self.n_channels, 1), real_dtype)
-        if n_coupled < self.n_bins:
-            white = self.diagonal[-1].astype(real_dtype)[:, None]
+        white = self._white.astype(real_dtype)[:, None]
         n_low = bounds[n_coupled]
         if n_low == 0:
             return white * channels
@@ -236,11 +247,22 @@ class LowRankFourierOperator(AbstractLinearOperator):
         return jax.lax.map(apply, (channels, correction, white), batch_size=self._map_batch)
 
     @property
+    def _white(self) -> Float[Array, ' channel']:
+        """The diagonal of the uncoupled last bin, 0 without one."""
+        if self.n_coupled < self.n_bins:
+            return self.diagonal[-1]
+        return jnp.zeros_like(self.diagonal[0])
+
+    @property
     def _map_batch(self) -> int | None:
         """The `batch_size` of `jax.lax.map` for batches of `batch_size` channels."""
         # jaxlib 0.11 copies the input of lax.map with batch_size=1, but not of a plain scan
         # TODO: pass batch_size as is once jax > 0.12.1 is required
         return None if self.batch_size == 1 else self.batch_size
+
+    def _bin_of_frequency(self, n_samples: int, n_frequencies: int) -> np.ndarray:
+        """The bin of each of the first `n_frequencies` rfft frequencies of `n_samples`."""
+        return np.searchsorted(self._bin_bounds(n_samples)[1:-1], np.arange(n_frequencies), 'right')
 
     def _bin_bounds(self, n_samples: int) -> list[int]:
         """Indices of the first rfft frequency of each bin, followed by the number of frequencies."""

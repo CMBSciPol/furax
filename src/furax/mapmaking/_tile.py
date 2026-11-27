@@ -30,10 +30,17 @@ from furax.obs.landscapes import LocalStokesLandscape, StokesLandscape
 from furax.obs.pointing import PointingOperator
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
-from ._gaps import GapBasisOperator, GapSplines
+from ._gaps import GapBasisOperator, GapBlockPreconditioner, GapSplines
 from ._observation import ReaderField, _sample_rate, real_extent
 from .acquisition import _acquisition_factors
-from .config import GapTreatment, MapMakingConfig, NoiseSource, TemplatesConfig, WeightingMode
+from .config import (
+    ExplicitGapsConfig,
+    GapTreatment,
+    MapMakingConfig,
+    NoiseSource,
+    TemplatesConfig,
+    WeightingMode,
+)
 from .noise import (
     LowRankModesOperator,
     LowRankNoiseModel,
@@ -120,9 +127,9 @@ class Tile:
     """The spline model of the gaps, whose amplitudes are solved for with the map; `None` unless
     the gaps are explicit."""
 
-    gap_preconditioner: DiagonalOperator | None = None
-    """The inverse of the diagonal of the white-noise Gram $C^\top D C$ of the gap amplitudes;
-    `None` unless the gaps are explicit."""
+    gap_preconditioner: AbstractLinearOperator | None = None
+    """The preconditioner of the gap amplitudes, an approximate inverse of their Gram (see
+    `ExplicitGapsConfig.preconditioner`); `None` unless the gaps are explicit."""
 
     implicit: TemplateBundle | None = None
     """The implicit templates, whose amplitudes are each detector's own, marginalized."""
@@ -209,8 +216,8 @@ class Tile:
         )
         if gaps is None:
             return tile
-        # computed once: it is amplitude-sized, while the basis it comes from is TOD-sized
-        return replace(tile, gap_preconditioner=tile._gap_preconditioner())
+        # computed once: it is held per amplitude, while the basis it comes from is TOD-sized
+        return replace(tile, gap_preconditioner=tile._gap_preconditioner(config.gaps.explicit))
 
     @staticmethod
     def required_reader_fields(config: MapMakingConfig) -> set[str]:
@@ -373,9 +380,12 @@ class Tile:
         """The mask $M$ of the good samples."""
         return self.W.mask
 
-    def _gap_preconditioner(self) -> DiagonalOperator:
+    def _gap_preconditioner(self, config: ExplicitGapsConfig) -> AbstractLinearOperator:
         assert self.gaps is not None
         C = self.gaps.basis(self.M, self.n_samples)
+        weight = self.system_weight()
+        if config.preconditioner == 'block' and isinstance(weight, LowRankFourierOperator):
+            return GapBlockPreconditioner.create(self.gaps, C, weight, config.block_size)
         diagonal = C.squared().T(self.white_weight().ninv(self.tod_format.ones()))
         usable = diagonal > 0  # the slots past the amplitudes of a detector are unused
         inverse = jnp.where(usable, 1 / jnp.where(usable, diagonal, 1), 1)
@@ -387,8 +397,8 @@ class Tile:
 class TemplateBundle:
     r"""A kind of amplitudes of a tile: their operator, the inverse of their Gram, and its ridge.
 
-    The gap amplitudes have a bundle too: the gap basis $C$, the inverse of the diagonal of their
-    white-noise Gram, and no ridge (see [`Tile.templates`][furax.mapmaking._tile.Tile.templates]).
+    The gap amplitudes have a bundle too: the gap basis $C$, their preconditioner, and no ridge
+    (see [`Tile.templates`][furax.mapmaking._tile.Tile.templates]).
     """
 
     operator: AbstractLinearOperator

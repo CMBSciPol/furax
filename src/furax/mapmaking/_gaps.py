@@ -22,9 +22,12 @@ from typing import Any, NamedTuple, Self
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Array, Bool, Float, Int, PyTree
+from jaxtyping import Array, Bool, Float, Inexact, Int, PyTree
 
-from furax import AbstractLinearOperator, MaskOperator
+from furax import AbstractLinearOperator, MaskOperator, symmetric
+from furax.core import LowRankFourierOperator
+from furax.core._lowrank import rfft_folds
+from furax.linalg import banded_cholesky, banded_cholesky_solve
 from furax.math.bspline import cardinal_bspline
 
 from ._observation import SampleRanges
@@ -272,6 +275,154 @@ class GapBasisOperator(AbstractLinearOperator):
 
     def mv(self, x: Array) -> PyTree[Array]:
         return self.gaps.basis(self.mask, self.n_samples).mv(x)
+
+
+@symmetric
+class GapBlockPreconditioner(AbstractLinearOperator):
+    r"""The inverse of the Gram $C^\top D^{-1} C$ of the gap amplitudes, block by block.
+
+    The slots of each channel are cut into blocks of `block_size` consecutive slots, and each
+    diagonal block of the Gram is inverted exactly, by its Cholesky factor. Within a block, it
+    holds the coupling of the amplitudes by the correlated noise of their channel, which makes the
+    slow shapes of a long gap far less constrained than the white noise level says. The slots no
+    sample uses come back unchanged.
+    """
+
+    factor: Float[Array, '... block 1 slot slot']
+    """The lower Cholesky factor of each block, as [`banded_cholesky`][furax.linalg.banded_cholesky]
+    lays out a block-diagonal one."""
+
+    @classmethod
+    def create(
+        cls,
+        gaps: GapSplines,
+        basis: 'GapSplineOperator',
+        weight: LowRankFourierOperator,
+        block_size: int,
+    ) -> Self:
+        r"""The preconditioner of the gap amplitudes of the basis $C$ under the weight $D^{-1}$.
+
+        The weight couples channels only through its modes, which the blocks of a channel take as
+        part of its own circulant weight (see
+        [`channel_response`][furax.core.LowRankFourierOperator.channel_response]): a white level
+        plus a correction below the last coupled bin. The blocks are the Gram of $C$ under the
+        white level, from the overlaps of the splines, plus that of the low-frequency Fourier
+        coefficients of their columns under the correction: no column of $C$ is transformed by
+        the weight.
+        """
+        structure = basis.in_structure
+        channels, slots = structure.shape[:-1], structure.shape[-1]
+        n_blocks = -(-slots // block_size)
+        n = basis.index.shape[-2]
+        # one layout of the splines serves the channels sharing it, such as the streams
+        n_layouts = math.prod(basis.index.shape[:-2])
+        n_shared = math.prod(channels) // n_layouts
+
+        white, correction = weight.channel_response(n)
+        folds = rfft_folds(n, correction.shape[0]) / n
+        correction = (correction * folds[:, None]).astype(structure.dtype)
+        grams = jax.lax.map(
+            lambda args: _gap_block_gram(*args, gaps, n_blocks, block_size),
+            (
+                basis.index.reshape(n_layouts, n, 4),
+                basis.values.reshape(n_layouts, n, 4),
+                correction.reshape(-1, n_shared, n_layouts).transpose(2, 0, 1),
+                white.reshape(n_shared, n_layouts).T.astype(structure.dtype),
+            ),
+        )
+        grams = jnp.moveaxis(grams, 0, 1).reshape(*channels, n_blocks, block_size, block_size)
+        # the unused slots have no row: a unit diagonal keeps them unchanged
+        unused = jnp.diagonal(grams, axis1=-2, axis2=-1) == 0
+        grams = grams + unused[..., None] * jnp.eye(block_size, dtype=grams.dtype)
+        return cls(banded_cholesky(grams[..., None, :, :]), in_structure=structure)
+
+    def mv(self, x: Float[Array, '... slot']) -> Float[Array, '... slot']:
+        n_blocks, size = self.factor.shape[-4], self.factor.shape[-1]
+        slots = x.shape[-1]
+        padded = jnp.pad(x, [(0, 0)] * (x.ndim - 1) + [(0, n_blocks * size - slots)])
+        y = banded_cholesky_solve(self.factor, padded.reshape(*x.shape[:-1], n_blocks, size))
+        return y.reshape(*x.shape[:-1], -1)[..., :slots]
+
+
+def _gap_block_gram(
+    index: Int[Array, 'samp 4'],
+    values: Float[Array, 'samp 4'],
+    correction: Float[Array, 'frequency channel'],
+    white: Float[Array, ' channel'],
+    gaps: GapSplines,
+    n_blocks: int,
+    size: int,
+) -> Float[Array, 'channel block size size']:
+    """The diagonal blocks of the Gram of the splines of one layout, for each channel sharing it.
+
+    The weight of a channel is `white` plus, at each of the first frequencies, `correction`, the
+    latter folded and normalized as the inner product of real TODs needs it.
+    """
+    a, b = index[:, :, None], index[:, None, :]
+    overlaps = jnp.where(a // size == b // size, values[:, :, None] * values[:, None, :], 0)
+    sparse = jnp.zeros((n_blocks, size, size), values.dtype)
+    sparse = sparse.at[a // size, a % size, b % size].add(overlaps)
+
+    n_low = correction.shape[0]
+    phi = jnp.concatenate(
+        [
+            _gap_coefficients(index, values, gaps, n_low),
+            _bridge_coefficients(index, values, gaps, n_low),
+        ],
+        axis=-1,
+    )
+    phi = jnp.pad(phi, [(0, 0), (0, n_blocks * size - phi.shape[-1])])
+    # Re(φᴴ w φ) in real arithmetic: the real and imaginary parts stacked as frequencies
+    phi = jnp.concatenate([phi.real, phi.imag]).reshape(2 * n_low, n_blocks, size)
+    correction = jnp.concatenate([correction, correction])
+    low = jnp.einsum('fcl,fe,fcm->eclm', phi, correction, phi)
+    return white[:, None, None, None] * sparse + low
+
+
+def _gap_coefficients(
+    index: Int[Array, 'samp 4'], values: Float[Array, 'samp 4'], gaps: GapSplines, n_low: int
+) -> Inexact[Array, 'frequency budget']:
+    """The first `n_low` Fourier coefficients of the TOD of each gap slot, from its samples alone.
+
+    A spline of a gap spans at most four of its knot intervals, which are at most `gaps.spacing`
+    samples: the coefficients of its column come from those few samples, after a phase shift.
+    """
+    n = index.shape[0]
+    width = 4 * gaps.spacing + 1
+    slots = index.reshape(-1)
+    samples = jnp.repeat(jnp.arange(n), 4)
+    live = (values.reshape(-1) != 0) & (slots < gaps.budget)
+    start = jax.ops.segment_min(jnp.where(live, samples, n), slots, gaps.budget)
+    start = jnp.minimum(start, n - width)
+    offset = jnp.clip(samples - start[jnp.minimum(slots, gaps.budget - 1)], 0, width - 1)
+    columns = jnp.zeros((gaps.budget, width), values.dtype)
+    columns = columns.at[jnp.where(live, slots, gaps.budget), offset].add(
+        values.reshape(-1), mode='drop'
+    )
+    frequencies = jnp.arange(n_low, dtype=values.dtype)[:, None]
+    local = jnp.exp(-2j * jnp.pi * frequencies * jnp.arange(width, dtype=values.dtype) / n)
+    cycles = frequencies * (start.astype(values.dtype) / n)
+    # reduced first, so that single precision keeps the phase of the high frequencies
+    shift = jnp.exp(-2j * jnp.pi * (cycles - jnp.round(cycles)))
+    return shift * (local.real @ columns.T + 1j * (local.imag @ columns.T))
+
+
+def _bridge_coefficients(
+    index: Int[Array, 'samp 4'], values: Float[Array, 'samp 4'], gaps: GapSplines, n_low: int
+) -> Inexact[Array, 'frequency bridge']:
+    """The first `n_low` Fourier coefficients of the TOD of each bridge slot.
+
+    The splines of the bridge are few, and can span most of the padding: their columns are
+    transformed whole.
+    """
+    n = index.shape[0]
+    bridge = index - gaps.budget
+    samples = jnp.broadcast_to(jnp.arange(n)[:, None], index.shape)
+    columns = jnp.zeros((gaps.bridge, n), values.dtype)
+    columns = columns.at[jnp.where(bridge >= 0, bridge, gaps.bridge), samples].add(
+        values, mode='drop'
+    )
+    return jnp.fft.rfft(columns)[:, :n_low].T
 
 
 def _amplitude_structure(mask: MaskOperator, budget: int) -> jax.ShapeDtypeStruct:

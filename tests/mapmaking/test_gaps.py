@@ -2,10 +2,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jaxtyping import PyTree
 from numpy.testing import assert_allclose, assert_array_equal
 
-from furax import MaskOperator
+from furax import DiagonalOperator, MaskOperator
+from furax.core import LowRankFourierOperator
+from furax.linalg import cg
 from furax.mapmaking._gaps import (
+    GapBlockPreconditioner,
     GapSplines,
     bridge_amplitudes,
     gap_budget,
@@ -172,3 +176,101 @@ def test_bridge_amplitudes_grow_with_the_log_of_the_padding() -> None:
     assert bridge_amplitudes(1001, 50.0, 1.0) == 20 + 3  # uniform knots, every 50 samples
     long, short = bridge_amplitudes(10_000, 50.0, 1.5), bridge_amplitudes(1_000, 50.0, 1.5)
     assert short < long < short + 15
+
+
+def _correlated_weight(
+    structure: PyTree[jax.ShapeDtypeStruct], white: bool = False, n_modes: int = 0
+) -> LowRankFourierOperator:
+    """$N^{-1}$ of a noise of white level 1, with $1/f$ power below 2 Hz at 10 Hz unless `white`.
+
+    With `n_modes`, the channels share that many modes below 2 Hz.
+    """
+    n_channels = sum(leaf.size // leaf.shape[-1] for leaf in jax.tree.leaves(structure))
+    power = jnp.array([50.0, 10.0, 3.0, 1.0])[:, None] * jnp.linspace(1, 2, n_channels)
+    if white:
+        power = jnp.ones_like(power)
+    modes = jax.random.normal(jax.random.key(1), (3, n_channels, max(n_modes, 1)))
+    core = jnp.broadcast_to(
+        2.0 * (n_modes > 0) * jnp.eye(modes.shape[-1]), (3, *2 * modes.shape[-1:])
+    )
+    noise = LowRankFourierOperator(
+        power, modes, core, edges=(0.2, 0.5, 2.0), sample_rate=10.0, in_structure=structure
+    )
+    return noise.inverse()
+
+
+def _long_gaps(n: int = 400) -> np.ndarray:
+    """Three detectors: long gaps, short ones, and one without good samples."""
+    good = np.ones((3, n), bool)
+    good[0, 50:250] = False
+    good[1, 30:150] = False
+    good[1, 200:205] = False
+    good[1, 300:301] = False
+    good[2] = False
+    return good
+
+
+@pytest.mark.parametrize('white', [True, False])
+@pytest.mark.parametrize(('block_size', 'bridged'), [(16, False), (100, False), (16, True)])
+def test_block_preconditioner_inverts_the_blocks_of_the_gram(
+    white: bool, block_size: int, bridged: bool
+) -> None:
+    """The inverse of Cᵀ D⁻¹ C on each block of slots, the streams of a detector each their own.
+
+    Under white noise, its diagonal is that of the diagonal preconditioner.
+    """
+    good = _long_gaps()
+    n_samples = 350 if bridged else good.shape[-1]
+    structure = StokesQU.structure_for(good.shape, jnp.float64)
+    mask = MaskOperator.from_boolean_mask(jnp.asarray(good), in_structure=structure)
+    budget = 70
+    bridge = bridge_amplitudes(good.shape[-1] - n_samples, 5.0, 1.5) if bridged else 0
+    splines = GapSplines(10, budget, bridge, 5.0, 1.5)
+    C = splines.basis(mask, n_samples)
+    weight = _correlated_weight(structure, white)
+    P = GapBlockPreconditioner.create(splines, C, weight, block_size)
+
+    gram = np.asarray((C.T @ weight @ C).as_matrix())
+    slots = np.arange(gram.shape[0])
+    per_channel = budget + bridge
+    same_block = (slots[:, None] // per_channel == slots[None, :] // per_channel) & (
+        (slots[:, None] % per_channel) // block_size == (slots[None, :] % per_channel) // block_size
+    )
+    expected = np.where(same_block, gram, 0)
+    expected += np.diag(np.diag(expected) == 0)  # the unused slots
+    matrix = np.asarray(P.as_matrix())
+    assert_allclose(matrix, matrix.T, atol=1e-12)
+    assert np.linalg.eigvalsh(matrix).min() > 0
+    assert_allclose(np.linalg.inv(matrix), expected, atol=1e-9 * np.abs(gram).max())
+    if white:
+        diagonal = np.ravel(C.squared().T(jax.tree.map(jnp.ones_like, C.T.in_structure)))
+        used = diagonal > 0
+        assert_allclose(np.diag(np.linalg.inv(matrix))[used], diagonal[used], rtol=1e-10)
+
+
+def test_block_preconditioner_speeds_up_cg_under_correlated_modes() -> None:
+    """On long gaps under a low-rank noise, far fewer steps than the diagonal, same solution."""
+    good = _long_gaps(800)
+    good[0, 400:700] = False
+    structure = jax.ShapeDtypeStruct(good.shape, jnp.float64)
+    mask = MaskOperator.from_boolean_mask(jnp.asarray(good), in_structure=structure)
+    splines = GapSplines(4, 160)
+    C = splines.basis(mask, good.shape[-1])
+    weight = _correlated_weight(structure, n_modes=2)
+    used = C.squared().T(jnp.ones(good.shape)) > 0
+    unused = DiagonalOperator(jnp.where(used, 0.0, 1.0), in_structure=C.in_structure)
+    A = C.T @ weight @ C + unused
+    b = jnp.where(used, jax.random.normal(jax.random.key(0), used.shape, jnp.float64), 0)
+
+    # the diagonal preconditioner, from the zero-lag of the weight
+    zero_lag = np.diag(np.asarray(weight.as_matrix())).reshape(good.shape)
+    diagonal = C.squared().T(jnp.asarray(zero_lag))
+    jacobi = DiagonalOperator(jnp.where(used, 1 / jnp.where(used, diagonal, 1), 1))
+    block = GapBlockPreconditioner.create(splines, C, _correlated_weight(structure), block_size=160)
+
+    options = {'rtol': 1e-10, 'max_steps': 1000}
+    with_jacobi = cg(A, b, preconditioner=jacobi, **options)
+    with_block = cg(A, b, preconditioner=block, **options)
+    assert with_jacobi.converged and with_block.converged
+    assert_allclose(with_block.solution, with_jacobi.solution, rtol=1e-7, atol=1e-7)
+    assert 3 * with_block.num_steps < with_jacobi.num_steps

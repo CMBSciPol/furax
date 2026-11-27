@@ -833,6 +833,14 @@ class T2PConfig:
     boresight.
     """
 
+    quadratic: bool = False
+    r"""Whether the leakage has a term quadratic in the temperature stream, for a response of the
+    detectors nonlinear in the loading.
+
+    The basis then holds, besides the temperature stream $T$ of each detector, the square of its
+    fluctuation $(T - \bar T)^2$, band-passed alike, with amplitudes of its own: per detector, or
+    a field of its own over the focal plane. It doubles the memory of the template."""
+
     joint_qu: bool = True
     r"""Whether Q and U share one complex field, $\mathrm{Re}$ on Q and $\mathrm{Im}$ on U, or each
     fit their own. Only with `zernike_order` or `quadrupole_order`."""

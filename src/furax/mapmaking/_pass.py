@@ -153,7 +153,6 @@ def bucket_tiles(
     inverses = _factor_shared_gram(gram, coarse, tiles, config)
     # structural: each ensemble keeps its leaves and strides, the inverses one per segment
     joined = lift(_with_shared_templates, tiles, operators, inverses)
-    assert isinstance(joined, StackedEnsemble)
     return joined
 
 

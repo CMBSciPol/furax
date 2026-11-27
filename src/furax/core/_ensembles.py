@@ -29,7 +29,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 import jax
 import jax.numpy as jnp
@@ -867,6 +867,12 @@ def map_reduce(
     return _resident_map_reduce(apply, ensemble, out_spec, args, out_axes)
 
 
+@overload
+def lift(f: Callable[..., PyTree[Any]], *ensembles: StackedEnsemble) -> StackedEnsemble: ...
+@overload
+def lift(f: Callable[..., PyTree[Any]], *ensembles: ListEnsemble) -> ListEnsemble: ...
+@overload
+def lift(f: Callable[..., PyTree[Any]], *ensembles: Ensemble) -> Ensemble: ...
 def lift(f: Callable[..., PyTree[Any]], *ensembles: Ensemble) -> Ensemble:
     """Member-wise `f` over ensembles of the same size: the algebra of ensembles.
 
@@ -903,7 +909,9 @@ def lift(f: Callable[..., PyTree[Any]], *ensembles: Ensemble) -> Ensemble:
     return _lift_stacked(f, stacked)
 
 
-def _lift_stacked(f: Callable[..., PyTree[Any]], ensembles: Sequence[StackedEnsemble]) -> Ensemble:
+def _lift_stacked(
+    f: Callable[..., PyTree[Any]], ensembles: Sequence[StackedEnsemble]
+) -> StackedEnsemble:
     """`f` traced once on the templates, its output arrays matched to the traced inputs.
 
     The strided leaves are the inputs of the trace, the shared ones stay concrete. An output array

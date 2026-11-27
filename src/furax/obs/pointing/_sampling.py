@@ -13,7 +13,7 @@ from jaxtyping import Array, Bool, Float, Int, Integer
 from furax.core.utils import register_dataclass_with_keys
 from furax.obs._indexing import NO_PIXEL
 from furax.obs.coords import ZSPhi, gamma_angle_cos_sin, polarization_angle_cos_sin, xieta_to_quat
-from furax.obs.landscapes import StokesLandscape
+from furax.obs.landscapes import LocalStokesLandscape, StokesLandscape
 from furax.obs.operators import Spin2Rotation
 from furax.obs.spin2 import transport_rotation
 from furax.obs.stencil import Interpolation, Stencil
@@ -379,6 +379,14 @@ class AbstractSampler(ABC):
         """The same sampler with another kernel, e.g. to read the intensity alone."""
         return dataclasses.replace(self, kernel=kernel)
 
+    def with_landscape(self, old: StokesLandscape, new: StokesLandscape) -> 'AbstractSampler':
+        """The sampler reading the map of `new` where this one reads that of `old`.
+
+        The default returns the sampler itself, for one that computes its rows from the map it
+        reads when applied.
+        """
+        return self
+
     def rotated(self, rotation: Spin2Rotation) -> 'AbstractSampler':
         r"""The same sampler, with the polarization of every sample rotated further by $\beta$.
 
@@ -679,6 +687,22 @@ class PrecomputedSampler(AbstractSampler):
         """The source sampler with another kernel: the cache no longer applies."""
         return self.source.with_kernel(kernel)
 
+    def with_landscape(self, old: StokesLandscape, new: StokesLandscape) -> AbstractSampler:
+        """The stored rows renumbered for a subset `new` of the pixels of `old`, else computed again.
+
+        A pixel outside the subset reads nothing, the weights of the others re-normalized.
+        """
+        # landscapes compare by identity: a subset of an equal but distinct one is computed again
+        if not (isinstance(new, LocalStokesLandscape) and new.parent == old):
+            return PrecomputedSampler.from_sampler(self.source, new)
+        if self.nearest is not None:
+            return dataclasses.replace(self, nearest=new.global2local(self.nearest))
+        assert self.stencil is not None
+        indices = new.global2local(self.stencil.indices)
+        return dataclasses.replace(
+            self, stencil=self.stencil.reindexed(indices, self.stencil.weights)
+        )
+
 
 class RotatedSampler(AbstractSampler):
     r"""Another sampler, with the polarization of every sample rotated further by $\beta$.
@@ -719,6 +743,10 @@ class RotatedSampler(AbstractSampler):
     def with_kernel(self, kernel: SamplingKernel) -> AbstractSampler:
         source = self.source.with_kernel(kernel)
         return RotatedSampler(kernel=kernel, source=source, rotation=self.rotation)
+
+    def with_landscape(self, old: StokesLandscape, new: StokesLandscape) -> AbstractSampler:
+        source = self.source.with_landscape(old, new)
+        return RotatedSampler(kernel=self.kernel, source=source, rotation=self.rotation)
 
     def rotated(self, rotation: Spin2Rotation) -> AbstractSampler:
         return self.source.rotated(self.rotation.compose(rotation))

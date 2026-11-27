@@ -237,6 +237,19 @@ class PointingOperator(AbstractLinearOperator):
             sampler = PrecomputedSampler.from_sampler(self.sampler, self.landscape)
         return self.from_sampler(self.landscape, sampler, batch_samples=batch_samples)
 
+    def with_landscape(self, landscape: StokesLandscape) -> Self:
+        """Return the operator reading the same samples from the map of `landscape`.
+
+        E.g. a [`LocalStokesLandscape`][] keeps a subset of the pixels of the operator's
+        landscape: the operator then reads and bins those pixels alone. A precomputed pointing is
+        renumbered for such a subset, and computed again, once, on any other landscape.
+
+        Args:
+            landscape: The sky pixelization read in place of the operator's.
+        """
+        sampler = self.sampler.with_landscape(self.landscape, landscape)
+        return self.from_sampler(landscape, sampler, batch_samples=self.batch_samples)
+
     def _tiling(self) -> '_Tiling':
         """The batches of the samples, for the number of pixels each sample reads."""
         kernel = self.sampler.kernel

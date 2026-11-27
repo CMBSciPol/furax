@@ -14,7 +14,7 @@ from jaxtyping import Bool, Float
 from numpy.testing import assert_allclose
 
 from furax import tree
-from furax.core import IndexOperator
+from furax.core import IndexOperator, StackedEnsemble
 from furax.mapmaking import (
     AbstractGroundObservation,
     AbstractLazyObservation,
@@ -24,12 +24,14 @@ from furax.mapmaking import (
     ObservationProbe,
     SampleRanges,
 )
-from furax.mapmaking._accumulated import AccumulatedModel
-from furax.mapmaking._bucket import AMPLITUDE_KINDS, amplitude_kinds
+from furax.mapmaking._bucket import block_jacobi, selected
+from furax.mapmaking._pass import PassTotals
+from furax.mapmaking._solve import MapMakingSystem
+from furax.mapmaking._tile import AMPLITUDE_STRIDES
 from furax.mapmaking.config import HealpixConfig, LandscapeConfig, MapMakingConfig, PointingConfig
 from furax.mapmaking.noise import AtmosphericNoiseModel, NoiseModel
 from furax.obs.coords import xieta_to_quat
-from furax.obs.landscapes import ProjectionType, StokesLandscape
+from furax.obs.landscapes import LocalStokesLandscape, ProjectionType, StokesLandscape
 from furax.obs.stokes import Stokes, ValidStokesLiteral
 
 
@@ -334,10 +336,10 @@ def healpix_config(
     )
 
 
-def accumulate(maker: MapMakingRun) -> AccumulatedModel:
-    """Build the model of each bucket of ``maker`` and accumulate its system, on its mesh."""
+def accumulate(maker: MapMakingRun) -> tuple[list[StackedEnsemble], PassTotals]:
+    """The tiles of each bucket of `maker` and the totals of its pass over the data, on its mesh."""
     with jax.set_mesh(maker.placement.mesh):
-        return maker.build_model_and_accumulate()
+        return maker.read_data()
 
 
 def probe_normal_system(maker: MapMakingRun, seed: int = 0) -> tuple[dict, dict]:
@@ -351,14 +353,15 @@ def probe_normal_system(maker: MapMakingRun, seed: int = 0) -> tuple[dict, dict]
     returned, since their layout depends on how the detectors are batched.
     """
     with jax.set_mesh(maker.placement.mesh):
-        acc = maker.build_model_and_accumulate()
+        buckets, totals = maker.read_data()
         maker._catalog.reads = maker._gather_reads()
-        BJ = acc.block_jacobi(maker.config.binned, maker.landscape.structure)
-        valid = maker.pixel_selection(acc.hit_map, BJ.blocks)
+        BJ = block_jacobi(buckets, maker.config.binned)
+        valid = maker.pixel_selection(totals.hit_map, BJ.blocks)
         S = IndexOperator((..., *jnp.where(valid)), in_structure=maker.landscape.structure)
-        system = acc.build_system(S, BJ)
+        pixels = LocalStokesLandscape.from_boolean_mask(maker.landscape, valid)
+        system = MapMakingSystem.create([selected(t, pixels) for t in buckets], totals.rhs, S, BJ)
         x = tree.normal_like(system.A.in_structure, jax.random.key(seed))
-        per_tile = [k for k in amplitude_kinds(acc.buckets[0]) if AMPLITUDE_KINDS[k] == 'tile']
+        per_tile = [k for k in buckets[0].template.kinds if AMPLITUDE_STRIDES[k] == 1]
         x |= {kind: tree.zeros_like(x[kind]) for kind in per_tile}
         Ax, b = system.A(x), system.b
         return (

@@ -13,17 +13,19 @@ from .config import NestedConfig
 
 @symmetric
 class WeightOperator(AbstractLinearOperator):
-    """Masked noise weight `M W M` as a single operator."""
+    r"""The masked inverse noise $M N^{-1} M$ as a single operator."""
 
-    weight: AbstractLinearOperator  # symmetric
+    ninv: AbstractLinearOperator
+    """The inverse noise covariance $N^{-1}$, unmasked, symmetric."""
     mask: MaskOperator
+    """The mask $M$ of the good samples."""
 
     @classmethod
-    def create(cls, weight: AbstractLinearOperator, mask: MaskOperator) -> Self:
-        return cls(weight, mask, in_structure=mask.in_structure)
+    def create(cls, ninv: AbstractLinearOperator, mask: MaskOperator) -> Self:
+        return cls(ninv, mask, in_structure=mask.in_structure)
 
     def mv(self, x: PyTree[Inexact[Array, '...']]) -> PyTree[Inexact[Array, '...']]:
-        W, M = self.weight, self.mask
+        W, M = self.ninv, self.mask
         if W.is_diagonal:
             return W(M(x))
         return M(W(M(x)))

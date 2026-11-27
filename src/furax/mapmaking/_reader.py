@@ -15,6 +15,7 @@ from jax.tree_util import register_static
 from jax.typing import DTypeLike
 from jaxtyping import PyTree
 
+from furax.core import HostEnsemble, Policy
 from furax.io.readers import AbstractReader
 from furax.obs import TODFormat
 from furax.obs.stokes import Stokes, ValidStokesLiteral
@@ -26,6 +27,7 @@ from ._observation import (
     ObservationBufferShape,
     ReaderField,
 )
+from .layout import TileBucket
 
 logger = logging.getLogger(__name__)
 
@@ -589,6 +591,46 @@ class TileReader:
         data, padding, use = read
         data, padding = detector_tile(data, padding, start, self.tile_size)
         return data, padding, use
+
+
+def tile_reads(
+    bucket: TileBucket, reader: ObservationReader[Any], axis: str, prefetch: bool
+) -> HostEnsemble:
+    """The reads of the detector tiles of a bucket, as a host ensemble over its tiles.
+
+    Member `t` is tile `t` of the bucket, read by a [`TileReader`][] over `reader`, which reads
+    the observations of the bucket in the order of their indices: an observation is read once,
+    when its first tile is, and released after its last. A padding tile reads filler.
+
+    Args:
+        bucket: The bucket, which lays out its tiles over the devices.
+        reader: The reader of the observations of the bucket.
+        axis: The mesh axis the tiles are split over.
+        prefetch: Whether to read the next round while the devices evaluate the current one.
+    """
+    position = {int(o): k for k, o in enumerate(bucket.observations)}
+    tile_counts = [0] * bucket.n_observations
+    for segment, o in enumerate(bucket.segment_observations):
+        if o >= 0:
+            tile_counts[position[int(o)]] = len(bucket.tiles_of(segment))
+    tile_reader = TileReader(reader, bucket.tile_size, tile_counts)
+
+    def read_tile(tile: int) -> tuple[Any, Any, np.ndarray]:
+        if not bucket.valid[tile]:
+            return tile_reader.filler
+        observation = position[int(bucket.segment_observations[bucket.owner[tile]])]
+        return tile_reader.read(observation, int(bucket.tile_starts[tile]))
+
+    return HostEnsemble(
+        bucket.n_tiles,
+        read_tile,
+        tile_reader.structure,
+        policy=Policy(axis=axis),
+        prefetch=prefetch,
+        strides=tile_reader.strides,
+        owner=bucket.owner,
+        segments=bucket.n_segments,
+    )
 
 
 def detector_tile(

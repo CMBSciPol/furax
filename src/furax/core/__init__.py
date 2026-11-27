@@ -1,3 +1,4 @@
+from ._assembly import AssemblyOperator, RaggedAssemblyOperator
 from ._axes import MoveAxisOperator, RavelOperator, ReshapeOperator
 from ._base import (
     AbstractLazyInverseOperator,
@@ -29,6 +30,7 @@ from ._blocks import (
     BlockRowOperator,
     BlockSelectOperator,
 )
+from ._deferred import DeferredOperator
 from ._dense import DenseBlockDiagonalOperator
 from ._diagonal import BroadcastDiagonalOperator, DiagonalOperator
 from ._ensembles import (
@@ -57,6 +59,8 @@ __all__ = [
     'TransposeOperator',
     'InverseOperator',
     'AdditionOperator',
+    'AssemblyOperator',
+    'RaggedAssemblyOperator',
     'CompositionOperator',
     'IdentityOperator',
     'HomothetyOperator',
@@ -81,6 +85,7 @@ __all__ = [
     'BlockDiagonalOperator',
     'BlockColumnOperator',
     'BlockSelectOperator',
+    'DeferredOperator',
     'DenseBlockDiagonalOperator',
     'BroadcastDiagonalOperator',
     'DiagonalOperator',

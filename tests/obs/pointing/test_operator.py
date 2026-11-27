@@ -380,6 +380,22 @@ class TestLocalLandscape:
         # uncovered pixels are zero in both the full binning and the promoted local one
         assert tree_equal(local.promote(p_local.T(tod)), p_full.T(tod), rtol=1e-12)
 
+    @pytest.mark.parametrize('origin', ['parent', 'other-subset'])
+    @pytest.mark.parametrize('precompute', [False, True], ids=['on-the-fly', 'precomputed'])
+    def test_with_landscape_reads_as_built_on_it(
+        self, p_full, sky, tod, full_coverage, half_coverage, origin, precompute
+    ) -> None:
+        # from the parent, stored rows are renumbered; from another subset, computed again
+        local, p_local = half_coverage
+        p = p_full if origin == 'parent' else full_coverage[1]
+        if precompute:
+            stored = PrecomputedSampler.from_sampler(p.sampler, p.landscape)
+            p = PointingOperator.from_sampler(p.landscape, stored)
+        moved = p.with_landscape(local)
+        x = local.restrict(sky)
+        assert tree_equal(moved(x), p_local(x), rtol=1e-12, atol=1e-12)
+        assert tree_equal(moved.T(tod), p_local.T(tod), rtol=1e-12, atol=1e-12)
+
     def test_partial_coverage_drops_missing_pixels(self, p_full, tod, half_coverage) -> None:
         local, p_local = half_coverage
         subset = local.global_indices

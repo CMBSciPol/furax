@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ObservationProbe.good_ranges` reports the good ranges of the samples of an observation before it is read, from which the mapmaker sizes the amplitudes of the explicit gaps under `ExplicitGapsConfig.probe`; `LazyPreprocSOTODLibObservation` reads them from the preprocessing metadata (#481)
 - `StackedEnsemble.by_segment` views an ensemble grouped in segments as one member per segment (#507)
 - `LowRankFourierOperator` takes modes shared by all frequency bins (#528)
+- `Ensemble.zip` takes `strides`, to hand a leaf whole to every member, one entry per s members, or one per segment (#524)
+- `HostEnsemble.zip` pairs the members read from the host with arrays the devices hold (#524)
+- The strides and member axes of an ensemble may be given as a prefix of the pytree they describe, one value for a whole subtree (#524)
+- `AssemblyOperator` assembles the members of an ensemble, each acting on its own parts of the vectors, set per leaf by `in_strides` and `out_strides`; `RaggedAssemblyOperator` assembles a list of operators of different shapes (#525)
+- `DeferredOperator(build, *members)`, the operator `build(*members)` built when applied: lifted over a `StackedEnsemble`, it keeps the ensemble's arrays at their strides (#499)
+- `reduce` fuses `AssemblyOperator`s over the same ensemble into one sweep over the members: composed through vectors of one entry per member, or summed while reading the same input or writing the same output (#529)
+- `PointingOperator.with_landscape` reads the same samples from the map of another landscape, through `AbstractSampler.with_landscape` (#505)
 
 ### Changed
 
@@ -64,7 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `furax-so-map` logs the excluded observations as a warning with their reasons, and adds one line per observation read, the start of each solve and a progress line every 10 CG steps (#432)
 - `furax-so-map` shows the messages below WARNING of process 0 only on the console, and its log files also hold the messages logged before they were created (#432)
 - The multi-observation mapmaker's pass over the data runs on the ensemble engine: a `HostEnsemble` of each bucket's slots replaces the hand-rolled accumulation loop (#401)
-- The multi-observation mapmaker's left-hand side (`BucketNormalOperator`, `MemberOperator`) runs on the ensemble engine (#414)
+- The multi-observation mapmaker's left-hand side runs on the ensemble engine (#414)
 - `LazyPreprocSOTODLibObservation` now caches each preprocessing group in a file of its own, shared by runs that select or join the wafers differently (#450)
 - `furax-so-map` and `furax-so-cache` select every wafer by default, instead of `ws0`; `--wafer` selects a subset, and the value `all` is removed (#449)
 - Documentation: the navigation is pinned in the left sidebar, and the user-guide URLs use dashes, e.g. `user-guide/getting-started/` (#460)
@@ -95,6 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - the `boresight_quaternions` / `detector_quaternions` arguments of `PointingOperator.create` and `build_acquisition_operator` → `q_sky_bore` / `q_bore_det`, and of `ScreenSampler.from_wind` → `q_hor_bore` / `q_bore_det`
 - `AdditionOperator.as_matrix()` over an `Ensemble` traces the member once, whatever the ensemble size (#502)
 - `lift` keeps the arrays `f` passes through, `'segment'` and strided leaves included, also beside arrays it computes, and shares an array computed only from shared leaves, instead of copying them to every member (#500)
+- `WeightOperator.weight` is renamed `ninv`, as in `NestedWeightOperator` (#505)
 
 ### Fixed
 

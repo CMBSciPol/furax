@@ -15,8 +15,27 @@ from jaxtyping import Array, Inexact, PyTree
 from furax.tree import add as tree_add
 from furax.tree import zeros_like
 
-from ._base import AbstractLinearOperator, structure_equal
-from ._ensembles import Ensemble, Stride, _check_strides, _per_leaf, _stack_length, lift, map_reduce
+from ._base import (
+    AbstractLinearOperator,
+    CompositionOperator,
+    HomothetyOperator,
+    IdentityOperator,
+    structure_equal,
+)
+from ._blocks import BlockColumnOperator, BlockRowOperator
+from ._deferred import DeferredOperator
+from ._ensembles import (
+    Ensemble,
+    ListEnsemble,
+    StackedEnsemble,
+    Stride,
+    _check_strides,
+    _per_leaf,
+    _stack_length,
+    lift,
+    map_reduce,
+)
+from .rules import AbstractAdditionRule, AbstractCompositionRule, NoReduction
 
 
 class _AbstractAssembly(AbstractLinearOperator):
@@ -79,6 +98,16 @@ class AssemblyOperator(_AbstractAssembly):
     stride None, the assembly is the sum of the members. Operators of different shapes, which
     cannot be stacked into an ensemble, are assembled by
     [`RaggedAssemblyOperator`][furax.core.RaggedAssemblyOperator].
+
+    Each application is one sweep over the members, and nothing is fused across two sweeps. So
+    `reduce` fuses assemblies over the same ensemble into one sweep: composed through a vector of
+    one entry per member, summed with the same strides, or summed terms that read the same input
+    or write the same output with the same strides. It never fuses through a vector of stride
+    `'segment'` or None, a sum over members that must be complete before it is read. Two
+    ensembles are the same when they are both stacked, or both lists, of the same size, policy
+    and number of segments, with the same owner index and padding mask. Those are compared by
+    value when known, and taken to be the same under a trace, as [`lift`][furax.core.lift] takes
+    them; which members the ensembles hold does not matter.
 
     Examples:
         Three members, each adding the map, which they all read, to its own entry of `'own'`:
@@ -161,12 +190,18 @@ class AssemblyOperator(_AbstractAssembly):
         return y
 
     def transpose(self) -> AbstractLinearOperator:
+        # not deferred: transposing rearranges the members' arrays without combining them, so
+        # lifting keeps them at their strides
         transposed = lift(lambda op: op.T, self.operands)
         return AssemblyOperator(transposed, self.out_strides, self.in_strides)
 
     def reduce(self) -> AbstractLinearOperator:
-        reduced = lift(lambda op: op.reduce(), self.operands)
-        return AssemblyOperator(reduced, self.in_strides, self.out_strides)
+        if isinstance(self.operands.template, DeferredOperator):
+            # built when applied already: wrapping them again would reduce nothing
+            return self
+        # deferred: a member's reduction may combine its own arrays with one stored per segment
+        # or shared by all the members, which lifting it would copy into every member
+        return AssemblyOperator(_deferred(_reduced, self), self.in_strides, self.out_strides)
 
     def _witnesses(self) -> Sequence[AbstractLinearOperator]:
         # the members share their class and static fields, so one answers for all of them
@@ -327,6 +362,241 @@ class _PrefixStrides:
     def owned(self) -> PyTree[bool]:
         """Where each operand has its own entry, stride 1, rather than sharing the part."""
         return self.treedef.unflatten([s == 1 for s in self.leaves])
+
+
+# Fusion rules. Each assembly is one loop over the members, and XLA does not fuse across loops:
+# two assemblies applied one after the other sweep the members twice and hold the vector between
+# them in full. Where that vector has one entry per member (stride 1), member i of the second only
+# reads what member i of the first wrote, so the two loops are one, over the members' composition.
+# A vector of stride `'segment'` or None is a sum over members, which must be complete before it is
+# read: the rules never fuse through it. Two assemblies side by side in a sum, reading the same
+# input or writing the same output, are one loop too, which holds no more than the two did.
+
+
+class AssemblyCompositionRule(AbstractCompositionRule):
+    r"""`Assembly(A) @ Assembly(B)` is `Assembly(A ∘ B)` through a vector of one entry per member.
+
+    It applies when the two assemblies are over the same ensemble, every leaf of the output of $B$
+    has stride 1, and $A$ reads each with stride 1. The fused assembly reads the input with the
+    strides of $B$ and writes the output with those of $A$: one sweep over the members instead of
+    two, and no intermediate vector. Each member is $A_i B_i$, kept as an operator chain built
+    when applied (see [`DeferredOperator`][furax.core.DeferredOperator]).
+    """
+
+    left_operator_class = AssemblyOperator
+    right_operator_class = AssemblyOperator
+
+    def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
+        super().check(left, right)
+        assert isinstance(left, AssemblyOperator) and isinstance(right, AssemblyOperator)
+        if not (
+            _fusible(left, right)
+            and all(s == 1 for s in right.out_strides)
+            and left.in_strides == right.out_strides
+        ):
+            raise NoReduction
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        assert isinstance(left, AssemblyOperator) and isinstance(right, AssemblyOperator)
+        # deferred: the members' chain is reduced, which may combine their arrays with those
+        # stored per segment or shared, and lifting it would copy them into every member
+        members = _deferred(_composed, left, right)
+        return [AssemblyOperator(members, right.in_strides, left.out_strides)]
+
+
+class AssemblyAdditionRule(AbstractAdditionRule):
+    r"""`Assembly(A) + Assembly(B)` is `Assembly(A + B)` with the same strides.
+
+    It applies when the two assemblies are over the same ensemble and read and write their vectors
+    with the same strides, whatever they are: the sum of the members' outputs is the output of the
+    members' sum. Each member is $A_i + B_i$, built when applied.
+    """
+
+    left_operator_class = AssemblyOperator
+    right_operator_class = AssemblyOperator
+
+    def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
+        super().check(left, right)
+        assert isinstance(left, AssemblyOperator) and isinstance(right, AssemblyOperator)
+        if not (
+            _fusible(left, right)
+            and left.in_strides == right.in_strides
+            and left.out_strides == right.out_strides
+        ):
+            raise NoReduction
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        assert isinstance(left, AssemblyOperator) and isinstance(right, AssemblyOperator)
+        # deferred: the members' chain is reduced, which may combine their arrays with those
+        # stored per segment or shared, and lifting it would copy them into every member
+        members = _deferred(_added, left, right)
+        return [AssemblyOperator(members, left.in_strides, left.out_strides)]
+
+
+class AssemblySharedInputRule(AbstractAdditionRule):
+    r"""`P A + Q B` is `[P, Q] @ Assembly([A; B])`: one sweep for two assemblies of one input.
+
+    It applies when the last factor of each term, homotheties aside, is an assembly, the two over
+    the same ensemble and reading the input with the same strides, whatever they are. Member $i$
+    of the fused assembly is the block column $[A_i; B_i]$: it reads its part of the input once,
+    and writes its parts of both outputs, each with its own strides. Nothing is fused through an
+    output, so the fused sweep holds no more than the two it replaces. With the same strides on
+    the outputs too, [`AssemblyAdditionRule`][furax.core._assembly.AssemblyAdditionRule] applies
+    first, and sums the members instead.
+    """
+
+    left_operator_class = AbstractLinearOperator
+    right_operator_class = AbstractLinearOperator
+
+    def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
+        super().check(left, right)
+        p, q = _last_assembly(left), _last_assembly(right)
+        if p is None or q is None:
+            raise NoReduction
+        (_, a), (_, b) = p, q
+        if not (_fusible(a, b) and a.in_strides == b.in_strides):
+            raise NoReduction
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        p, q = _last_assembly(left), _last_assembly(right)
+        assert p is not None and q is not None
+        (left_factor, a), (right_factor, b) = p, q
+        # not deferred: the member only stacks the two, computing nothing, so lifting keeps the
+        # arrays at their strides
+        members = lift(lambda m, n: BlockColumnOperator([m, n]), a.operands, b.operands)
+        fused = AssemblyOperator(members, a.in_strides, a.out_strides + b.out_strides)
+        return [BlockRowOperator([left_factor, right_factor]) @ fused]
+
+
+class AssemblySharedOutputRule(AbstractAdditionRule):
+    r"""`A P + B Q` is `Assembly([A, B]) @ [P; Q]`: one sweep for two assemblies into one output.
+
+    The dual of [`AssemblySharedInputRule`][furax.core._assembly.AssemblySharedInputRule]. It
+    applies when the first factor of each term, homotheties aside, is an assembly, the two over
+    the same ensemble and writing the output with the same strides, whatever they are. Member $i$
+    of the fused assembly is the block row $[A_i, B_i]$: it reads its parts of both inputs, each
+    with its own strides, and writes its part of the output once.
+    """
+
+    left_operator_class = AbstractLinearOperator
+    right_operator_class = AbstractLinearOperator
+
+    def check(self, left: AbstractLinearOperator, right: AbstractLinearOperator) -> None:
+        super().check(left, right)
+        p, q = _first_assembly(left), _first_assembly(right)
+        if p is None or q is None:
+            raise NoReduction
+        (a, _), (b, _) = p, q
+        if not (_fusible(a, b) and a.out_strides == b.out_strides):
+            raise NoReduction
+
+    def apply(
+        self, left: AbstractLinearOperator, right: AbstractLinearOperator
+    ) -> list[AbstractLinearOperator]:
+        p, q = _first_assembly(left), _first_assembly(right)
+        assert p is not None and q is not None
+        (a, left_factor), (b, right_factor) = p, q
+        # not deferred: the member only lays the two side by side, computing nothing, so lifting
+        # keeps the arrays at their strides
+        members = lift(lambda m, n: BlockRowOperator([m, n]), a.operands, b.operands)
+        fused = AssemblyOperator(members, a.in_strides + b.in_strides, a.out_strides)
+        return [fused @ BlockColumnOperator([left_factor, right_factor])]
+
+
+def _fusible(left: AssemblyOperator, right: AssemblyOperator) -> bool:
+    """Whether two assemblies are over aligned ensembles, whose fused members can be lifted.
+
+    Which members they hold does not matter: through a vector of one entry per member, member $i$
+    of one reads what member $i$ of the other wrote, whatever they are.
+    """
+    a, b = left.operands, right.operands
+    return isinstance(a, StackedEnsemble | ListEnsemble) and a._aligned_with(b)
+
+
+def _deferred(build: Any, *assemblies: AssemblyOperator) -> Ensemble:
+    """The members `build(*members)` of assemblies, built when applied, at their strides."""
+
+    def deferred(*members):
+        # a member reduced when applied is unwrapped, so that `build` sees through it: the
+        # builds that reduce, reduce it with the rest
+        members = [m.members[0] if _is_reduced(m) else m for m in members]
+        return DeferredOperator(build, *members)
+
+    return lift(deferred, *(assembly.operands for assembly in assemblies))
+
+
+def _is_reduced(op: AbstractLinearOperator) -> bool:
+    return isinstance(op, DeferredOperator) and op.build is _reduced
+
+
+def _reduced(op: AbstractLinearOperator) -> AbstractLinearOperator:
+    return op.reduce()
+
+
+def _composed(
+    left: AbstractLinearOperator, right: AbstractLinearOperator
+) -> AbstractLinearOperator:
+    return (left @ right).reduce()
+
+
+def _added(left: AbstractLinearOperator, right: AbstractLinearOperator) -> AbstractLinearOperator:
+    return (left + right).reduce()
+
+
+def _last_assembly(
+    term: AbstractLinearOperator,
+) -> tuple[AbstractLinearOperator, AssemblyOperator] | None:
+    """`term` as `P A`, with `A` its last factor, homotheties aside; None if not an assembly."""
+    scale, factors = _factors(term)
+    if not factors or not isinstance(factors[-1], AssemblyOperator):
+        return None
+    assembly = factors[-1]
+    return _product(scale, factors[:-1], assembly.out_structure), assembly
+
+
+def _first_assembly(
+    term: AbstractLinearOperator,
+) -> tuple[AssemblyOperator, AbstractLinearOperator] | None:
+    """`term` as `A P`, with `A` its first factor, homotheties aside; None if not an assembly."""
+    scale, factors = _factors(term)
+    if not factors or not isinstance(factors[0], AssemblyOperator):
+        return None
+    assembly = factors[0]
+    return assembly, _product(scale, factors[1:], assembly.in_structure)
+
+
+def _factors(
+    op: AbstractLinearOperator,
+) -> tuple[Any, list[AbstractLinearOperator]]:
+    """The factors of `op` other than homotheties, and the product of these, None without any."""
+    factors = op.operands if isinstance(op, CompositionOperator) else [op]
+    scale = None
+    rest = []
+    for factor in factors:
+        if isinstance(factor, HomothetyOperator):
+            scale = factor.value if scale is None else scale * factor.value
+        else:
+            rest.append(factor)
+    return scale, rest
+
+
+def _product(
+    scale: Any, factors: list[AbstractLinearOperator], structure: PyTree[jax.ShapeDtypeStruct]
+) -> AbstractLinearOperator:
+    """`scale` times the composition of `factors`, the identity on `structure` without any."""
+    if not factors:
+        op = IdentityOperator(in_structure=structure)
+    elif len(factors) == 1:
+        op = factors[0]
+    else:
+        op = CompositionOperator(factors)
+    return op if scale is None else scale * op
 
 
 def _is_none(x: Any) -> bool:

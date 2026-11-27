@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HostEnsemble.zip` pairs the members read from the host with arrays the devices hold (#524)
 - The strides and member axes of an ensemble may be given as a prefix of the pytree they describe, one value for a whole subtree (#524)
 - `AssemblyOperator` assembles the members of an ensemble, each acting on its own parts of the vectors, set per leaf by `in_strides` and `out_strides`; `RaggedAssemblyOperator` assembles a list of operators of different shapes (#525)
+- `DeferredOperator(build, *members)`, the operator `build(*members)` built when applied: lifted over a `StackedEnsemble`, it keeps the ensemble's arrays at their strides (#499)
+- `reduce` fuses `AssemblyOperator`s over the same ensemble into one sweep over the members: composed through vectors of one entry per member, or summed while reading the same input or writing the same output (#529)
 
 ### Changed
 

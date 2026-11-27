@@ -206,6 +206,20 @@ class Ensemble(ABC):
         """
         raise NotImplementedError(f'the members of a {type(self).__name__} cannot be zipped')
 
+    def _aligned_with(self, other: 'Ensemble') -> bool:
+        """Whether member i of this ensemble and member i of `other` are laid out alike.
+
+        The two are of the same class, size, policy and number of segments, with the same owner
+        index and padding mask. These are compared by value when known, and taken to be the same
+        under a trace, as [`lift`][furax.core.lift] takes them. Which members the ensembles hold
+        does not matter.
+        """
+        if type(self) is not type(other):
+            return False
+        if (self.size, self.policy, self.segments) != (other.size, other.policy, other.segments):
+            return False
+        return _same_index(self.owner, other.owner) and _same_index(self.valid, other.valid)
+
     @abstractmethod
     def _arrays(self) -> tuple[list[Array], list[Array]]:
         """The ensemble's arrays: those that carry the members, and those every member holds."""
@@ -953,8 +967,9 @@ def lift(f: Callable[..., PyTree[Any]], *ensembles: Ensemble) -> Ensemble:
     computed only from leaves every member shares is computed once and shared too. The output
     arrays `f` computes from the members are evaluated by `jax.vmap` over the member axis,
     stride-s and segment leaves expanded to one entry per member, and come back with stride 1;
-    the others keep their strides. Stacked ensembles grouped in segments must share their owner
-    index, which the output keeps.
+    the others keep their strides. Lifting `lambda m: DeferredOperator(build, m)` instead keeps
+    the arrays at their strides, see [`DeferredOperator`][furax.core.DeferredOperator]. Stacked
+    ensembles grouped in segments must share their owner index, which the output keeps.
 
     Args:
         f: From one member per ensemble to a pytree: an operator constructor, a composition,
@@ -1726,11 +1741,18 @@ def _common_owner(ensembles: Sequence[StackedEnsemble]) -> tuple[Array | None, i
     for e in grouped[1:]:
         if e.segments != first.segments:
             raise ValueError('the lifted ensembles group their members in different segments')
-        if e.owner is first.owner or isinstance(e.owner, Tracer) or isinstance(first.owner, Tracer):
-            continue
-        if not np.array_equal(np.asarray(e.owner), np.asarray(first.owner)):
+        if not _same_index(e.owner, first.owner):
             raise ValueError('the lifted ensembles group their members in different segments')
     return first.owner, first.segments
+
+
+def _same_index(x: Any, y: Any) -> bool:
+    """Whether two optional index arrays are the same, assumed so when either is traced."""
+    if x is None or y is None:
+        return x is y
+    if x is y or isinstance(x, Tracer) or isinstance(y, Tracer):
+        return True
+    return np.shape(x) == np.shape(y) and bool(np.array_equal(x, y))
 
 
 def _is_segment(kind: Any) -> bool:

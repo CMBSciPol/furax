@@ -219,6 +219,10 @@ class SolverConfig:
     max_steps: int = 1_000
     """Maximum allowed number of iterations steps."""
 
+    stabilise_every: int = 50
+    """Number of CG steps between two recomputations of the residual from the system, which
+    counter the drift of its recursive update. Each costs one more application of the system."""
+
     verbose: bool = False
     """Log the residual norm at every iteration."""
 

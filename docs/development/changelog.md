@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `StokesLandscape.quat2stencil`: the stencil a sample looking along a quaternion reads (#518)
+- `SolverConfig.stabilise_every` sets how often the mapmaker recomputes the CG residual, every 50 steps by default instead of 10 (#TBD)
 - `furax-so-map` records the state of the run in `status.json`, and writes the mapmaking config and provenance at the start (#402)
 - `MapMakingResults.remove` deletes the files that `MapMakingResults.save` writes (#402)
 - `CGResult.relative_residual`: the final residual norm over the initial one (#402)

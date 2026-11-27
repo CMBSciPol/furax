@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental import multihost_utils as mhu
-from jaxtyping import Array, Bool, Float, Integer
+from jaxtyping import Array, Bool, Float, Integer, PyTree
 
 import furax.linalg
 import furax.tree
@@ -47,17 +47,20 @@ from ._observation import (
 )
 from ._pass import (
     PASS_REDUCTIONS,
+    SHARED_FIT_REDUCTIONS,
     PassTotals,
     bucket_tiles,
     fit_kernel,
     fit_low_rank,
     pass_kernel,
     residual_kernel,
+    shared_fit_amplitudes,
+    shared_fit_kernel,
 )
 from ._provenance import provenance
 from ._reader import ObservationReader, detector_tile_structure, tile_reads
 from ._solve import MapMakingSystem
-from ._tile import AMPLITUDE_STRIDES, Tile
+from ._tile import AMPLITUDE_STRIDES, GLOBAL_TEMPLATES, Tile
 from .config import (
     DiagnosticsConfig,
     GapTreatment,
@@ -70,6 +73,7 @@ from .layout import TileBucket, TileLayout, TilePlacement
 from .noise import LowRankNoiseModel, ModesCore, bin_edges
 from .results import CONFIG_FILE, PROVENANCE_FILE, MapMakingResults, write_json
 from .templates import required_reader_fields
+from .templates.gram import factor_diagonal
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +238,9 @@ class MapMakingRun[T]:
             # the tiles of the system read and bin the selected pixels alone
             pixels = LocalStokesLandscape.from_boolean_mask(self.landscape, valid_pixels)
             selected_buckets = [selected(tiles, pixels) for tiles in buckets]
-            system = MapMakingSystem.create(selected_buckets, totals.rhs, S, BJ, response_sky)
+            system = MapMakingSystem.create(
+                selected_buckets, totals.rhs, S, BJ, response_sky, totals.whole_grams
+            )
             if (two_level := self.config.solver.two_level) is not None:
                 system = system.deflate(two_level)
             solved = system.solve(
@@ -308,6 +314,7 @@ class MapMakingRun[T]:
         if scanned_sky is not None:
             sky = self.placement.broadcast(scanned_sky)
         buckets = []
+        global_diagonal = None
         for b in range(len(self.readers)):
             tiles, outputs = self._read_bucket(b, sky)
             if (tod := outputs.pop('tod')) is not None:
@@ -319,12 +326,28 @@ class MapMakingRun[T]:
             rhs_of_bucket = outputs['rhs']
             rhs['map'] = furax.tree.add(rhs['map'], rhs_of_bucket.pop('map'))
             for kind, kind_rhs in rhs_of_bucket.items():
-                if kind_rhs is not None:  # a kind of amplitudes the run has
+                if kind_rhs is None:  # a kind of amplitudes the run does not have
+                    continue
+                if (
+                    AMPLITUDE_STRIDES[kind] is None
+                ):  # read whole, summed over the buckets as the map
+                    rhs[kind] = _summed(rhs.get(kind), kind_rhs)
+                else:
                     rhs.setdefault(kind, []).append(kind_rhs)
+            if outputs['global_diagonal'] is not None:
+                global_diagonal = _summed(global_diagonal, outputs['global_diagonal'])
             # the unfactored shared Gram must not stay on the devices through the next pass
             del outputs
             buckets.append(tiles)
-        return buckets, PassTotals(hit_map, rhs)
+        whole_grams = {}
+        if global_diagonal is not None:
+            templates = self.fit_config.templates
+            assert templates is not None  # a global Gram comes with templates
+            regularization = templates.regularization
+            whole_grams[GLOBAL_TEMPLATES] = factor_diagonal(
+                global_diagonal, regularization=regularization
+            )
+        return buckets, PassTotals(hit_map, rhs, whole_grams)
 
     def pixel_selection(
         self, hits: Integer[Array, ' pixels'], weights: Float[Array, 'pixels stokes stokes']
@@ -566,10 +589,12 @@ class MapMakingRun[T]:
             of each observation are summed, and `modes_chi2` and `modes_samples`, `(obs,)`, are
             the $\chi^2$ of the modes and its number of amplitudes.
         """
-        kinds = buckets[0].template.kinds
+        all_kinds = buckets[0].template.kinds
+        kinds = [k for k in all_kinds if AMPLITUDE_STRIDES[k] is not None]
         shared_sky = None if scanned_sky is None else self.placement.broadcast(scanned_sky)
-        # the map every tile reads whole
-        solution = {'map': self.placement.broadcast(x['map'])}
+        # the unknowns every tile reads whole
+        whole = ['map', *(k for k in all_kinds if AMPLITUDE_STRIDES[k] is None)]
+        solution = {kind: self.placement.broadcast(x[kind]) for kind in whole}
         names = ['good', *(n for n in ('chi2', 'bands') if getattr(diagnostics, n))]
         if diagnostics.bands:
             names.append('band_samples')
@@ -634,9 +659,14 @@ class MapMakingRun[T]:
         detectors = max(self._buffer_shapes[i].detector_count for i in bucket.observations)
         capacity = -(-detectors // bucket.tile_size) * bucket.tile_size
         sample_rate = self._probed_sample_rate
+        shared = self._fit_shared_templates(bucket, reader, sky)
         reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
         reads = tile_reads(bucket, reader, self.placement.axis, self._prefetches_reads)
-        reads = reads.zip(_first_detectors(bucket))
+        first = _first_detectors(bucket)
+        if shared is None:
+            reads = reads.zip((first,))
+        else:
+            reads = reads.zip((first, shared), strides=(1, 'segment'))
         kernel = fit_kernel(self.fit_config, self.landscape, capacity, sample_rate)
         (spectra, level, n_real), _ = map_reduce(
             kernel, reads, ('segment_sum', 'segment_sum', 'segment'), sky
@@ -654,6 +684,32 @@ class MapMakingRun[T]:
             self.placement.axis,
         )
         return models, cores
+
+    def _fit_shared_templates(
+        self, bucket: TileBucket, reader: ObservationReader[T], sky: StokesType | None
+    ) -> PyTree[Array] | None:
+        """A pass over a bucket fitting the templates its detectors share, for the low-rank fit.
+
+        The low-rank fit deprojects them from the data. The amplitudes are fitted over each observation, so that the data the noise is estimated
+        from does not depend on how the detectors are tiled (see
+        [`shared_deprojection`][furax.mapmaking._tile.shared_deprojection]). `None` unless the
+        fit deprojects templates that the detectors share.
+        """
+        templates = self.fit_config.templates
+        if (
+            templates is None
+            or not self.fit_config.weighting.low_rank.deproject
+            or not templates.detectors_share_amplitudes
+        ):
+            return None
+        logger.info('Reading the data once more to fit the templates the detectors share')
+        reader.reset_failures()  # fresh pass: drop failures recorded by any previous read
+        reads = tile_reads(bucket, reader, self.placement.axis, self._prefetches_reads)
+        kernel = shared_fit_kernel(self.fit_config, self.landscape)
+        outputs, _ = map_reduce(kernel, reads, SHARED_FIT_REDUCTIONS, sky)
+        return shared_fit_amplitudes(
+            outputs, bucket.n_segments, templates.regularization, self.placement.axis
+        )
 
     @cached_property
     def _prefetches_reads(self) -> bool:
@@ -934,3 +990,8 @@ def _excluded_message(failures: list[tuple[str, str]], limit: int = 5) -> str:
     if len(failures) > limit:
         lines.append(f'  and {len(failures) - limit} more')
     return '\n'.join(lines)
+
+
+def _summed(total: Any, term: Any) -> Any:
+    """`total + term`, leaf by leaf, from `term` alone when `total` is `None`."""
+    return term if total is None else furax.tree.add(total, term)

@@ -279,9 +279,18 @@ _COMMON_MODE_WITH_DRIFT = TemplatesConfig(
 
 
 _T2P_QUADRUPOLE = TemplatesConfig(t2p=T2PConfig(quadrupole_order=1))
+_PER_WAFER = TemplatesConfig(
+    azimuth_synchronous=AzimuthSynchronousConfig(
+        n_knots={'qu': 6}, split_scans=True, per_wafer=True, explicit=True
+    ),
+    common_mode=CommonModeConfig(samples_per_knot=128, per_wafer=True),
+    regularization=1e-3,
+)
 _QUADRUPOLAR = [
     pytest.param(_T2P_QUADRUPOLE, id='t2p-quadrupole'),
     pytest.param(_COMMON_MODE_WITH_DRIFT, id='common-mode-with-drift'),
+    # the wafers alternate between detectors, so every batch holds a part of each
+    pytest.param(_PER_WAFER, id='per-wafer'),
 ]
 
 
@@ -452,3 +461,36 @@ def test_detector_batches_give_the_same_system_under_a_correlated_weight():
     cfg = _toeplitz_config(templates, precomputed=True, demodulated=True)
     whole, batched = _detector_batch_systems(cfg)
     assert_same_system(batched, whole)
+
+
+# the fakes scan azimuths from 0 to 10 rad (573 deg) at an elevation of 0.8 rad (46 deg)
+_ACROSS_OBSERVATIONS = AzimuthSynchronousConfig(
+    bin_size=120.0,
+    azimuth_range=[(-60.0, 660.0)],
+    split_scans=True,
+    per_wafer=True,
+    across_observations=True,
+    elevations=(46.0, 60.0),
+    explicit=True,
+)
+
+
+def test_azimuth_template_across_observations_gives_the_same_system_in_detector_batches():
+    # every tile of every observation reads the same amplitudes, whose Gram sums over them all
+    templates = TemplatesConfig(azimuth_synchronous=_ACROSS_OBSERVATIONS, regularization=1e-3)
+    cfg = replace(_config(None), templates=templates, sotodlib=SotodlibConfig(demodulated=True))
+    whole, batched = _detector_batch_systems(cfg, _ground_obs)
+    assert_same_system(batched, whole)
+
+
+def test_azimuth_amplitudes_across_observations_are_reported_once():
+    templates = TemplatesConfig(azimuth_synchronous=_ACROSS_OBSERVATIONS, regularization=1e-3)
+    cfg = replace(_config(None), templates=templates, sotodlib=SotodlibConfig(demodulated=True))
+    results = MultiObservationMapMaker(cfg).make_maps(_ground_obs(n_obs=3))
+    (amplitudes,) = results.template_amplitudes.values()
+    # (stream, wafer, direction x bin, elevation): no observation axis
+    assert amplitudes.shape == (3, 7, 12, 2)
+    assert jnp.all(jnp.isfinite(amplitudes))
+    # the detectors are on the first two wafers, the observations at the first elevation
+    assert jnp.all(jnp.any(amplitudes[:, :2, :, 0] != 0, axis=-1))
+    assert not jnp.any(amplitudes[:, 2:]) and not jnp.any(amplitudes[..., 1])

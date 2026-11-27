@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from equinox import tree_equal
-from jaxtyping import Bool, Float
+from jaxtyping import Bool, Float, Int
 from numpy.testing import assert_allclose
 
 from furax import tree
@@ -165,6 +165,10 @@ class FakeObservation(AbstractObservation[None]):
         q = np.zeros((self._n_dets, 4), dtype=np.float64)
         q[:, 0] = 1.0
         return q
+
+    def get_wafer_slots(self) -> Int[np.ndarray, ' det']:
+        # two wafers, the detectors alternating between them
+        return np.arange(self._n_dets, dtype=np.int32) % 2
 
 
 class FakeLazyObservation(AbstractLazyObservation[None]):
@@ -386,7 +390,9 @@ def probe_normal_system(maker: MapMakingRun, seed: int = 0) -> tuple[dict, dict]
         S = IndexOperator((..., *jnp.where(valid)), in_structure=maker.landscape.structure)
         pixels = LocalStokesLandscape.from_boolean_mask(maker.landscape, valid)
         selected_buckets = [selected(t, pixels) for t in buckets]
-        system = MapMakingSystem.create(selected_buckets, totals.rhs, S, BJ)
+        system = MapMakingSystem.create(
+            selected_buckets, totals.rhs, S, BJ, whole_grams=totals.whole_grams
+        )
         x = tree.normal_like(system.A.in_structure, jax.random.key(seed))
         per_tile = [k for k in buckets[0].template.kinds if AMPLITUDE_STRIDES[k] == 1]
         x |= {kind: tree.zeros_like(x[kind]) for kind in per_tile}

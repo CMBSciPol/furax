@@ -4,10 +4,11 @@ import jax.random as jr
 import pytest
 from jax import Array
 from jaxtyping import Float
-from numpy.testing import assert_allclose
+from numpy.testing import assert_allclose, assert_array_equal
 
 from furax.mapmaking import ReaderField
 from furax.mapmaking.config import (
+    AzimuthSynchronousConfig,
     BinsConfig,
     CommonModeConfig,
     HWPSynchronousConfig,
@@ -18,6 +19,7 @@ from furax.mapmaking.config import (
     TemplatesConfig,
 )
 from furax.mapmaking.templates import (
+    azimuth_synchronous_templates,
     build_templates,
     common_mode_templates,
     polarization_field_couplings,
@@ -25,6 +27,7 @@ from furax.mapmaking.templates import (
     required_reader_fields,
     spline_drift_templates,
     t2p_templates,
+    wafer_groups,
     winding_couplings,
     zernike_couplings,
 )
@@ -643,6 +646,115 @@ def test_common_mode_has_one_spline_per_mode_shared_by_the_detectors(config, n_m
     assert template.streams == 'qu' and template.per == ()
     assert template.in_structure.shape == (N_SAMPS // 30 + 2, n_modes)  # (spline, mode)
     assert not template.per_detector
+
+
+_PER_WAFER_AZIMUTH = AzimuthSynchronousConfig(
+    bins=BinsConfig(4), split_scans=True, per_wafer=True, explicit=True
+)
+
+
+@pytest.mark.parametrize(
+    ('config', 'shape'),
+    [
+        # (stream, wafer, direction x bin)
+        (TemplatesConfig(azimuth_synchronous=_PER_WAFER_AZIMUTH), (2, 7, 8)),
+        # (wafer, spline, mode)
+        (
+            TemplatesConfig(common_mode=CommonModeConfig(samples_per_knot=30, per_wafer=True)),
+            (7, N_SAMPS // 30 + 2, 4),
+        ),
+    ],
+    ids=['azimuth', 'common-mode'],
+)
+def test_per_wafer_templates_share_their_amplitudes_within_a_wafer(config, shape):
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='QU')
+    data = _field_data('QU') | {
+        ReaderField.LEFT_SCAN_MASK: jnp.arange(N_SAMPS) < 60,
+        ReaderField.RIGHT_SCAN_MASK: jnp.arange(N_SAMPS) >= 60,
+        ReaderField.WAFER_SLOTS: jnp.array([[0], [3], [3]]),
+    }
+    assert ReaderField.WAFER_SLOTS in required_reader_fields(config)
+    (template,) = build_templates(config, data, tod_format)[0].values()
+    assert not template.per_detector
+    assert_array_equal(template.det_groups, wafer_groups(data[ReaderField.WAFER_SLOTS], 7))
+    assert template.in_structure.shape == shape
+
+
+def test_bins_on_a_fixed_range_hold_the_same_azimuth_in_every_observation():
+    bins = BinsConfig()
+    one, other = jnp.linspace(0.0, 1.0, N_SAMPS), jnp.linspace(-0.5, 1.5, N_SAMPS)
+    weights = [
+        azimuth_bins_basis(bins, azimuth, jnp.float64, intervals=[(0.0, 2.0, 4)]).values
+        for azimuth in (one, other)
+    ]
+    # bin j is [j / 2, (j + 1) / 2) whatever the range scanned; outside [0, 2), no bin
+    for azimuth, w in zip((one, other), weights, strict=True):
+        inside = (azimuth >= 0) & (azimuth < 2)
+        expected = jnp.where(inside, jnp.floor(azimuth * 2), -1)
+        assert_array_equal(jnp.where(w.any(axis=0), w.argmax(axis=0), -1), expected)
+
+
+@pytest.mark.parametrize(
+    ('elevation', 'roll', 'setting'),
+    [(50.0, -40.0, 0), (54.0, 50.0, 3), (70.0, 0.0, 4)],  # elevation first, then roll
+)
+def test_azimuth_template_across_observations_sees_the_nearest_setting(elevation, roll, setting):
+    config = AzimuthSynchronousConfig(
+        bin_size=30.0,
+        azimuth_range=[(-60.0, 60.0)],
+        across_observations=True,
+        elevations=(50.0, 55.0, 60.0),
+        rolls=(-45.0, 45.0),
+        explicit=True,
+    )
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='QU')
+    data = _data('QU') | {
+        ReaderField.ELEVATION: jnp.full(N_SAMPS, jnp.radians(elevation)),
+        ReaderField.ROLL: jnp.full(N_SAMPS, jnp.radians(roll)),
+    }
+    templates = TemplatesConfig(azimuth_synchronous=config)
+    assert {ReaderField.ELEVATION, ReaderField.ROLL} <= required_reader_fields(templates)
+    (template,) = build_templates(templates, data, tod_format)[0].values()
+    assert template.in_structure.shape == (2, 4, 6)  # (stream, bin, setting)
+    assert_array_equal(template.coupling, jnp.eye(6)[setting].reshape(1, 1, 6))
+
+
+def test_disjoint_azimuth_intervals_have_bins_of_their_own():
+    # [0, 40) and [100, 125), the second widened to whole bins: [100, 140)
+    config = AzimuthSynchronousConfig(bin_size=20.0, azimuth_range=[(0.0, 40.0), (100.0, 125.0)])
+    assert config.azimuth_range == [(0.0, 40.0), (100.0, 140.0)]
+    azimuth_deg = jnp.array([5.0, 25.0, 70.0, 105.0, 135.0, 150.0])
+    data = _data(None) | {ReaderField.AZIMUTH: jnp.resize(jnp.radians(azimuth_deg), N_SAMPS)}
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64)
+    (template,) = azimuth_synchronous_templates(config, data, tod_format).values()
+    values = template.basis.values[:, :6]
+    # the samples between and past the intervals are in no bin
+    assert_array_equal(
+        jnp.where(values.any(axis=0), values.argmax(axis=0), -1), [0, 1, -1, 2, 3, -1]
+    )
+
+
+def test_azimuth_intervals_that_overlap_once_widened_are_merged():
+    # widened to whole bins, [0, 30) becomes [0, 40) and overlaps [35, 60): one interval on the
+    # grid of the first, [0, 60), which holds [5, 10); [100, 110), apart, stays; the order does
+    # not matter
+    config = AzimuthSynchronousConfig(
+        bin_size=20.0, azimuth_range=[(100.0, 110.0), (35.0, 60.0), (0.0, 30.0), (5.0, 10.0)]
+    )
+    assert config.azimuth_range == [(0.0, 60.0), (100.0, 120.0)]
+    assert config.n_bins == 4
+
+
+def test_bin_size_widens_the_azimuth_range_to_whole_bins():
+    config = AzimuthSynchronousConfig(bin_size=25.0, azimuth_range=[(0.0, 60.0)])
+    assert config.n_bins == 3  # [0, 75)
+    azimuth = jnp.radians(0.1 + 0.58 * jnp.arange(N_SAMPS))  # up to 69 deg, off the bin edges
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64)
+    data = _data(None) | {ReaderField.AZIMUTH: azimuth}
+    (template,) = azimuth_synchronous_templates(config, data, tod_format).values()
+    values = template.basis.values
+    assert values.shape == (3, N_SAMPS) and jnp.all(values.sum(axis=0) == 1)
+    assert_array_equal(values.argmax(axis=0), jnp.floor(jnp.degrees(azimuth) / 25.0))
 
 
 def test_common_mode_needs_the_q_and_u_streams():

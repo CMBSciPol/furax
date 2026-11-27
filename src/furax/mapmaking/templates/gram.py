@@ -43,13 +43,15 @@ from furax.linalg import (
 
 from ..weight import MarginalizedWeightOperator
 from . import _structure
-from ._operator import TemplateOperator
-from .bases import Basis, OffsetBasis, _einsum
+from ._operator import Template, TemplateOperator
+from .bases import Basis, OffsetBasis, TensorBasis, _einsum
 
 __all__ = [
     'BlockGram',
     'factor',
+    'factor_diagonal',
     'template_gram',
+    'template_gram_diagonal',
 ]
 
 
@@ -205,6 +207,74 @@ def template_gram(
     if global_layout is not None:
         global_part, _ = assemble(global_layout, None)
     return BlockGram(local_part, global_part)
+
+
+def template_gram_diagonal(
+    operator: TemplateOperator, weight: AbstractLinearOperator
+) -> PyTree[Array]:
+    r"""The diagonal of the Gram $T^\top W T$, keyed as the amplitudes.
+
+    Entry $k$ is $\sum W (T e_k)^2$: the weighted sum of the squares of the signal of amplitude
+    $k$, $T^\top$ of the weight with the basis and the coupling squared. Where no two amplitudes
+    are seen on the same sample of a detector, such as for bins that do not overlap, the Gram under
+    a weight diagonal over the samples is that diagonal.
+
+    Args:
+        operator: The template operator $T$, of templates whose bases are dense and shared by the
+            detectors.
+        weight: The weight $W$, diagonal.
+
+    Raises:
+        TypeError: If a template has another basis than a [`TensorBasis`][] shared by the detectors.
+    """
+    squared = {}
+    for name, template in operator.templates.items():
+        basis = template.basis
+        if not isinstance(basis, TensorBasis) or basis.batch_shape:
+            raise TypeError(f'template {name!r} needs a TensorBasis shared by the detectors')
+        squared[name] = Template(
+            TensorBasis(basis.values**2),
+            template.tod_format,
+            streams=template.streams,
+            per=template.per,
+            coupling=None if template.coupling is None else template.coupling**2,
+            det_groups=template.det_groups,
+        )
+    tod_format = operator.tod_format
+    return TemplateOperator(squared).T(weight(tod_format.ones()))
+
+
+def factor_diagonal(
+    diagonal: PyTree[Array], *, regularization: float = 0.0
+) -> tuple[AbstractLinearOperator, AbstractLinearOperator | None]:
+    """The inverse of a diagonal Gram, and the ridge added to it, as [`factor`][] of a Gram.
+
+    The ridge of each template is `regularization` times the mean of its diagonal over the
+    amplitudes some weighted sample sees; the others take a unit diagonal and come back unchanged.
+
+    Args:
+        diagonal: The diagonal of the Gram, keyed as the amplitudes (see
+            [`template_gram_diagonal`][]).
+        regularization: The relative ridge.
+
+    Returns:
+        The inverse, on the amplitudes, and the ridge as a diagonal operator on them; `None`
+        without regularization.
+    """
+
+    def ridge_of(d: Array) -> Array:
+        seen = d > 0
+        mean = jnp.sum(jnp.where(seen, d, 0)) / jnp.maximum(jnp.sum(seen), 1)
+        return jnp.where(seen, regularization * mean, 0)
+
+    ridges = jax.tree.map(ridge_of, diagonal)
+    inverses = jax.tree.map(
+        lambda d, r: jnp.where(d > 0, 1 / jnp.where(d > 0, d + r, 1), 1), diagonal, ridges
+    )
+
+    structure = tree.as_structure(diagonal)
+    inverse = _ridge_operator(inverses, structure)  # a diagonal operator, as the ridge
+    return inverse, _ridge_operator(ridges, structure) if regularization else None
 
 
 def factor(

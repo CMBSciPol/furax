@@ -25,6 +25,7 @@ from furax.obs.stokes import StokesType
 
 from ._bucket import bucket_normal, bucket_response, preconditioner, ridge
 from ._checkpoint import CHECKPOINT_FILES, SolveCheckpoint
+from ._tile import AMPLITUDE_STRIDES
 from .config import SolverConfig, TwoLevelConfig
 from .layout import TilePlacement
 from .preconditioner import BJPreconditioner, make_two_level_preconditioner
@@ -72,8 +73,10 @@ class MapMakingSystem:
         S: AbstractLinearOperator,
         BJ: BJPreconditioner,
         sky: StokesType | None = None,
+        whole_grams: dict[str, tuple[AbstractLinearOperator, AbstractLinearOperator | None]]
+        | None = None,
     ) -> 'MapMakingSystem':
-        r"""The GLS normal system $J^\top W' J x = J^\top W' d$ over the selected pixels.
+        r"""The GLS normal system $J^\top W J x = J^\top W M d$ over the selected pixels.
 
         Args:
             buckets: The [`Tile`][furax.mapmaking._tile.Tile]s of each bucket.
@@ -82,18 +85,27 @@ class MapMakingSystem:
             S: Selection of the estimated pixels out of the full sky grid.
             BJ: Block-Jacobi preconditioner.
             sky: A simulated sky on the full grid, whose right-hand side `injected_b` is added.
+            whole_grams: For each kind of amplitudes every bucket reads whole, the inverse that
+                preconditions them and the ridge added to their Gram (see
+                [`PassTotals.whole_grams`][furax.mapmaking._pass.PassTotals]).
 
         Returns:
             The system to solve. Its unknowns are a dictionary of the selected sky pixels, under
-            `'map'`, and of the amplitudes of each kind, one block per bucket.
+            `'map'`, and of the amplitudes of each kind, one block per bucket, but for those every
+            observation shares, which are one block that every bucket reads whole, as the map.
         """
         # Explicit templates and gaps are configured for the run, so every bucket has them or none.
         kinds = buckets[0].template.kinds
 
         # The unknowns are the selected sky pixels, then, per kind of amplitudes present, one block
-        # per bucket, of which each bucket's system reads and writes its own
+        # per bucket, of which each bucket's system reads and writes its own, or a single block
+        # that every bucket reads whole
         b = rhs | {'map': S(rhs['map'])}
-        strides = {'map': None} | dict.fromkeys(kinds, 1)
+        strides = {'map': None} | {
+            kind: None if AMPLITUDE_STRIDES[kind] is None else 1 for kind in kinds
+        }
+        whole_grams = whole_grams or {}
+        assert set(whole_grams) == {kind for kind in kinds if strides[kind] is None}
         normals = [bucket_normal(tiles) for tiles in buckets]
         terms: list[AbstractLinearOperator] = [RaggedAssemblyOperator(normals, strides)]
         injected_b = None
@@ -101,18 +113,25 @@ class MapMakingSystem:
             responses = [bucket_response(tiles) for tiles in buckets]
             injected_b = RaggedAssemblyOperator(responses, None, strides)(sky)
 
-        # The ridge the Gram inverses were factored with acts on the amplitudes alone, so it is
-        # one term over them all, outside the passes over the TOD.
+        # The amplitudes of each kind are preconditioned block-diagonally over the buckets, or by
+        # the inverse of their Gram when every bucket reads them whole. The ridge the Gram inverses
+        # were factored with acts on the amplitudes alone, so it is one term over them all,
+        # outside the passes over the TOD.
+        inverses: dict[str, Any] = {}
         for kind in kinds:
-            ridged = [ridge(tiles, kind) for tiles in buckets]
-            assert all(r is None for r in ridged) or all(r is not None for r in ridged)
-            if ridged[0] is not None:
+            if kind in whole_grams:
+                inverses[kind], ridged = whole_grams[kind]
+            else:
+                inverses[kind] = [preconditioner(tiles, kind) for tiles in buckets]
+                ridges = [ridge(tiles, kind) for tiles in buckets]
+                assert all(r is None for r in ridges) or all(r is not None for r in ridges)
+                ridged = None if ridges[0] is None else BlockDiagonalOperator(ridges)
+            if ridged is not None:
                 amplitudes = BlockSelectOperator(kind, in_structure=terms[0].in_structure)
-                terms.append((amplitudes.T @ BlockDiagonalOperator(ridged) @ amplitudes).reduce())
+                terms.append((amplitudes.T @ ridged @ amplitudes).reduce())
 
         # The map is preconditioned by the block-Jacobi preconditioner restricted to the selected
-        # pixels, the amplitudes of each kind block-diagonally over the buckets
-        inverses = {kind: [preconditioner(tiles, kind) for tiles in buckets] for kind in kinds}
+        # pixels
         M = BlockDiagonalOperator({'map': (S @ BJ.I @ S.T).reduce()} | inverses)
         A = AdditionOperator(terms, sequential=True)
         return cls(A, b, M, injected_b)

@@ -609,3 +609,28 @@ def test_regularized_adds_the_ridge_and_a_unit_diagonal_on_unseen_rows():
     # the unseen amplitudes come back as they came in
     assert_allclose(x_a[..., 0], x[0][..., 0], rtol=1e-12)
     assert_allclose(x_c[..., -1], x[1][..., -1], rtol=1e-12)
+
+
+def test_diagonal_of_a_binned_template_shared_by_groups_is_its_gram():
+    # disjoint bins, groups and one-hot modes: no two amplitudes meet on a sample of a detector
+    tod_format = TODFormat((N_DETS, N_SAMPS), jnp.float64, stokes='QU')
+    bins = jnp.eye(4)[jnp.arange(N_SAMPS) % 4].T  # (bin, samp), one-hot
+    groups = jnp.eye(3, dtype=bool)[jnp.array([0, 2, 2, 0])]
+    coupling = jnp.array([[[0.0, 1.0, 0.0]]])  # the second of three modes
+    template = Template(
+        TensorBasis(bins), tod_format, streams='qu', det_groups=groups, coupling=coupling
+    )
+    op = TemplateOperator({'t': template})
+    weight = _weight(op, jr.key(3))
+    diagonal = gram_module.template_gram_diagonal(op, weight)
+    dense = _dense_gram(op, weight)
+    assert_allclose(ravel_pytree(diagonal)[0], np.diag(dense), rtol=1e-12)
+    assert_allclose(dense, np.diag(np.diag(dense)), atol=1e-12)
+
+
+def test_factor_diagonal_inverts_the_seen_amplitudes_and_leaves_the_others():
+    diagonal = {'t': jnp.array([2.0, 0.0, 6.0])}
+    inverse, ridge = gram_module.factor_diagonal(diagonal, regularization=0.5)
+    assert ridge is not None
+    assert_allclose(ridge(tree.ones_like(diagonal))['t'], [2.0, 0.0, 2.0])  # 0.5 x mean seen
+    assert_allclose(inverse(tree.ones_like(diagonal))['t'], [1 / 4, 1.0, 1 / 8])

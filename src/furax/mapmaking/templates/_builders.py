@@ -8,16 +8,17 @@ observation's data, and [`build_templates`][furax.mapmaking.templates.build_temp
 [`TemplatesConfig`][furax.mapmaking.config.TemplatesConfig] enables.
 """
 
+import math
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
-from typing import Any
+from typing import Any, Final
 
 import jax
 import jax.numpy as jnp
 from fastquat import Quaternion
 from jax import Array
 from jax.scipy.signal import detrend
-from jaxtyping import Complex, DTypeLike, Float
+from jaxtyping import Bool, Complex, DTypeLike, Float, Int
 
 from furax.math import bspline
 from furax.math.legendre import legvander
@@ -54,11 +55,16 @@ __all__ = [
     'spline_hwp_synchronous_templates',
     't2p_templates',
     'common_mode_templates',
+    'wafer_groups',
     'zernike_couplings',
     'winding_couplings',
     'polynomial_couplings',
     'polarization_field_couplings',
 ]
+
+
+GLOBAL_TEMPLATE_NAMES: Final = frozenset({'global_azimuth_synchronous'})
+"""The names of the templates whose amplitudes every observation of the run shares."""
 
 
 def build_templates(
@@ -92,9 +98,12 @@ def build_templates(
         )
     explicit: dict[str, Template] = {}
     implicit: dict[str, Template] = {}
+    det_groups = None
+    if ReaderField.WAFER_SLOTS in required_reader_fields(config):
+        det_groups = wafer_groups(data[ReaderField.WAFER_SLOTS], config.wafer_slots)
     builders = {
         'spline_drift': spline_drift_templates,
-        'azimuth_synchronous': azimuth_synchronous_templates,
+        'azimuth_synchronous': partial(azimuth_synchronous_templates, det_groups=det_groups),
         'hwp_synchronous': hwp_synchronous_templates,
         'azimuth_hwp_synchronous': azimuth_hwp_synchronous_templates,
         'binned_azimuth_hwp_synchronous': binned_azimuth_hwp_synchronous_templates,
@@ -109,7 +118,9 @@ def build_templates(
     if config.t2p is not None:
         explicit.update(t2p_templates(config.t2p, data, tod_format, temperature=temperature))
     if config.common_mode is not None:
-        explicit.update(common_mode_templates(config.common_mode, data, tod_format))
+        explicit.update(
+            common_mode_templates(config.common_mode, data, tod_format, det_groups=det_groups)
+        )
     if not explicit and not implicit:
         raise ValueError('config.templates is set but no template is active.')
     return explicit, implicit
@@ -139,6 +150,16 @@ def required_reader_fields(config: TemplatesConfig) -> set[str]:
         fields |= {ReaderField.SAMPLE_DATA, ReaderField.TIMESTAMPS}
         if config.t2p.zernike_order is not None or config.t2p.quadrupole_order is not None:
             fields |= {ReaderField.Q_BORE_DET}
+    if any(
+        section is not None and section.per_wafer
+        for section in (config.azimuth_synchronous, config.common_mode)
+    ):
+        fields |= {ReaderField.WAFER_SLOTS}
+    if config.across_observations:
+        fields |= {ReaderField.ELEVATION}
+        section = config.azimuth_synchronous
+        if section is not None and section.rolls is not None:
+            fields |= {ReaderField.ROLL}
     if config.common_mode is not None:
         fields |= {
             ReaderField.TIMESTAMPS,
@@ -164,30 +185,89 @@ def spline_drift_templates(
 
 
 def azimuth_synchronous_templates(
-    config: AzimuthSynchronousConfig, data: Mapping[str, Any], tod_format: TODFormat
+    config: AzimuthSynchronousConfig,
+    data: Mapping[str, Any],
+    tod_format: TODFormat,
+    *,
+    det_groups: Bool[Array, 'det group'] | None = None,
 ) -> dict[str, Template]:
     """Functions of the azimuth, by scan direction if `config.split_scans`.
 
     Bins or a cubic B-spline, whichever `config` sets. One template per group of streams fitted
-    alike (see `_stream_groups`).
+    alike (see `_stream_groups`). With `config.per_wafer`, the detectors of each group of
+    `det_groups`, such as a wafer, share their amplitudes.
     """
+    det_groups = _wafer_groups_of(config.per_wafer, det_groups)
     azimuth, dtype = data[ReaderField.AZIMUTH], tod_format.dtype
     scan_masks = None
     if config.split_scans:
         scan_masks = (data[ReaderField.LEFT_SCAN_MASK], data[ReaderField.RIGHT_SCAN_MASK])
-    if config.bins is not None:
+    if config.bins is not None or config.bin_size is not None:
+        if config.bins is not None:
+            bins, intervals = config.bins, None
+        else:
+            bins = BinsConfig(config.n_bins)
+            assert config.azimuth_range is not None and config.bin_size is not None  # with bins
+            intervals = [
+                (math.radians(lo), math.radians(hi), round((hi - lo) / config.bin_size))
+                for lo, hi in config.azimuth_range
+            ]
+
+        def bins_basis(bins: BinsConfig) -> Basis:
+            return azimuth_bins_basis(
+                bins, azimuth, dtype, scan_masks=scan_masks, intervals=intervals
+            )
+
+        if config.across_observations:
+            template = _across_observations(bins_basis(bins), config, data, tod_format, det_groups)
+            return {'global_azimuth_synchronous': template}
         return _stream_groups(
-            'azimuth_synchronous',
-            config.bins,
-            lambda bins: azimuth_bins_basis(bins, azimuth, dtype, scan_masks=scan_masks),
-            tod_format,
+            'azimuth_synchronous', bins, bins_basis, tod_format, det_groups=det_groups
         )
     assert config.n_knots is not None  # exactly one alternative is set
 
     def spline(n_knots: int) -> Basis:
         return azimuth_spline_basis(n_knots, azimuth, dtype, scan_masks=scan_masks)
 
-    return _stream_groups('azimuth_synchronous', config.n_knots, spline, tod_format)
+    return _stream_groups(
+        'azimuth_synchronous', config.n_knots, spline, tod_format, det_groups=det_groups
+    )
+
+
+def _across_observations(
+    basis: Basis,
+    config: AzimuthSynchronousConfig,
+    data: Mapping[str, Any],
+    tod_format: TODFormat,
+    det_groups: Bool[Array, 'det group'] | None,
+) -> Template:
+    """The azimuth template whose amplitudes every observation of the run shares.
+
+    Its modes are the settings of `config`, each elevation then each roll: an observation, at
+    constant elevation and roll, sees only the nearest setting, through a coupling one-hot on it,
+    the same for every detector and stream.
+    """
+    assert config.elevations is not None  # guaranteed by the config
+    # the first sample is never padding
+    setting = _nearest(config.elevations, data[ReaderField.ELEVATION][0])
+    if config.rolls is not None:
+        setting = setting * len(config.rolls) + _nearest(config.rolls, data[ReaderField.ROLL][0])
+    coupling = (jnp.arange(config.n_settings) == setting).astype(tod_format.dtype)
+    streams = None if tod_format.stokes is None else tod_format.stokes.lower()
+    leading = (1, 1) if streams is not None else (1,)  # every stream, every detector
+    return Template(
+        basis,
+        tod_format,
+        streams=streams,
+        per=('stream', 'det') if det_groups is not None else ('stream',),
+        coupling=coupling.reshape(*leading, -1),
+        det_groups=det_groups,
+    )
+
+
+def _nearest(degrees: Sequence[float], angle: Float[Array, '']) -> Int[Array, '']:
+    """The index of the angle of `degrees` nearest to `angle`, in radians."""
+    return jnp.argmin(jnp.abs(jnp.radians(jnp.asarray(degrees)) - angle))
 
 
 def hwp_synchronous_templates(
@@ -324,14 +404,20 @@ def t2p_templates(
 
 
 def common_mode_templates(
-    config: CommonModeConfig, data: Mapping[str, Any], tod_format: TODFormat
+    config: CommonModeConfig,
+    data: Mapping[str, Any],
+    tod_format: TODFormat,
+    *,
+    det_groups: Bool[Array, 'det group'] | None = None,
 ) -> dict[str, Template]:
     """The polarization common to the detectors on the Q and U streams of the TOD, none without.
 
     The detectors see one polarization pattern over the focal plane, `winding_couplings` from the
     detector quaternions in `data`, with a time dependence they share: a cubic B-spline of time
-    over the whole observation for each mode of the pattern.
+    over the whole observation for each mode of the pattern. With `config.per_wafer`, each group
+    of `det_groups`, such as a wafer, has its own amplitudes of the pattern.
     """
+    det_groups = _wafer_groups_of(config.per_wafer, det_groups)
     streams = _qu_streams(tod_format)
     if not streams:
         return {}
@@ -359,9 +445,35 @@ def common_mode_templates(
             streams=streams,
         )
     template = Template(
-        basis, tod_format, streams=streams, per=(), coupling=coupling.astype(tod_format.dtype)
+        basis,
+        tod_format,
+        streams=streams,
+        per=() if det_groups is None else ('det',),
+        coupling=coupling.astype(tod_format.dtype),
+        det_groups=det_groups,
     )
     return {'common_mode': template}
+
+
+def wafer_groups(slots: Int[Array, 'det 1'], n_slots: int) -> Bool[Array, 'det group']:
+    """The one-hot wafer of each detector, `(det, n_slots)`, from its wafer slot.
+
+    A detector whose slot is outside `range(n_slots)` belongs to no group.
+    """
+    return slots == jnp.arange(n_slots)
+
+
+def _wafer_groups_of(
+    per_wafer: bool, det_groups: Bool[Array, 'det group'] | None
+) -> Bool[Array, 'det group'] | None:
+    """The groups of the detectors a template `per_wafer` shares its amplitudes by; `None` if not.
+
+    Raises:
+        ValueError: If the template is per wafer, but the groups are not given.
+    """
+    if per_wafer and det_groups is None:
+        raise ValueError('a per-wafer template needs the groups of the detectors')
+    return det_groups if per_wafer else None
 
 
 def zernike_couplings(
@@ -559,19 +671,22 @@ def _stream_groups[T](
     per_stream: T | dict[str, T],
     basis: Callable[[T], Basis],
     tod_format: TODFormat,
+    *,
+    det_groups: Bool[Array, 'det group'] | None = None,
 ) -> dict[str, Template]:
     """One template per group of streams fitted with the same option, such as Legendre orders.
 
     It is named `name` if every stream of the TOD is fitted alike, `<name>_<streams>` otherwise,
-    such as `spline_drift_qu`. Options per stream need a demodulated TOD.
+    such as `spline_drift_qu`. Options per stream need a demodulated TOD. The detectors of each
+    group of `det_groups` share their amplitudes; by default, each detector has its own.
     """
     if tod_format.stokes is None:
         assert not isinstance(per_stream, dict)  # per-stream options need demodulation
-        return {name: Template(basis(per_stream), tod_format)}
+        return {name: Template(basis(per_stream), tod_format, det_groups=det_groups)}
     streams = tod_format.stokes.lower()
     return {
         name if group == streams else f'{name}_{group}': Template(
-            basis(value), tod_format, streams=group
+            basis(value), tod_format, streams=group, det_groups=det_groups
         )
         for group, value in _per_stream_groups(per_stream, streams).items()
     }
@@ -608,26 +723,35 @@ def _bin_weights(
     interpolate: bool,
     smooth: bool,
     dtype: DTypeLike,
+    *,
+    bounds: tuple[float, float] | None = None,
 ) -> Float[Array, '{n_bins} samp']:
     """Assign each sample to a bin of `x`.
 
-    Splits the range of `x` into `n_bins` equal bins. Entry `[j, s]` is how much sample `s` belongs
-    to bin `j`. With `interpolate=False` this is one-hot: 1 for the bin the sample falls in, 0
-    elsewhere. With `interpolate=True` a sample near a bin edge is shared with its neighbour
-    (triangular weights, or sin² hats if `smooth`), each sample's weights summing to 1.
+    Splits the range of `x`, or `bounds` if given, into `n_bins` equal bins. Entry `[j, s]` is how
+    much sample `s` belongs to bin `j`; a sample outside `bounds` belongs to none. With
+    `interpolate=False` this is one-hot: 1 for the bin the sample falls in, 0 elsewhere. With
+    `interpolate=True` a sample near a bin edge is shared with its neighbour (triangular weights,
+    or sin² hats if `smooth`), each sample's weights summing to 1.
 
     Each row is then one basis function of a binned template (a bin's time profile).
     """
     n_samps = x.size
-    lo = jnp.min(x)
-    hi = jnp.max(x) + 1e-8  # nudge so the global max falls in the last bin
+    if bounds is None:
+        lo = jnp.min(x)
+        hi = jnp.max(x) + 1e-8  # nudge so the global max falls in the last bin
+        inside = jnp.ones(n_samps, bool)
+    else:
+        lo, hi = bounds
+        inside = (x >= lo) & (x < hi)
+        x = jnp.clip(x, lo, hi)
     edges = jnp.linspace(lo, hi, n_bins + 1)
 
     if not interpolate:
-        # Hard assignment: each sample contributes 1.0 to exactly its bin.
-        sample_bin = jnp.digitize(x, edges[1:])
+        # Hard assignment: each sample contributes 1.0 to exactly its bin; `hi` to the last.
+        sample_bin = jnp.minimum(jnp.digitize(x, edges[1:]), n_bins - 1)
         bins = jnp.zeros((n_bins, n_samps)).at[sample_bin, jnp.arange(n_samps)].set(1.0)
-        return bins.astype(dtype)
+        return (bins * inside).astype(dtype)
 
     # Soft assignment: triangular weights peaking at each bin centre, falling
     # linearly to zero one bin-width (`delta`) away. Shape (n_bins, n_samps).
@@ -643,7 +767,7 @@ def _bin_weights(
         # Linear interpolation; clamp samples beyond the end centres to the edge bins.
         bins = triangular.at[0, x < centres[0]].set(1.0).at[-1, x > centres[-1]].set(1.0)
 
-    return bins.astype(dtype)
+    return (bins * inside).astype(dtype)
 
 
 def _legendre_values(
@@ -811,9 +935,23 @@ def azimuth_bins_basis(
     dtype: DTypeLike,
     *,
     scan_masks: Sequence[Array] | None = None,
+    intervals: Sequence[tuple[float, float, int]] | None = None,
 ) -> Basis:
-    """One amplitude per azimuth bin, one set per scan mask if given."""
-    weights = _bin_weights(azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype)
+    """One amplitude per azimuth bin, one set per scan mask if given.
+
+    The bins split the azimuth range of the observation into `bins.n_bins`, or, with `intervals`,
+    each interval `(start, end, n)` into `n` bins, the intervals in turn; a sample outside them
+    is in no bin.
+    """
+    if intervals is None:
+        weights = _bin_weights(azimuth, bins.n_bins, bins.interpolate, bins.smooth, dtype)
+    else:
+        weights = jnp.concatenate(
+            [
+                _bin_weights(azimuth, n, bins.interpolate, bins.smooth, dtype, bounds=(lo, hi))
+                for lo, hi, n in intervals
+            ]
+        )
     return TensorBasis(_by_scan(weights, scan_masks))
 
 

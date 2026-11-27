@@ -10,7 +10,7 @@ stacked ensemble. The pass returns the tiles of each bucket, and what it sums ov
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import jax
@@ -38,26 +38,29 @@ from ._tile import (
     assemble_templates,
     low_rank_tile_spectra,
     restrict_streams,
+    shared_deprojection,
 )
 from .config import DiagnosticsConfig, GapTreatment, InjectionMode, MapMakingConfig, WeightingMode
 from .gap_filling import gap_fill
 from .layout import TileBucket, TilePlacement
 from .noise import LowRankNoiseModel, ModesCore, NoiseModel
 from .noise.lowrank import _fit_low_rank_spectra
-from .templates.gram import BlockGram, factor
+from .templates.gram import BlockGram, factor, factor_diagonal
+
+_REDUCTIONS_OF_STRIDES = {1: 1, 'segment': 'segment_sum', None: 'sum'}
+"""How the pass combines the right-hand side of amplitudes held with each stride."""
 
 PASS_REDUCTIONS: dict[str, Any] = {
     'hit_map': 'sum',
     # keyed as the unknowns: the map RHS summed, that of each kind of amplitudes held as the
     # tiles hold them
     'rhs': {'map': 'sum'}
-    | {
-        kind: 'segment_sum' if stride == 'segment' else stride
-        for kind, stride in AMPLITUDE_STRIDES.items()
-    },
+    | {kind: _REDUCTIONS_OF_STRIDES[stride] for kind, stride in AMPLITUDE_STRIDES.items()},
     # the Gram of the templates an observation's detectors share, summed over its tiles, paired
     # with its coarse amplitudes, which follow from the bases alone, the same in every tile
     'shared_gram': {'gram': 'segment_sum', 'coarse': 'segment'},
+    # the diagonal of the Gram of the templates every observation shares, summed over every tile
+    'global_diagonal': 'sum',
     # what the tiles of an observation share (boresight pointing, bases of the shared templates,
     # ...) is kept once per segment, the rest per tile
     'tile': 'auto',
@@ -82,7 +85,13 @@ class PassTotals:
     sky under `'map'`, replicated on every device, and for each kind of amplitudes present (see
     [`AMPLITUDE_STRIDES`][furax.mapmaking._tile.AMPLITUDE_STRIDES]) a list with the right-hand
     side of each bucket, `(tile, ...)`, or `(segment, ...)` for the amplitudes the detectors of an
-    observation share."""
+    observation share; that of the amplitudes every observation shares is summed over the
+    buckets, as the map RHS is."""
+    whole_grams: dict[str, tuple[AbstractLinearOperator, AbstractLinearOperator | None]] = field(
+        default_factory=dict
+    )
+    """For each kind of amplitudes every bucket reads whole, those every observation shares, the
+    inverse of the diagonal of their Gram, summed over every tile, and the ridge added to it."""
 
 
 def pass_kernel(
@@ -105,6 +114,8 @@ def pass_kernel(
     - `'shared_gram'`: the templates its observation's detectors share, under `'gram'` its share
       of their Gram and under `'coarse'` their coarse amplitudes, both `None` without them. The
       Gram is factored once summed over the tiles;
+    - `'global_diagonal'`: its share of the diagonal of the Gram of the templates every
+      observation shares, `None` without them;
     - `'tile'`: the [`Tile`][furax.mapmaking._tile.Tile], the Gram of the templates its
       observation's detectors share not yet factored;
     - `'tod'`: under a low-rank noise model, its masked TOD $M d$, of which the right-hand side
@@ -145,8 +156,9 @@ def residual_kernel(
 
     The member is one tile's read, as for [`pass_kernel`][], paired with the
     [`Tile`][furax.mapmaking._tile.Tile] the pass over the data built from it and the amplitudes
-    of each kind it reads, solved for. The sky to inject, if any, and the map solved for on the
-    whole sky, under `'map'`, which every tile reads whole, are shared inputs. The kernel returns the statistics of
+    of each kind it reads, solved for. The sky to inject, if any, and the unknowns every tile
+    reads whole, the map solved for on the whole sky, under `'map'`, and the amplitudes every
+    observation shares, are shared inputs. The kernel returns the statistics of
     [`tile_statistics`][furax.mapmaking._diagnostics.tile_statistics].
 
     Args:
@@ -171,7 +183,9 @@ def fit_kernel(
 ) -> Callable[[tuple[Any, Array], StokesType | None], tuple[Array, Array, Array]]:
     """The kernel of the pass that fits the low-rank noise model of each observation.
 
-    The member is one tile's read, as for [`pass_kernel`][], and its first detector. The spectrum
+    The member is one tile's read, as for [`pass_kernel`][], and the tuple of its first detector
+    and, when the detectors share templates, their amplitudes in its observation, fitted over it by
+    the pass of [`shared_fit_kernel`][]. The spectrum
     and white level of each channel of the tile (see
     [`low_rank_tile_spectra`][furax.mapmaking._tile.low_rank_tile_spectra]) go to its rows of
     arrays `(stream, capacity, ...)`, zero elsewhere, so that their sum over the tiles of an
@@ -187,12 +201,13 @@ def fit_kernel(
     replaces = config.injection is not None and config.injection.mode == InjectionMode.REPLACE
 
     def kernel(member, sky):
-        (data, padding, use), start = member
+        (data, padding, use), (start, *shared) = member
+        shared_amplitudes = shared[0] if shared else None
         data, tod_format, temperature = _model_fields(
             data, padding, sky, config, landscape, sky_landscape, replaces
         )
         spectra, level, n_real = low_rank_tile_spectra(
-            data, config, tod_format, padding, sample_rate, temperature
+            data, config, tod_format, padding, sample_rate, temperature, shared_amplitudes
         )
         n_streams = 1 if tod_format.stokes is None else tod_format.n_streams
         zero = jnp.zeros((), jnp.int32)
@@ -209,6 +224,75 @@ def fit_kernel(
         return (*placed, n_real)
 
     return kernel
+
+
+def shared_fit_kernel(
+    config: MapMakingConfig, landscape: StokesLandscape
+) -> Callable[[Any, StokesType | None], dict[str, Any]]:
+    """The kernel of the pass that fits the templates the detectors of an observation share.
+
+    It precedes the pass of [`fit_kernel`][], whose TOD it rids of those templates, fitted over
+    the whole observation rather than over each tile. The member is one tile's read, as for
+    [`pass_kernel`][]; the kernel returns its share of their Gram and right-hand side (see
+    [`shared_deprojection`][furax.mapmaking._tile.shared_deprojection]), keyed as
+    [`SHARED_FIT_REDUCTIONS`][].
+
+    Args:
+        config: The mapmaking configuration.
+        landscape: The landscape of the maps.
+    """
+    sky_landscape = landscape.with_stokes(config.read_stokes)
+    replaces = config.injection is not None and config.injection.mode == InjectionMode.REPLACE
+
+    def kernel(member, sky):
+        data, padding, use = member
+        data, tod_format, temperature = _model_fields(
+            data, padding, sky, config, landscape, sky_landscape, replaces
+        )
+        terms = shared_deprojection(data, config, tod_format, padding, temperature)
+        gram = terms.pop('gram')
+        coarse = None if gram is None else gram.coarse
+        terms['gram'] = None if gram is None else replace(gram, coarse=None)
+        # padding tiles and failed observations contribute nothing
+        return jax.tree.map(lambda x: x * use, terms) | {'coarse': coarse}
+
+    return kernel
+
+
+SHARED_FIT_REDUCTIONS = {
+    'gram': 'segment_sum',
+    'coarse': 'segment',
+    'rhs': 'segment_sum',
+    'global_diagonal': 'segment_sum',
+    'global_rhs': 'segment_sum',
+}
+"""How the engine combines the outputs of [`shared_fit_kernel`][] over the tiles of a bucket: the
+Grams and the right-hand sides summed over the tiles of each observation, the coarse amplitudes of
+the Gram, which follow from the bases alone, kept per observation."""
+
+
+def shared_fit_amplitudes(
+    outputs: dict[str, Any], n_segments: int, regularization: float, axis: str
+) -> PyTree[Array]:
+    """The amplitudes of the templates the detectors of each observation share, `(segment, ...)`.
+
+    The outputs of [`shared_fit_kernel`][], combined over the tiles of each observation, are
+    solved for on the device that holds it.
+    """
+    segments = StackedEnsemble(n_segments, outputs, policy=Policy(axis=axis))
+
+    def solve(member):
+        amplitudes = {}
+        if member['gram'] is not None:
+            inverse, _ = _factored(member['gram'], member['coarse'], regularization)
+            amplitudes |= inverse(member['rhs'])
+        if member['global_diagonal'] is not None:
+            inverse, _ = factor_diagonal(member['global_diagonal'], regularization=regularization)
+            amplitudes |= inverse(member['global_rhs'])
+        return amplitudes
+
+    amplitudes, _ = map_reduce(solve, segments, 1)
+    return amplitudes
 
 
 def _model_fields(
@@ -349,9 +433,11 @@ def _contribution(
     masked = jax.tree.leaves(tile.M.to_boolean_mask())[0]
     hits = jnp.int64(hit_pointing.T(StokesI(masked)).i)
 
-    gram = None
+    gram = global_diagonal = None
     if config.use_templates:
-        implicit, explicit, gram = assemble_templates(data, config, tile, temperature)
+        implicit, explicit, gram, global_diagonal = assemble_templates(
+            data, config, tile, temperature
+        )
         tile = replace(tile, implicit=implicit, explicit=explicit)
 
     masked = None
@@ -372,6 +458,7 @@ def _contribution(
             'gram': None if gram is None else replace(gram, coarse=None),
             'coarse': None if gram is None else gram.coarse,
         },
+        'global_diagonal': global_diagonal,
         'tile': tile,
         'tod': masked,
     }

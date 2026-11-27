@@ -51,15 +51,17 @@ class ReaderField(StrEnum):
     NOISE_MODEL_FITS = 'noise_model_fits'
     AZIMUTH = 'azimuth'
     ELEVATION = 'elevation'
+    ROLL = 'roll'
     LEFT_SCAN_MASK = 'left_scan_mask'
     RIGHT_SCAN_MASK = 'right_scan_mask'
     SCANNING_INTERVALS = 'scanning_intervals'
+    WAFER_SLOTS = 'wafer_slots'
 
     @property
     def per_detector(self) -> bool:
         """Whether the field has a detector axis, always its second-to-last.
 
-        Such a field is `(..., det, samp)` or `(..., det, 4)`. Every other field except the
+        Such a field is `(..., det, samp)`, `(..., det, 4)` or `(det, 1)`. Every other field except the
         metadata is shared by all detectors.
         """
         return self in {
@@ -67,6 +69,7 @@ class ReaderField(StrEnum):
             ReaderField.VALID_SAMPLE_MASKS,
             ReaderField.Q_BORE_DET,
             ReaderField.NOISE_MODEL_FITS,
+            ReaderField.WAFER_SLOTS,
         }
 
 
@@ -129,11 +132,14 @@ class AbstractObservation[T](ABC):
             ReaderField.Q_BORE_DET,
             ReaderField.Q_SKY_BORE,
             ReaderField.NOISE_MODEL_FITS,
+            ReaderField.WAFER_SLOTS,
         }
     )
     """Supported data field names for all observations"""
 
-    OPTIONAL_READER_FIELDS: ClassVar[frozenset[str]] = frozenset({ReaderField.NOISE_MODEL_FITS})
+    OPTIONAL_READER_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {ReaderField.NOISE_MODEL_FITS, ReaderField.WAFER_SLOTS}
+    )
     """Optional data field names"""
 
     def __init__(self, data: T) -> None:
@@ -324,6 +330,10 @@ class AbstractObservation[T](ABC):
     def get_q_bore_det(self) -> Float[np.ndarray, 'det 4']:
         """Returns the detector orientations in the boresight frame."""
 
+    def get_wafer_slots(self) -> Int[np.ndarray, ' det']:
+        """Returns the index of the wafer slot of each detector; all in slot 0 by default."""
+        return np.zeros(self.n_detectors, dtype=np.int32)
+
 
 class AbstractSatelliteObservation[T](AbstractObservation[T]):
     """Class for interfacing with satellite observation data."""
@@ -338,6 +348,7 @@ class AbstractGroundObservation[T](AbstractObservation[T]):
             ReaderField.VALID_SCANNING_MASKS,
             ReaderField.AZIMUTH,
             ReaderField.ELEVATION,
+            ReaderField.ROLL,
             ReaderField.LEFT_SCAN_MASK,
             ReaderField.RIGHT_SCAN_MASK,
             ReaderField.SCANNING_INTERVALS,
@@ -350,6 +361,7 @@ class AbstractGroundObservation[T](AbstractObservation[T]):
             ReaderField.VALID_SCANNING_MASKS,
             ReaderField.AZIMUTH,
             ReaderField.ELEVATION,
+            ReaderField.ROLL,
             ReaderField.LEFT_SCAN_MASK,
             ReaderField.RIGHT_SCAN_MASK,
             ReaderField.SCANNING_INTERVALS,
@@ -378,6 +390,10 @@ class AbstractGroundObservation[T](AbstractObservation[T]):
     @abstractmethod
     def get_elevation(self) -> Float[np.ndarray, ' a']:
         """Returns the elevation of the boresight for each sample."""
+
+    def get_roll(self) -> Float[np.ndarray, ' a']:
+        """Returns the boresight roll angle in radians at each sample; zero by default."""
+        return np.zeros(self.n_samples)
 
     def get_scanning_mask(self) -> Bool[np.ndarray, ' samp']:
         """Returns a boolean sample mask from scanning intervals (True=scanning)."""

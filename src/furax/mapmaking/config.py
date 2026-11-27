@@ -1,5 +1,6 @@
 """Hierarchical configuration system for mapmaking runs."""
 
+import math
 from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
@@ -636,10 +637,12 @@ class AzimuthSynchronousConfig:
     """Scan-synchronous signal: a function of the telescope's azimuth, by scan direction.
 
     Represents signals that depend only on the azimuth, such as ground pickup, and on the
-    direction of the scan if `split_scans`. The function is one of two alternatives, exactly one
+    direction of the scan if `split_scans`. The function is one of three alternatives, exactly one
     of which is set:
 
-    - `bins`: one amplitude per azimuth bin;
+    - `bins`: `n_bins` bins over the azimuth range of each observation;
+    - `bin_size`: bins of that size over `azimuth_range`, the same in every observation, which
+      `across_observations` needs;
     - `n_knots`: a cubic B-spline, smooth and local, a feature at one azimuth moving only the few
       coefficients around it. Its constant is left out, for a drift or offset template to hold;
       the offset between the two scan directions is kept.
@@ -652,6 +655,19 @@ class AzimuthSynchronousConfig:
                 n_knots:
                     qu: 20
                 split_scans: true
+
+        Ground pickup shared by every observation of the run, per wafer and scan direction, in
+        2-degree bins, at three scan elevations and two boresight rolls
+
+            azimuth_synchronous:
+                bin_size: 2.0
+                azimuth_range: [[100.0, 260.0]]
+                split_scans: true
+                per_wafer: true
+                across_observations: true
+                elevations: [50.0, 55.0, 60.0]
+                rolls: [-45.0, 45.0]
+                explicit: true
     """
 
     bins: BinsConfig | None = None
@@ -668,16 +684,100 @@ class AzimuthSynchronousConfig:
     split_scans: bool = False
     """Whether the left- and right-going scans have their own function of the azimuth."""
 
+    per_wafer: bool = False
+    """Whether the detectors of a wafer share one function of the azimuth, instead of each
+    detector fitting its own. Needs `explicit`: shared amplitudes are solved for with the map."""
+
+    bin_size: float | None = None
+    """The width of the azimuth bins, in degrees, over `azimuth_range`."""
+
+    azimuth_range: list[tuple[float, float]] | None = None
+    """The azimuth intervals in degrees that bins of `bin_size` split, the same for every
+    observation: one, such as `[[100, 260]]`, or several disjoint ones, such as the separate
+    patches a run scans. Each interval is widened to a whole number of bins from its start, and
+    intervals that then overlap are merged into one, on the grid of the first; the intervals are
+    kept so, in increasing order. A sample outside every interval is in no bin. An interval does
+    not wrap: it follows the convention of the observations' azimuths, such as [0, 360), and a
+    region across the cut is two intervals, such as `[[0, 10], [350, 360]]`."""
+
+    across_observations: bool = False
+    """Whether every observation sees the same function of the azimuth at each setting of the
+    run, an elevation of `elevations` and a roll of `rolls`: one set of amplitudes for the run.
+    Needs `bin_size` and `explicit`; the detectors share it, per wafer if `per_wafer`. The
+    amplitudes have one mode per setting, elevations first.
+
+    The sky moves across the azimuth range from one observation to the next, while the pickup
+    stays, which separates them. Within one observation, a constant over the bins it scans is
+    degenerate with its offsets or drift (Pomme, `spline_drift`): `TemplatesConfig.regularization`
+    settles such directions."""
+
+    elevations: tuple[float, ...] | None = None
+    """The elevations in degrees at which the run observes, each with its own function of the
+    azimuth when `across_observations`. An observation, at constant elevation, sees that of the
+    nearest of them: list every elevation of the run."""
+
+    rolls: tuple[float, ...] | None = None
+    """The boresight rolls in degrees at which the run observes, each with its own function of
+    the azimuth when `across_observations`, as the elevations: a roll moves the wafers over the
+    ground. An observation sees that of the nearest to its roll ([`ReaderField.ROLL`][]) at its
+    start; `None` for one function whatever the roll."""
+
     explicit: bool = False
     """If True, amplitudes are solved jointly and returned; if False, deprojected into W."""
 
     def __post_init__(self) -> None:
-        if (self.bins is None) == (self.n_knots is None):
-            raise ValueError("set exactly one of 'bins' and 'n_knots'")
+        if sum(x is not None for x in (self.bins, self.bin_size, self.n_knots)) != 1:
+            raise ValueError("set exactly one of 'bins', 'bin_size' and 'n_knots'")
+        if self.per_wafer and not self.explicit:
+            raise ValueError(
+                "'per_wafer' needs 'explicit': shared amplitudes cannot be marginalized"
+            )
+        if (self.bin_size is None) != (self.azimuth_range is None):
+            raise ValueError("'bin_size' and 'azimuth_range' go together")
+        if self.bin_size is not None and self.azimuth_range is not None:
+            if self.bin_size <= 0:
+                raise ValueError(f"'bin_size' must be positive, got {self.bin_size}")
+            self.azimuth_range = _bin_intervals(self.azimuth_range, self.bin_size)
+        if self.across_observations and (
+            self.bin_size is None or not self.elevations or not self.explicit
+        ):
+            raise ValueError("'across_observations' needs 'bin_size', 'elevations' and 'explicit'")
+        if not self.across_observations and (self.elevations or self.rolls):
+            raise ValueError("'elevations' and 'rolls' set the settings of 'across_observations'")
+        if self.rolls is not None and not self.rolls:
+            raise ValueError("'rolls' lists at least one roll, or is None")
         if self.n_knots is not None:
             values = self.n_knots.values() if isinstance(self.n_knots, dict) else [self.n_knots]
             if any(value < 4 for value in values):
                 raise ValueError(f'n_knots must be >= 4, got {self.n_knots}')
+
+    @property
+    def n_bins(self) -> int:
+        """The number of bins of `bin_size` covering `azimuth_range`."""
+        assert self.bin_size is not None and self.azimuth_range is not None
+        return sum(round((hi - lo) / self.bin_size) for lo, hi in self.azimuth_range)
+
+    @property
+    def n_settings(self) -> int:
+        """The number of settings, elevation and roll, with their own function of the azimuth."""
+        return len(self.elevations or (None,)) * len(self.rolls or (None,))
+
+
+def _bin_intervals(intervals: list[tuple[float, float]], size: float) -> list[tuple[float, float]]:
+    """`intervals` in increasing order, each widened to whole bins of `size`, overlaps merged.
+
+    Raises:
+        ValueError: If an interval does not increase.
+    """
+    merged: list[tuple[float, float]] = []
+    for lo, hi in sorted(intervals):
+        if not lo < hi:
+            raise ValueError(f"'azimuth_range' intervals must be increasing, got {intervals}")
+        if merged and lo < merged[-1][1]:  # merged into the previous interval, on its grid
+            lo, end = merged.pop()
+            hi = max(hi, end)
+        merged.append((lo, lo + size * math.ceil((hi - lo) / size - 1e-9)))
+    return merged
 
 
 @dataclass
@@ -904,6 +1004,10 @@ class CommonModeConfig:
     radius: float = 0.31
     """Focal-plane radius $R$ in radians, scaling the detector coordinates of the field."""
 
+    per_wafer: bool = False
+    """Whether each wafer has its own amplitudes of the field, instead of one for the whole focal
+    plane."""
+
     def __post_init__(self) -> None:
         if self.samples_per_knot < 1:
             raise ValueError(f"'samples_per_knot' must be >= 1, got {self.samples_per_knot}")
@@ -976,6 +1080,10 @@ class TemplatesConfig:
     ground: GroundConfig | None = None
     """Ground pickup template, binned in (azimuth, elevation)."""
 
+    wafer_slots: int = field(default=7, metadata={'template': False})
+    """Number of wafer slots of the focal plane, over which the templates `per_wafer` group the
+    detectors (see [`ReaderField.WAFER_SLOTS`][furax.mapmaking.ReaderField])."""
+
     regularization: float = field(default=0.0, metadata={'template': False})
     """Ridge regularization strength applied to the template regression."""
 
@@ -1011,6 +1119,23 @@ class TemplatesConfig:
             for field in fields(self)
             if field.metadata.get('template', True)
         )
+
+    @property
+    def detectors_share_amplitudes(self) -> bool:
+        """Whether an enabled template has amplitudes that several detectors share."""
+        t2p = self.t2p is not None and (
+            self.t2p.zernike_order is not None or self.t2p.quadrupole_order is not None
+        )
+        azimuth = self.azimuth_synchronous is not None and (
+            self.azimuth_synchronous.per_wafer or self.azimuth_synchronous.across_observations
+        )
+        return t2p or azimuth or self.common_mode is not None
+
+    @property
+    def across_observations(self) -> bool:
+        """Whether an enabled template has amplitudes shared by every observation of the run."""
+        section = self.azimuth_synchronous
+        return section is not None and section.across_observations
 
     def implicit_names(self) -> tuple[str, ...]:
         """The enabled templates whose amplitudes are marginalized rather than solved for."""

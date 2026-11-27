@@ -9,6 +9,7 @@ the templates of one TOD.
 """
 
 from ._builders import (
+    GLOBAL_TEMPLATE_NAMES,
     azimuth_hwp_synchronous_templates,
     azimuth_synchronous_templates,
     binned_azimuth_hwp_synchronous_templates,
@@ -21,6 +22,7 @@ from ._builders import (
     spline_drift_templates,
     spline_hwp_synchronous_templates,
     t2p_templates,
+    wafer_groups,
     winding_couplings,
     zernike_couplings,
 )
@@ -29,6 +31,7 @@ from ._operator import Template, TemplateOperator
 __all__ = [
     'Template',
     'TemplateOperator',
+    'GLOBAL_TEMPLATE_NAMES',
     'build_templates',
     'required_reader_fields',
     'spline_drift_templates',
@@ -39,6 +42,7 @@ __all__ = [
     'spline_hwp_synchronous_templates',
     't2p_templates',
     'common_mode_templates',
+    'wafer_groups',
     'zernike_couplings',
     'polynomial_couplings',
     'winding_couplings',

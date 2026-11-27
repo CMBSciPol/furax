@@ -16,6 +16,7 @@ from furax.core._base import structure_equal
 from furax.mapmaking import AbstractLazyObservation, MapMakingConfig, MultiObservationMapMaker
 from furax.mapmaking._reader import detector_tile_structure
 from furax.mapmaking.config import (
+    AzimuthSynchronousConfig,
     CirculantBridgeConfig,
     DiagnosticsConfig,
     ExplicitGapsConfig,
@@ -50,7 +51,9 @@ from tests.mapmaking.helpers import (
     GappyLazyGroundObservation,
     ProbeFailingLazyObservation,
     accumulate,
+    assert_same_system,
     furax_records,
+    probe_normal_system,
 )
 
 # Skip tests for interfaces that are not installed
@@ -478,6 +481,39 @@ def test_low_rank_weight_on_detector_tiles_gives_the_map_of_whole_observations(g
         assert_allclose(tiles.observations[column], whole.observations[column], rtol=1e-8)
     # with the correlated modes fitted out, the χ² of each detector is a sum of squares
     assert (whole.detectors['chi2'] > 0).all()
+
+
+@pytest.mark.parametrize('across_observations', [False, True], ids=['per-observation', 'global'])
+def test_low_rank_fit_deprojects_shared_templates_whatever_the_tiles(across_observations):
+    """The templates the detectors share are deprojected over whole observations."""
+    extra = {'across_observations': True, 'elevations': (46.0,)} if across_observations else {}
+    azimuth = AzimuthSynchronousConfig(
+        bin_size=120.0, azimuth_range=[(-60.0, 660.0)], per_wafer=True, explicit=True, **extra
+    )
+    systems = []
+    for tile_size in (0, 4):
+        config = MapMakingConfig(
+            weighting=WeightingConfig(
+                mode=WeightingMode.LOW_RANK,
+                low_rank=LowRankNoiseFitConfig(
+                    bin_edges=(0.5, 1.0, 1.8),
+                    max_modes=4,
+                    bridge=CirculantBridgeConfig(length=1.0, resolution=0.2),
+                ),
+            ),
+            landscape=LandscapeConfig(stokes='IQU', healpix=HealpixConfig(nside=8)),
+            pointing=PointingConfig(on_the_fly=True, interpolation='nearest'),
+            templates=TemplatesConfig(azimuth_synchronous=azimuth, regularization=1e-3),
+            gaps=GapsConfig(treatment=GapTreatment.INNER_MASK),
+            detector_tile_size=tile_size,
+            fft_friendly_sample_count=True,
+        )
+        observations = [
+            CorrelatedLazyGroundObservation(seed=i, n_dets=12, n_samples=1024) for i in range(2)
+        ]
+        systems.append(probe_normal_system(MultiObservationMapMaker(config).prepare(observations)))
+    whole, tiles = systems
+    assert_same_system(tiles, whole)
 
 
 def test_nested_healpix_gives_the_ring_map():

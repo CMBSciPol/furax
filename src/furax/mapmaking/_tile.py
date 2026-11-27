@@ -7,7 +7,7 @@ the unknowns to the TOD, the weight $W'_t$, and their products.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any, Final, Literal, Self
+from typing import Any, Final, Literal, NamedTuple, Self
 
 import jax
 import jax.numpy as jnp
@@ -43,13 +43,13 @@ from .noise import (
     WhiteNoiseModel,
 )
 from .noise.lowrank import _low_rank_spectra
-from .templates import TemplateOperator, build_templates
+from .templates import GLOBAL_TEMPLATE_NAMES, Template, TemplateOperator, build_templates
 from .templates.fit import TemplateFit
-from .templates.gram import BlockGram, factor, template_gram
+from .templates.gram import BlockGram, factor, template_gram, template_gram_diagonal
 from .templates.pomme import PommeProjectionOperator
 from .weight import MarginalizedWeightOperator, NestedWeightOperator, WeightOperator
 
-TemplateKind = Literal['templates', 'shared_templates']
+TemplateKind = Literal['templates', 'shared_templates', 'global_templates']
 """A kind of template amplitudes solved for with the map."""
 
 AmplitudeKind = TemplateKind | Literal['gaps']
@@ -61,16 +61,20 @@ TEMPLATES: Final = 'templates'
 SHARED_TEMPLATES: Final = 'shared_templates'
 """The amplitudes of the explicit templates the detectors of an observation share."""
 
+GLOBAL_TEMPLATES: Final = 'global_templates'
+"""The amplitudes of the explicit templates every observation of the run shares."""
+
 GAPS: Final = 'gaps'
 """The gap amplitudes of each detector."""
 
-AMPLITUDE_STRIDES: Final[dict[AmplitudeKind, Literal[1, 'segment']]] = {
+AMPLITUDE_STRIDES: Final[dict[AmplitudeKind, Literal[1, 'segment'] | None]] = {
     TEMPLATES: 1,
     SHARED_TEMPLATES: 'segment',
+    GLOBAL_TEMPLATES: None,
     GAPS: 1,
 }
-"""How the tiles hold each kind of amplitudes: per tile (stride 1), or per observation
-(`'segment'`)."""
+"""How the tiles hold each kind of amplitudes: per tile (stride 1), per observation
+(`'segment'`), or once for the run, read whole by every tile as the map is (`None`)."""
 
 DROP_REASONS: Final = ('over_flagged', 'over_gap_budget')
 """Why a detector is dropped: the fields of [`Tile`][] marking the detectors dropped for each."""
@@ -428,12 +432,19 @@ def assemble_templates(
     config: MapMakingConfig,
     tile: Tile,
     temperature: Float[Array, 'det samp'] | None = None,
-) -> tuple[TemplateBundle | None, dict[TemplateKind, TemplateBundle], BlockGram | None]:
+) -> tuple[
+    TemplateBundle | None,
+    dict[TemplateKind, TemplateBundle],
+    BlockGram | None,
+    PyTree[Array] | None,
+]:
     """The templates of a tile.
 
     The Grams of the implicit templates, and of the explicit ones of each detector, are factored.
     That of the templates the detectors of the observation share is only assembled: it is the
-    tile's share of theirs, taken under the weight with the implicit templates marginalized.
+    tile's share of theirs, taken under the weight with the implicit templates marginalized. Of
+    the templates every observation shares, the tile gives its share of the diagonal of their Gram
+    (see [`template_gram_diagonal`][furax.mapmaking.templates.gram.template_gram_diagonal]).
 
     Args:
         data: The fields read for the tile's detectors.
@@ -444,8 +455,10 @@ def assemble_templates(
 
     Returns:
         The implicit templates, `None` if absent; the explicit ones by the kind of their
-        amplitudes, those the detectors share without their Gram inverse; and the tile's share of
-        the Gram of the latter, `None` without them.
+        amplitudes, those the detectors or the observations share without their Gram inverse; the
+        tile's share of the Gram of the templates the detectors of the observation share, and of
+        the diagonal of that of the templates every observation shares, under the weight without
+        the implicit templates nor Pomme; `None` without them.
     """
     if (tcfg := config.templates) is None:
         raise ValueError('templates config required to build template operators')
@@ -475,20 +488,22 @@ def assemble_templates(
         assert implicit.gram_inverse is not None  # set by `create`
         weight = MarginalizedWeightOperator.create(tile.W, op, implicit.gram_inverse)
 
-    def by_detectors(per_detector):
-        chosen = {n: t for n, t in explicit_templates.items() if t.per_detector == per_detector}
-        return TemplateOperator(chosen) if chosen else None
-
+    of_kind = _by_kind(explicit_templates)
     explicit: dict[TemplateKind, TemplateBundle] = {}
-    shared_gram = None
-    if (op := by_detectors(True)) is not None:
+    shared_gram = global_diagonal = None
+    if (op := of_kind.get(TEMPLATES)) is not None:
         explicit[TEMPLATES] = TemplateBundle.create(op, gram_weight, tcfg, pomme_tau=pomme_tau)
-    if (op := by_detectors(False)) is not None:
+    if (op := of_kind.get(SHARED_TEMPLATES)) is not None:
         shared_gram = template_gram(
             op, weight, pomme_tau=pomme_tau, batch_size=tcfg.gram_batch_size
         )
         explicit[SHARED_TEMPLATES] = TemplateBundle(op, None, None)
-    return implicit, explicit, shared_gram
+    if (op := of_kind.get(GLOBAL_TEMPLATES)) is not None:
+        # Too many amplitudes for a dense Gram: its diagonal under the weight without the implicit
+        # templates nor Pomme preconditions them
+        global_diagonal = template_gram_diagonal(op, gram_weight)
+        explicit[GLOBAL_TEMPLATES] = TemplateBundle(op, None, None)
+    return implicit, explicit, shared_gram, global_diagonal
 
 
 def acquisition_factors(
@@ -636,13 +651,16 @@ def low_rank_tile_spectra(
     padding: Any,
     sample_rate: float,
     temperature: Float[Array, 'det samp'] | None,
+    shared_amplitudes: PyTree[Array] | None = None,
 ) -> tuple[Array, Array, Array]:
     """What the low-rank noise fit takes of the channels of a tile, and the samples of its observation.
 
     Returns the spectrum and the white level of each channel (see
     [`_low_rank_spectra`][furax.mapmaking.noise.lowrank._low_rank_spectra]), streams then detectors, and the
     number of samples before the padding. With `deproject`, the TOD is first rid of its fit by the
-    templates, on the tile alone.
+    templates: those the detectors share with `shared_amplitudes`, fitted over the whole
+    observation (see [`shared_deprojection`][furax.mapmaking._tile.shared_deprojection]), then
+    each detector's own, on the tile.
 
     Args:
         data: The fields read for the tile's detectors.
@@ -652,15 +670,61 @@ def low_rank_tile_spectra(
         sample_rate: The sample rate at which the bins of the model are placed, in Hz.
         temperature: The I timestream, from which the T2P template is built; by default, the I
             stream of the sample data.
+        shared_amplitudes: The amplitudes of the templates the detectors share, fitted over the
+            observation; `None` without such templates.
     """
     fit_config = config.weighting.low_rank
     _, n_real = real_extent(padding, (1, tod_format.n_samples))
     tod = data[ReaderField.SAMPLE_DATA]
     if fit_config.deproject and config.templates is not None:
-        tod = _deprojected_tod(data, config, tod_format, n_real, temperature)
+        tod = _deprojected_tod(data, config, tod_format, n_real, temperature, shared_amplitudes)
     samples = tod_format.as_array(tod).reshape(-1, tod_format.n_samples)
     spectra, level = _low_rank_spectra(samples, sample_rate, n_real, fit_config)
     return spectra, level, n_real
+
+
+def shared_deprojection(
+    data: Any,
+    config: MapMakingConfig,
+    tod_format: TODFormat,
+    padding: Any,
+    temperature: Float[Array, 'det samp'] | None,
+) -> dict[str, Any]:
+    r"""A tile's share of the fit of the templates its detectors share, before the low-rank fit.
+
+    The amplitudes $a_s$ of the templates $T_s$ the detectors share are fitted over the whole
+    observation, so that the TOD the noise is estimated from does not depend on how the
+    detectors are tiled. Under the white weight $W$ of the deprojection, with the templates of
+    each detector $T_l$ marginalized, $W' = W - W T_l G_l^{-1} T_l^\top W$, a tile contributes
+    $T_s^\top W' T_s$ and $T_s^\top W' d$: summed over the tiles of the observation, they give
+    $a_s$. Those of the templates every observation shares, $a_g$, are fitted per observation
+    here, from the diagonal of $T_g^\top W T_g$ and $T_g^\top W d$ alone, apart from the other
+    templates: the fit only shapes the data the noise is estimated from.
+
+    Returns:
+        The tile's share, under `'gram'` and `'rhs'`, of the Gram and right-hand side of the
+        templates the detectors of the observation share, and under `'global_diagonal'` and
+        `'global_rhs'` of the diagonal of the Gram and the right-hand side of those every
+        observation shares; `None` for those without templates.
+    """
+    _, n_real = real_extent(padding, (1, tod_format.n_samples))
+    parts = _deprojection_parts(data, config, tod_format, n_real, temperature)
+    assert config.templates is not None  # deprojection comes with templates
+    templates = config.templates
+    tod = data[ReaderField.SAMPLE_DATA]
+    terms: dict[str, Any] = dict.fromkeys(('gram', 'rhs', 'global_diagonal', 'global_rhs'))
+    if parts.global_ is not None:
+        terms['global_diagonal'] = template_gram_diagonal(parts.global_, parts.weight)
+        terms['global_rhs'] = (parts.global_.T @ parts.weight)(tod)
+    if parts.shared is not None:
+        weight = parts.weight
+        if parts.local is not None:
+            bundle = TemplateBundle.create(parts.local, weight, templates)
+            assert bundle.gram_inverse is not None  # set by `create`
+            weight = MarginalizedWeightOperator.create(weight, parts.local, bundle.gram_inverse)
+        terms['gram'] = template_gram(parts.shared, weight, batch_size=templates.gram_batch_size)
+        terms['rhs'] = (parts.shared.T @ weight)(tod)
+    return terms
 
 
 def _deprojected_tod(
@@ -669,20 +733,66 @@ def _deprojected_tod(
     tod_format: TODFormat,
     n_real: Int[Array, ''],
     temperature: Float[Array, 'det samp'] | None,
+    shared_amplitudes: PyTree[Array] | None,
 ) -> PyTree[Array]:
-    r"""The TOD less its fit by every configured template, $d - T \hat a$.
+    r"""The TOD less its fit by every configured template, $d - T_s a_s - T_l \hat a_l$.
 
-    The amplitudes are fitted by least squares under a white weight: each channel's inverse
-    variance, from its sample-to-sample differences, on its valid samples. The fit only shapes the
-    data the noise is estimated from, so a loose tolerance serves.
+    The amplitudes $a_s$ of the templates the detectors share, and of those every observation
+    shares, are given, fitted over the whole observation; those of each detector's own templates are fitted by least squares under a white
+    weight: each channel's inverse variance, from its sample-to-sample differences, on its valid
+    samples. The fit only shapes the data the noise is estimated from, so a loose tolerance serves.
     """
+    assert config.templates is not None
+    parts = _deprojection_parts(data, config, tod_format, n_real, temperature)
+    tod = data[ReaderField.SAMPLE_DATA]
+    for templates in (parts.shared, parts.global_):
+        if templates is not None:
+            assert shared_amplitudes is not None  # fitted over the observation beforehand
+            amplitudes = {name: shared_amplitudes[name] for name in templates.templates}
+            tod = tree.sub(tod, templates(amplitudes))
+    if parts.local is None:
+        return tod
+    fit = TemplateFit(
+        parts.local,
+        parts.weight,
+        regularization=config.templates.regularization,
+        batch_size=config.templates.gram_batch_size,
+        solver=CGSolver(rtol=1e-4, max_steps=_DEPROJECTION_STEPS),
+    )
+    return tree.sub(tod, fit.model(fit(tod).solution))
+
+
+class _DeprojectionParts(NamedTuple):
+    """The templates of the deprojection before the low-rank fit, by kind, and its weight.
+
+    A template operator is `None` without templates of its kind.
+    """
+
+    local: TemplateOperator | None
+    """The templates of each detector."""
+    shared: TemplateOperator | None
+    """The templates the detectors of the observation share."""
+    global_: TemplateOperator | None
+    """The templates every observation shares."""
+    weight: AbstractLinearOperator
+    """Each channel's inverse variance, from its sample-to-sample differences, on its valid
+    samples."""
+
+
+def _deprojection_parts(
+    data: Any,
+    config: MapMakingConfig,
+    tod_format: TODFormat,
+    n_real: Int[Array, ''],
+    temperature: Float[Array, 'det samp'] | None,
+) -> _DeprojectionParts:
+    """The templates of the deprojection before the low-rank fit, and its weight."""
     assert config.templates is not None
     explicit, implicit = build_templates(
         config.templates, data, tod_format, temperature=temperature
     )
-    operator = TemplateOperator({**explicit, **implicit})
-    tod = data[ReaderField.SAMPLE_DATA]
-    samples = tod_format.as_array(tod)  # (stream, det, sample)
+    of_kind = _by_kind({**explicit, **implicit})
+    samples = tod_format.as_array(data[ReaderField.SAMPLE_DATA])  # (stream, det, sample)
     valid = _sample_mask(data, config) & (jnp.arange(tod_format.n_samples) < n_real)
     pairs = valid[..., 1:] & valid[..., :-1]
     steps = jnp.where(pairs, jnp.diff(samples, axis=-1), 0)
@@ -690,15 +800,26 @@ def _deprojected_tod(
     inverse = jnp.where(variance > 0, 1 / jnp.where(variance > 0, variance, 1), 0)
     channel_weight = tod_format.diagonal(inverse[..., None].astype(samples.dtype))
     sample_weight = tod_format.diagonal(valid[None].astype(samples.dtype))
-    weight = channel_weight @ sample_weight
-    fit = TemplateFit(
-        operator,
-        weight,
-        regularization=config.templates.regularization,
-        batch_size=config.templates.gram_batch_size,
-        solver=CGSolver(rtol=1e-4, max_steps=_DEPROJECTION_STEPS),
+    weight = (channel_weight @ sample_weight).reduce()
+    return _DeprojectionParts(
+        of_kind.get(TEMPLATES), of_kind.get(SHARED_TEMPLATES), of_kind.get(GLOBAL_TEMPLATES), weight
     )
-    return tree.sub(tod, fit.model(fit(tod).solution))
+
+
+def _by_kind(templates: dict[str, Template]) -> dict[TemplateKind, TemplateOperator]:
+    """The operator of the templates of each kind of amplitudes among `templates`, if any.
+
+    The amplitudes are each detector's own, those the detectors of the observation share, or those
+    every observation shares (see [`GLOBAL_TEMPLATE_NAMES`][furax.mapmaking.templates]).
+    """
+    grouped: dict[TemplateKind, dict[str, Template]] = {}
+    for name, template in templates.items():
+        if name in GLOBAL_TEMPLATE_NAMES:
+            kind: TemplateKind = GLOBAL_TEMPLATES
+        else:
+            kind = TEMPLATES if template.per_detector else SHARED_TEMPLATES
+        grouped.setdefault(kind, {})[name] = template
+    return {kind: TemplateOperator(chosen) for kind, chosen in grouped.items()}
 
 
 _DEPROJECTION_STEPS = 50

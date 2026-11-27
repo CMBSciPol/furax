@@ -10,11 +10,17 @@ from furax import AbstractLinearOperator, DiagonalOperator, HomothetyOperator
 from furax.core import (
     AdditionOperator,
     AssemblyOperator,
+    BlockColumnOperator,
+    BlockDiagonalOperator,
     BlockRowOperator,
+    CompositionOperator,
     DenseBlockDiagonalOperator,
+    HostEnsemble,
+    Policy,
     RaggedAssemblyOperator,
     StackedEnsemble,
     lift,
+    map_reduce,
 )
 
 M = 4
@@ -209,3 +215,185 @@ def test_list_assembly_rejects_invalid_strides(strides, match) -> None:
     operands = [J.T @ J for J in _list_joint()]
     with pytest.raises(ValueError, match=match):
         RaggedAssemblyOperator(operands, in_strides=strides, out_strides=_LIST_STRIDES)
+
+
+# The factors of a marginalized normal operator $J^\top (I - T_w K T^\top) D J$, each an assembly
+# over the same tiles: the joint operator $J$ to the TOD of each tile, its weight $D$, the modes $T$
+# and $T_w = D T$ of each segment, and their core $K$, a block diagonal over the segments
+_TILE_STRIDES = STRIDES | {'map': 1, 'd': 1, 't': 1, 'k': 'segment'}
+
+
+def _tiles(policy: Policy | None = None, owner: np.ndarray = OWNER) -> StackedEnsemble:
+    n, segments = len(owner), int(owner.max()) + 1
+    k = jax.random.split(jax.random.key(2), 6)
+    leaves = {
+        'map': jax.random.normal(k[0], (n, M)),
+        'own': jax.random.normal(k[1], (n, M)),
+        'seg': jax.random.normal(k[2], (segments, M)),
+        'd': jax.random.uniform(k[3], (n, M)) + 1,
+        't': jax.random.normal(k[4], (n, M)),
+        'k': jax.random.normal(k[5], (segments, M)),
+    }
+    policy = policy or Policy()
+    return StackedEnsemble(n, leaves, _TILE_STRIDES, policy=policy, owner=jnp.asarray(owner))
+
+
+def _factors(tiles: StackedEnsemble) -> dict[str, AbstractLinearOperator]:
+    def assembly(build, in_strides, out_strides=1):
+        return AssemblyOperator(lift(build, tiles), in_strides, out_strides)
+
+    T = assembly(lambda m: DiagonalOperator(m['t']), 'segment')
+    return {
+        'J': assembly(
+            lambda m: BlockRowOperator({key: DiagonalOperator(m[key]) for key in STRIDES}), STRIDES
+        ),
+        'D': assembly(lambda m: DiagonalOperator(m['d']), 1),
+        'T': T,
+        'Tt': T.T,
+        'Tw': assembly(lambda m: DiagonalOperator(m['d'] * m['t']), 'segment'),
+        'K': BlockDiagonalOperator(lift(lambda m: DiagonalOperator(m['k']), tiles).by_segment()),
+    }
+
+
+def _matrices_agree(fused: AbstractLinearOperator, unfused: AbstractLinearOperator) -> None:
+    assert_allclose(fused.as_matrix(), unfused.as_matrix(), rtol=1e-12, atol=1e-12)
+    assert_allclose(fused.T.as_matrix(), unfused.as_matrix().T, rtol=1e-12, atol=1e-12)
+
+
+def test_reduce_keeps_the_arrays_at_their_strides():
+    # each member's scale times its segment's, which reducing the member multiplies: lifted as
+    # is, the product would take one entry per member
+    n, segments = len(OWNER), int(OWNER.max()) + 1
+    scales = StackedEnsemble(
+        n,
+        {'segment': jnp.arange(1.0, segments + 1), 'member': jnp.arange(1.0, n + 1)},
+        {'segment': 'segment', 'member': 1},
+        owner=jnp.asarray(OWNER),
+    )
+
+    def member(m):
+        return CompositionOperator(
+            [HomothetyOperator(m[k], in_structure=_struct(M)) for k in ('segment', 'member')]
+        )
+
+    op = AssemblyOperator(lift(member, scales), 1)
+    reduced = op.reduce()
+    assert reduced.operands.strides == op.operands.strides == ('segment', 1)
+    assert reduced.reduce() is reduced
+    _matrices_agree(reduced, op)
+
+
+def test_composition_fuses_through_one_entry_per_member():
+    f = _factors(_tiles())
+    unfused = f['Tt'] @ f['D'] @ f['J']
+    fused = unfused.reduce()
+    assert isinstance(fused, AssemblyOperator)
+    assert fused.in_strides == f['J'].in_strides and fused.out_strides == f['Tt'].out_strides
+    _matrices_agree(fused, unfused)
+
+
+def _other_policy() -> AbstractLinearOperator:
+    return _factors(_tiles(Policy(batch=2)))['D']
+
+
+def _other_owner() -> AbstractLinearOperator:
+    return _factors(_tiles(owner=np.array([0, 0, 0, 1, 1, 2])))['D']
+
+
+def _reads_whole() -> AbstractLinearOperator:
+    # reads the TOD of every tile whole, rather than its own entry
+    diagonals = StackedEnsemble(len(OWNER), jnp.ones((len(OWNER), len(OWNER), M)))
+    return AssemblyOperator(lift(DiagonalOperator, diagonals), None, 1)
+
+
+@pytest.mark.parametrize(
+    ('left', 'right'),
+    [
+        (lambda f: f['T'], lambda f: f['Tt']),
+        (lambda f: f['J'], lambda f: f['J'].T),
+        (lambda f: _other_policy(), lambda f: f['J']),
+        (lambda f: _other_owner(), lambda f: f['J']),
+        (lambda f: _reads_whole(), lambda f: f['J']),
+    ],
+    ids=['through-segment', 'through-none', 'other-policy', 'other-owner', 'mismatched-strides'],
+)
+def test_composition_does_not_fuse(left, right):
+    f = _factors(_tiles())
+    unfused = left(f) @ right(f)
+    reduced = unfused.reduce()
+    assert isinstance(reduced, CompositionOperator) and len(reduced.operands) == 2
+    _matrices_agree(reduced, unfused)
+
+
+def test_sum_fuses_with_the_same_strides():
+    f = _factors(_tiles())
+    unfused = AdditionOperator([f['Tt'] @ f['Tw'], f['Tt'] @ f['T']])
+    fused = unfused.reduce()
+    assert isinstance(fused, AssemblyOperator)
+    _matrices_agree(fused, unfused)
+    # the same strides, over another ensemble
+    unfused = AdditionOperator([f['D'], _other_owner()])
+    assert isinstance(unfused.reduce(), AdditionOperator)
+
+
+@pytest.mark.parametrize('transposed', [False, True], ids=['shared-output', 'shared-input'])
+def test_sum_fuses_assemblies_sharing_a_vector(transposed):
+    # the terms fuse on the side where their assemblies are over the same tiles, and only there
+    f = _factors(_tiles())
+    unfused = f['J'].T @ _other_owner() + f['J'].T @ f['D']
+    if transposed:
+        unfused = unfused.T
+    fused = unfused.reduce()
+    assert isinstance(fused, CompositionOperator)
+    sweep, other = fused.operands[::-1] if transposed else fused.operands
+    assert isinstance(sweep, AssemblyOperator)
+    assert isinstance(other, BlockRowOperator if transposed else BlockColumnOperator)
+    _matrices_agree(fused, unfused)
+
+
+def test_low_rank_normal_operator_takes_two_sweeps():
+    # $A - B^\top K B$: the normal operator of each tile, less its modes, coupled by segment
+    f = _factors(_tiles())
+    modes = f['Tt'] @ f['D'] @ f['J']
+    unfused = f['J'].T @ f['D'] @ f['J'] - modes.T @ f['K'] @ modes
+    fused = unfused.reduce()
+    assert isinstance(fused, CompositionOperator)
+    row, sweep = fused.operands
+    # one sweep reads the unknowns for both terms, which only the modes leave per segment
+    assert isinstance(sweep, AssemblyOperator)
+    assert sweep.out_strides == (*f['J'].in_strides, 'segment')
+    # the other applies the transpose of the modes, after their core
+    assert isinstance(row, BlockRowOperator)
+    _, correction = row.blocks
+    assert sum(isinstance(op, AssemblyOperator) for op in correction.operands) == 1
+    _matrices_agree(fused, unfused)
+
+
+def test_fused_members_evaluate_over_a_host_ensemble():
+    # the TOD of each tile read from the host, the fused operators zipped with it
+    f = _factors(_tiles())
+    fused = (f['D'] @ f['J']).reduce()
+    assert isinstance(fused, AssemblyOperator) and isinstance(fused.operands, StackedEnsemble)
+    x = _unknowns()
+    ops = fused.operands
+    leaves, treedef = jax.tree.flatten(ops.stacked)
+    reads = HostEnsemble(
+        ops.size,
+        lambda i: np.asarray(x['own'][i]),
+        jax.ShapeDtypeStruct((M,), x['own'].dtype),
+        owner=OWNER,
+        segments=int(OWNER.max()) + 1,
+    ).zip(
+        (leaves, x['map'], x['seg']),
+        axes=(list(ops.axes), None, 0),
+        strides=(list(ops.strides), None, 'segment'),
+    )
+
+    def apply(member):
+        own, (op_leaves, map_, seg) = member
+        op = jax.tree.unflatten(treedef, op_leaves)
+        return op({'map': map_, 'own': own, 'seg': seg})
+
+    got, _ = map_reduce(apply, reads, 1)
+    assert_allclose(got, fused(x), rtol=1e-12)
+    assert_allclose(got, (f['D'] @ f['J'])(x), rtol=1e-12)

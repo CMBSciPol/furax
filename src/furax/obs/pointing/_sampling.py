@@ -15,6 +15,7 @@ from furax.obs._indexing import NO_PIXEL
 from furax.obs.coords import ZSPhi, gamma_angle_cos_sin, polarization_angle_cos_sin, xieta_to_quat
 from furax.obs.landscapes import StokesLandscape
 from furax.obs.operators import Spin2Rotation
+from furax.obs.operators._qu_rotations import QURotationOperator, QURotationTransposeOperator
 from furax.obs.spin2 import transport_rotation
 from furax.obs.stencil import Interpolation, Stencil
 from furax.obs.stokes import Stokes, ValidStokesLiteral
@@ -379,13 +380,15 @@ class AbstractSampler(ABC):
         """The same sampler with another kernel, e.g. to read the intensity alone."""
         return dataclasses.replace(self, kernel=kernel)
 
-    def rotated(self, rotation: Spin2Rotation) -> 'AbstractSampler':
-        r"""The same sampler, with the polarization of every sample rotated further by $\beta$.
+    def rotated(
+        self, rotation: QURotationOperator | QURotationTransposeOperator
+    ) -> 'AbstractSampler':
+        """The same sampler, with the polarization of every sample rotated further by `rotation`.
 
         Args:
-            rotation: The rotation by $\beta$, broadcastable to the shape of the samples.
+            rotation: The rotation, whose angles broadcast to the shape of the samples.
         """
-        return RotatedSampler(kernel=self.kernel, source=self, rotation=rotation)
+        return RotatedSampler(kernel=self.kernel, source=self).rotated(rotation)
 
 
 class QuaternionSampler(AbstractSampler):
@@ -681,19 +684,30 @@ class PrecomputedSampler(AbstractSampler):
 
 
 class RotatedSampler(AbstractSampler):
-    r"""Another sampler, with the polarization of every sample rotated further by $\beta$.
+    r"""Another sampler, with the polarization of every sample rotated further.
 
     What [`PointingOperator`][] builds when it absorbs a [`QURotationOperator`][] applied to its
-    output, so that the two cost one pass over the samples instead of two.
+    output, so that the two cost one pass over the samples instead of two. QU rotations commute,
+    so the rotations it absorbs form a set: a rotation absorbed after its own transpose cancels
+    it, wherever it is in the set. The others are applied batch by batch, those whose angles have
+    the same shape summed into one, so that a rotation per detector is never broadcast against
+    one per sample.
 
     Attributes:
         kernel: The kernel of the rotated sampler.
         source: The sampler whose samples are rotated.
-        rotation: The rotation by $\beta$, broadcastable to the shape of the samples.
+        rotations: The rotations, whose angles broadcast to the shape of the samples.
+        factors: The rotations as they are applied, those of the same shape composed, computed
+            from `rotations` when the sampler is built.
     """
 
     source: AbstractSampler
-    rotation: Spin2Rotation
+    rotations: tuple[QURotationOperator | QURotationTransposeOperator, ...] = ()
+    factors: tuple[Spin2Rotation, ...] = field(init=False)
+
+    def __post_init__(self) -> None:
+        factors = tuple(Spin2Rotation.from_angles(a) for a in self._summed_angles())
+        object.__setattr__(self, 'factors', factors)
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -703,9 +717,10 @@ class RotatedSampler(AbstractSampler):
         pointing = self.source.pointing_rows(landscape, index)
         if not landscape.has_spin2:
             return pointing
-        rotation = self.rotation.broadcast_to(self.shape)[index]
-        if pointing.polarization_rotation is not None:
-            rotation = pointing.polarization_rotation.compose(rotation)
+        rotation = pointing.polarization_rotation
+        for factor in self.factors:
+            factor = factor.broadcast_to(self.shape)[index]
+            rotation = factor if rotation is None else rotation.compose(factor)
         return pointing._replace(polarization_rotation=rotation)
 
     def nearest_indices(
@@ -717,8 +732,34 @@ class RotatedSampler(AbstractSampler):
         return self.source.scaling(index)
 
     def with_kernel(self, kernel: SamplingKernel) -> AbstractSampler:
-        source = self.source.with_kernel(kernel)
-        return RotatedSampler(kernel=kernel, source=source, rotation=self.rotation)
+        return dataclasses.replace(self, kernel=kernel, source=self.source.with_kernel(kernel))
 
-    def rotated(self, rotation: Spin2Rotation) -> AbstractSampler:
-        return self.source.rotated(self.rotation.compose(rotation))
+    def rotated(
+        self, rotation: QURotationOperator | QURotationTransposeOperator
+    ) -> AbstractSampler:
+        for i, kept in enumerate(self.rotations):
+            if _are_transposes(kept, rotation):
+                rotations = self.rotations[:i] + self.rotations[i + 1 :]
+                return dataclasses.replace(self, rotations=rotations) if rotations else self.source
+        return dataclasses.replace(self, rotations=(*self.rotations, rotation))
+
+    def _summed_angles(self) -> list[Float[Array, '...']]:
+        """The angles of the rotations, those of the same shape summed."""
+        summed: dict[tuple[int, ...], Float[Array, ...]] = {}
+        for rotation in self.rotations:
+            if isinstance(rotation, QURotationTransposeOperator):
+                angles = -jnp.asarray(rotation.operator.angles)
+            else:
+                angles = jnp.asarray(rotation.angles)
+            summed[angles.shape] = summed.get(angles.shape, 0) + angles
+        return list(summed.values())
+
+
+def _are_transposes(
+    a: QURotationOperator | QURotationTransposeOperator,
+    b: QURotationOperator | QURotationTransposeOperator,
+) -> bool:
+    """Whether one rotation is the transpose of the other, as operator algebra tells them."""
+    if isinstance(a, QURotationTransposeOperator):
+        return a.operator is b
+    return isinstance(b, QURotationTransposeOperator) and b.operator is a

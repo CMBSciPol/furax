@@ -95,7 +95,7 @@ class TileModel:
             gaps: The spline model of the gaps, when they are explicit; a detector needing more
                 amplitudes than its budget is dropped.
         """
-        H = acquisition_operator(data, config, landscape)
+        H = reduced_acquisition_operator(data, config, landscape)
         tod_format = _tod_format(H)
         mask = _sample_mask(data, config) & jnp.asarray(use)
         n_detectors, n_samples = real_extent(padding, mask.shape)
@@ -231,11 +231,15 @@ class TileModel:
         return MarginalizedWeightOperator.create(weight, implicit.operator, implicit.gram_inverse)
 
 
-def acquisition_operator(
+def reduced_acquisition_operator(
     data: Any, config: MapMakingConfig, landscape: StokesLandscape
 ) -> AbstractLinearOperator:
-    """The acquisition operator of a tile, from the sky of `landscape` to its TOD."""
-    return build_acquisition_operator(
+    """The acquisition operator of a tile, from the sky of `landscape` to its TOD, reduced.
+
+    The rotations of the polarization fold into the pointing, which applies them in its pass over
+    the samples.
+    """
+    acquisition = build_acquisition_operator(
         landscape,
         Quaternion.from_array(data[ReaderField.Q_SKY_BORE]),
         Quaternion.from_array(data[ReaderField.Q_BORE_DET]),
@@ -246,6 +250,7 @@ def acquisition_operator(
         pointing_interpolate=config.pointing.interpolation == 'bilinear',
         dtype=config.dtype,
     )
+    return acquisition.reduce()
 
 
 def _noise_model(

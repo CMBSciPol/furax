@@ -1043,12 +1043,64 @@ class TestRotationAbsorption:
         assert isinstance(transpose, PointingTransposeOperator)
         assert tree_equal(transpose(tod), chain.T(tod), rtol=1e-12, atol=1e-12)
 
-    def test_an_atomic_rotation_stays_apart(self) -> None:
-        op = self._op(None, False)
-        rotation = QURotationOperator(
-            angles=jnp.ones(NSAMP), atomic=True, in_structure=op.out_structure
+    @pytest.mark.parametrize('batch_samples', [0, 7], ids=['one-batch', 'batched'])
+    @pytest.mark.parametrize('precompute', [False, True], ids=['fly', 'precomputed'])
+    @pytest.mark.parametrize('transposed', [False, True], ids=['R', 'R.T'])
+    def test_rotations_of_other_shapes_are_kept_apart(
+        self, precompute, transposed, batch_samples
+    ) -> None:
+        """A rotation per detector is not broadcast against one per sample."""
+        op = self._op(precompute, False)
+        op = PointingOperator.from_sampler(op.landscape, op.sampler, batch_samples=batch_samples)
+        per_sample = QURotationOperator(
+            angles=jax.random.normal(jax.random.key(65), (NSAMP,)), in_structure=op.out_structure
         )
-        assert not isinstance((rotation @ op).reduce(), PointingOperator)
+        per_detector = QURotationOperator(
+            angles=jax.random.normal(jax.random.key(66), (NDET, 1)),
+            atomic=True,
+            in_structure=op.out_structure,
+        )
+        rotation = per_detector.T if transposed else per_detector
+        chain = rotation @ per_sample @ op
+        reduced = chain.reduce()
+        assert isinstance(reduced, PointingOperator)
+        assert isinstance(reduced.sampler, RotatedSampler)
+        assert len(reduced.sampler.rotations) == 2
+        leaves = jax.tree.leaves(reduced.sampler.rotations)
+        assert all(leaf.shape != (NDET, NSAMP) for leaf in leaves)
+
+        sky = op.landscape.normal(jax.random.key(67))
+        tod = ftree.normal_like(op.out_structure, jax.random.key(68))
+        assert tree_equal(reduced(sky), chain(sky), rtol=1e-12, atol=1e-12)
+        transpose = (op.T @ per_sample.T @ rotation.T).reduce()
+        assert isinstance(transpose, PointingTransposeOperator)
+        assert tree_equal(transpose(tod), chain.T(tod), rtol=1e-12, atol=1e-12)
+
+    @pytest.mark.parametrize('atomic', [False, True], ids=['merging', 'atomic'])
+    def test_a_rotation_cancels_its_transpose(self, atomic) -> None:
+        """`P.T @ R.T @ S @ R @ P` reduces to `P.T @ S @ P`, with `S` absorbed."""
+        op = self._op(False, False)
+        rotation = QURotationOperator(
+            angles=jax.random.normal(jax.random.key(69), (NDET, 1)),
+            atomic=atomic,
+            in_structure=op.out_structure,
+        )
+        between = QURotationOperator(
+            angles=jax.random.normal(jax.random.key(70), (NSAMP,)),
+            atomic=True,
+            in_structure=op.out_structure,
+        )
+        assert isinstance((rotation.T @ rotation @ op).reduce().sampler, QuaternionSampler)
+
+        chain = op.T @ rotation.T @ between @ rotation @ op
+        transposed, pointing = chain.reduce().operands
+        assert pointing is op
+        assert isinstance(transposed, PointingTransposeOperator)
+        (kept,) = transposed.operator.sampler.rotations
+        assert kept.operator is between  # absorbed into P.T, as between.T into P
+
+        sky = op.landscape.normal(jax.random.key(71))
+        assert tree_equal(chain.reduce()(sky), chain(sky), rtol=1e-12, atol=1e-12)
 
     def test_successive_rotations_merge(self) -> None:
         op = self._op(None, False)

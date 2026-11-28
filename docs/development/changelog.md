@@ -95,6 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - the `boresight_quaternions` / `detector_quaternions` arguments of `PointingOperator.create` and `build_acquisition_operator` → `q_sky_bore` / `q_bore_det`, and of `ScreenSampler.from_wind` → `q_hor_bore` / `q_bore_det`
 - `AdditionOperator.as_matrix()` over an `Ensemble` traces the member once, whatever the ensemble size (#502)
 - `lift` keeps the arrays `f` passes through, `'segment'` and strided leaves included, also beside arrays it computes, and shares an array computed only from shared leaves, instead of copying them to every member (#500)
+- `PointingOperator` also absorbs an atomic `QURotationOperator`, and a rotation absorbed after its own transpose cancels it (#516)
+- **Breaking:** `AbstractSampler.rotated` takes a `QURotationOperator` or its transpose instead of a `Spin2Rotation`, and `RotatedSampler.rotation` becomes `rotations` (#516)
 
 ### Fixed
 

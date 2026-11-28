@@ -32,8 +32,8 @@ from ._model import (
     TemplateBundle,
     TemplateKind,
     TileModel,
-    acquisition_operator,
     assemble_templates,
+    reduced_acquisition_operator,
     restrict_streams,
 )
 from ._observation import ReaderField
@@ -101,7 +101,7 @@ def tile_kernel(
         data = {**data, ReaderField.SAMPLE_DATA: tod}
         if sky is not None:  # the samples to inject into, per detector
             shape = jax.tree.leaves(tod)[0].shape
-            H = acquisition_operator(data, config, sky_landscape)
+            H = reduced_acquisition_operator(data, config, sky_landscape)
             data = inject(H, sky, data, unpadded(padding, shape), replaces)
         tod = raw = data[ReaderField.SAMPLE_DATA]
         if fill_gaps:
